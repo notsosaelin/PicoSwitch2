@@ -92,8 +92,18 @@ int ns2_kbm_format_profiles(const ns2_kbm_config_t *config, uint16_t cursor,
 // The realized mapping identity of every layout, in one reply. Bounded by
 // NS2_KBM_LAYOUT_COUNT, so this is deliberately not paginated -- the host test
 // pins its worst-case size against the wire limit.
+//
+// Carries BOTH `sourceId` (what is running now) and `bootId` (what the next
+// power-up will run). A profile-switch key moves the first and not the second,
+// so a client that read only one of them would report the wrong active profile.
 int ns2_kbm_format_active(const ns2_kbm_config_t *config, char *out,
                           size_t capacity);
+
+// One layout's profile-switch key assignments. Bounded by
+// NS2_KBM_SWITCH_BINDINGS_MAX, so this is not paginated either.
+int ns2_kbm_format_switches(const ns2_kbm_config_t *config,
+                            ns2_kbm_layout_t layout, char *out,
+                            size_t capacity);
 
 // The number of logical items each walk should yield. Exposed so a test can
 // state the expected count independently of the walk it is checking, rather

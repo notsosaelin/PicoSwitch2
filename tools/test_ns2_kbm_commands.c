@@ -473,6 +473,45 @@ static void test_active_fits_without_pagination(FILE *corpus) {
     corpus_emit(corpus, "active", "kbm active", len, reply);
 }
 
+// `kbm switches` is not paginated, so its worst case must fit outright: every
+// slot bound, longest source spelling, widest ids.
+static void test_switch_list_fits_without_pagination(FILE *corpus) {
+    printf("switch bindings fit one reply\n");
+    ns2_kbm_config_t config;
+    ns2_kbm_config_defaults(&config);
+    fill_profile_library(&config);
+
+    // Bind as many Keyboard switch keys as the table and the library allow.
+    unsigned bound = 0;
+    for (uint8_t usage = 0x3Au; usage < 0x60u; ++usage) {
+        ns2_kbm_source_t source = {NS2_KBM_SRC_KEY, usage};
+        for (uint8_t i = 0; i < NS2_KBM_MAX_PROFILES; ++i) {
+            const ns2_kbm_profile_slot_t *slot = &config.profiles[i];
+            if (slot->used && slot->layout == NS2_KBM_LAYOUT_KEYBOARD &&
+                ns2_kbm_switch_bind(&config, NS2_KBM_LAYOUT_KEYBOARD, source,
+                                    slot->profile_id)) {
+                bound++;
+                break;
+            }
+        }
+        if (bound >= NS2_KBM_SWITCH_BINDINGS_MAX) break;
+    }
+    CHECK(bound > 0, "expected at least one switch binding");
+
+    char reply[NS2_KBM_REPLY_MAX_BYTES + 64u];
+    int len = ns2_kbm_format_switches(&config, NS2_KBM_LAYOUT_KEYBOARD, reply,
+                                      NS2_KBM_REPLY_MAX_BYTES + 1u);
+    CHECK(len > 0, "format_switches failed");
+    CHECK((size_t)len <= NS2_KBM_REPLY_MAX_BYTES,
+          "switch reply is %d bytes, limit %u", len,
+          (unsigned)NS2_KBM_REPLY_MAX_BYTES);
+    CHECK(count_rows(reply, "\"src\":\"") == (int)bound,
+          "every binding must be listed");
+    printf("  switches: %d/%u bytes, %u bound\n", len,
+           (unsigned)NS2_KBM_REPLY_MAX_BYTES, bound);
+    corpus_emit(corpus, "switches", "kbm switches kb", len, reply);
+}
+
 // A stored profile's mapping uses the same walk as a realized one. They diverged
 // once already; sharing the formatter is what keeps them honest.
 static void test_stored_profile_mapping_walks_identically(FILE *corpus) {
@@ -568,6 +607,20 @@ static void emit_corpus(FILE *corpus) {
     int len = ns2_kbm_format_active(&config, reply,
                                     NS2_KBM_REPLY_MAX_BYTES + 1u);
     if (len > 0) corpus_emit(corpus, "active", "kbm active", len, reply);
+
+    // One layout's switch keys, so the clients have real bytes for these too.
+    for (uint8_t i = 0; i < NS2_KBM_MAX_PROFILES; ++i) {
+        const ns2_kbm_profile_slot_t *slot = &config.profiles[i];
+        if (slot->used && slot->layout == NS2_KBM_LAYOUT_KEYBOARD) {
+            ns2_kbm_source_t source = {NS2_KBM_SRC_KEY, 0x3Au};
+            (void)ns2_kbm_switch_bind(&config, NS2_KBM_LAYOUT_KEYBOARD, source,
+                                      slot->profile_id);
+            break;
+        }
+    }
+    len = ns2_kbm_format_switches(&config, NS2_KBM_LAYOUT_KEYBOARD, reply,
+                                  NS2_KBM_REPLY_MAX_BYTES + 1u);
+    if (len > 0) corpus_emit(corpus, "switches", "kbm switches kb", len, reply);
 }
 
 int main(void) {
@@ -601,6 +654,7 @@ int main(void) {
     test_a_cursor_past_the_end_terminates();
     test_profile_library_walk(NULL);
     test_active_fits_without_pagination(NULL);
+    test_switch_list_fits_without_pagination(NULL);
     test_stored_profile_mapping_walks_identically(NULL);
     emit_corpus(corpus);
 

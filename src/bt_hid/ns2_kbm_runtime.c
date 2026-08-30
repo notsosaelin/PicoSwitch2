@@ -1004,6 +1004,47 @@ bool ns2_kbm_runtime_apply(ns2_kbm_layout_t layout, uint8_t profile_id,
     return true;
 }
 
+bool ns2_kbm_runtime_set_boot_profile(ns2_kbm_layout_t layout,
+                                      uint8_t profile_id, bool *changed) {
+    if (changed) *changed = false;
+    ns2_kbm_config_t candidate;
+    uint32_t generation = 0;
+    config_snapshot(&candidate, &generation);
+    bool did_change = false;
+    if (!ns2_kbm_set_boot_profile(&candidate, layout, profile_id, &did_change))
+        return false;
+    // Unchanged: no generation bump and therefore no flash write. Choosing the
+    // boot profile that is already the boot profile must cost nothing.
+    if (!did_change) return true;
+    config_write_begin();
+    s_config = candidate;
+    config_write_end();
+    if (changed) *changed = true;
+    return true;
+}
+
+bool ns2_kbm_runtime_switch_bind(ns2_kbm_layout_t layout,
+                                 ns2_kbm_source_t source, uint8_t profile_id) {
+    ns2_kbm_config_t candidate;
+    uint32_t generation = 0;
+    config_snapshot(&candidate, &generation);
+    if (!ns2_kbm_switch_bind(&candidate, layout, source, profile_id))
+        return false;
+    config_write_begin();
+    s_config = candidate;
+    config_write_end();
+    return true;
+}
+
+uint8_t ns2_kbm_runtime_active_profile(ns2_kbm_layout_t layout) {
+    if (layout >= NS2_KBM_LAYOUT_COUNT) return NS2_KBM_PROFILE_ID_NONE;
+    // The RUNTIME slot, which a profile-switch key moves without touching the
+    // stored configuration at all.
+    return s_runtime_profile_id[layout];
+}
+
+uint32_t ns2_kbm_runtime_switch_count(void) { return s_runtime_switches; }
+
 void ns2_kbm_runtime_reset_all(void) {
     // Mapping reset is mapping-only: the selected input mode is a separate
     // user choice and unrelated adapter settings are not touched at all.
