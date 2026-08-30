@@ -41,11 +41,11 @@ bool ns2_kbm_runtime_config_load(const ns2_kbm_config_t *config);
 void ns2_kbm_runtime_config_get(ns2_kbm_config_t *out);
 uint32_t ns2_kbm_runtime_config_generation(void);
 
-bool ns2_kbm_runtime_set_binding(ns2_kbm_profile_t profile,
+bool ns2_kbm_runtime_set_binding(ns2_kbm_layout_t profile,
                                  ns2_kbm_source_t source, uint8_t destination);
-bool ns2_kbm_runtime_clear_binding(ns2_kbm_profile_t profile,
+bool ns2_kbm_runtime_clear_binding(ns2_kbm_layout_t profile,
                                    ns2_kbm_source_t source);
-void ns2_kbm_runtime_reset_profile(ns2_kbm_profile_t profile);
+void ns2_kbm_runtime_reset_profile(ns2_kbm_layout_t profile);
 void ns2_kbm_runtime_reset_all(void);
 bool ns2_kbm_runtime_set_mouse(const ns2_kbm_mouse_config_t *mouse);
 void ns2_kbm_runtime_get_mouse(ns2_kbm_mouse_config_t *out);

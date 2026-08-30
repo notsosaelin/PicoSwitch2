@@ -74,7 +74,7 @@ typedef struct {
 typedef struct {
     uint8_t mode;
     uint8_t reserved[3];
-    ns2_kbm_profile_overrides_t profiles[NS2_KBM_PROFILE_COUNT];
+    ns2_kbm_profile_overrides_t profiles[NS2_KBM_LAYOUT_COUNT];
     ns2_kbm_mouse_config_v11_t mouse;
 } ns2_kbm_config_v11_t;
 

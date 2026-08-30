@@ -358,7 +358,7 @@ static void test_bound_key_reaches_the_published_report(void) {
     reset_world();
 
     ns2_kbm_source_t key_b = {NS2_KBM_SRC_KEY, USAGE_B};
-    assert(ns2_kbm_runtime_set_binding(NS2_KBM_PROFILE_KEYBOARD, key_b,
+    assert(ns2_kbm_runtime_set_binding(NS2_KBM_LAYOUT_KEYBOARD, key_b,
                                        NS2_DST_B));
 
     bthid_device_t *kb = connect_ble_keyboard(5, true);

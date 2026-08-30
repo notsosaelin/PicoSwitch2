@@ -806,9 +806,9 @@ bool ns2_kbm_runtime_set_mode(ns2_kbm_mode_t mode) {
     return true;
 }
 
-bool ns2_kbm_runtime_set_binding(ns2_kbm_profile_t profile,
+bool ns2_kbm_runtime_set_binding(ns2_kbm_layout_t profile,
                                  ns2_kbm_source_t source, uint8_t destination) {
-    if (profile >= NS2_KBM_PROFILE_COUNT) return false;
+    if (profile >= NS2_KBM_LAYOUT_COUNT) return false;
     ns2_kbm_config_t candidate;
     uint32_t generation = 0;
     config_snapshot(&candidate, &generation);
@@ -820,9 +820,9 @@ bool ns2_kbm_runtime_set_binding(ns2_kbm_profile_t profile,
     return true;
 }
 
-bool ns2_kbm_runtime_clear_binding(ns2_kbm_profile_t profile,
+bool ns2_kbm_runtime_clear_binding(ns2_kbm_layout_t profile,
                                    ns2_kbm_source_t source) {
-    if (profile >= NS2_KBM_PROFILE_COUNT) return false;
+    if (profile >= NS2_KBM_LAYOUT_COUNT) return false;
     ns2_kbm_config_t candidate;
     uint32_t generation = 0;
     config_snapshot(&candidate, &generation);
@@ -833,8 +833,8 @@ bool ns2_kbm_runtime_clear_binding(ns2_kbm_profile_t profile,
     return true;
 }
 
-void ns2_kbm_runtime_reset_profile(ns2_kbm_profile_t profile) {
-    if (profile >= NS2_KBM_PROFILE_COUNT) return;
+void ns2_kbm_runtime_reset_profile(ns2_kbm_layout_t profile) {
+    if (profile >= NS2_KBM_LAYOUT_COUNT) return;
     config_write_begin();
     ns2_kbm_config_reset_profile(&s_config, profile);
     config_write_end();
@@ -844,8 +844,8 @@ void ns2_kbm_runtime_reset_all(void) {
     // Mapping reset is mapping-only: the selected input mode is a separate
     // user choice and unrelated adapter settings are not touched at all.
     config_write_begin();
-    for (unsigned p = 0; p < NS2_KBM_PROFILE_COUNT; ++p)
-        ns2_kbm_config_reset_profile(&s_config, (ns2_kbm_profile_t)p);
+    for (unsigned p = 0; p < NS2_KBM_LAYOUT_COUNT; ++p)
+        ns2_kbm_config_reset_profile(&s_config, (ns2_kbm_layout_t)p);
     ns2_kbm_mouse_config_t defaults;
     ns2_kbm_config_t scratch;
     ns2_kbm_config_defaults(&scratch);
@@ -884,7 +884,7 @@ void ns2_kbm_runtime_status(ns2_kbm_runtime_status_t *out) {
     ns2_kbm_mode_t mode = ns2_kbm_runtime_mode();
     out->mode = (uint8_t)mode;
     out->mode_override = (uint8_t)mode_override();
-    out->profile = (uint8_t)ns2_kbm_mode_profile(mode);
+    out->profile = (uint8_t)ns2_kbm_mode_layout(mode);
     out->keyboard_connected = s_roles.keyboard.valid;
     out->mouse_connected = s_roles.mouse.valid;
     out->native_mouse_output = output_supports_native_mouse() ? 1u : 0u;

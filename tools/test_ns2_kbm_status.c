@@ -25,7 +25,7 @@ static void test_exact_output(void) {
     memset(&status, 0, sizeof(status));
     status.mode = (uint8_t)NS2_KBM_MODE_KEYBOARD_MOUSE;
     status.mode_override = (uint8_t)NS2_KBM_MODE_AUTO;
-    status.profile = (uint8_t)NS2_KBM_PROFILE_KEYBOARD_MOUSE;
+    status.profile = (uint8_t)NS2_KBM_LAYOUT_KEYBOARD_MOUSE;
     status.keyboard_connected = 1u;
     status.mouse_connected = 0u;
     status.native_mouse_output = 0u;
@@ -98,7 +98,7 @@ static void test_every_field_is_distinct(void) {
     memset(&status, 0, sizeof(status));
     status.mode = (uint8_t)NS2_KBM_MODE_KEYBOARD;
     status.mode_override = (uint8_t)NS2_KBM_MODE_CONTROLLER;
-    status.profile = (uint8_t)NS2_KBM_PROFILE_KEYBOARD;
+    status.profile = (uint8_t)NS2_KBM_LAYOUT_KEYBOARD;
     status.keyboard_conn = 11u;
     status.mouse_conn = 12u;
     status.group_id = 13u;
