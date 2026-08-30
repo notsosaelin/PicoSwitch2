@@ -87,6 +87,16 @@ static uint16_t *report_offset(kb_report_offset_t *table, uint8_t *count,
     return &table[(*count)++].input_bits;
 }
 
+// Remember a report id that carries keyboard fields. False when this build has
+// no room left to track another.
+static bool note_report_id(bthid_keyboard_report_map_t *out, uint8_t report_id) {
+    for (uint8_t i = 0; i < out->report_id_count; ++i)
+        if (out->report_ids[i] == report_id) return true;
+    if (out->report_id_count >= BTHID_KEYBOARD_MAX_REPORT_IDS) return false;
+    out->report_ids[out->report_id_count++] = report_id;
+    return true;
+}
+
 static uint32_t item_data(const uint8_t *desc, uint16_t offset, uint8_t size) {
     uint32_t value = 0;
     for (uint8_t i = 0; i < size; ++i)
@@ -269,11 +279,17 @@ bool bthid_keyboard_parse_descriptor(const uint8_t *desc, uint16_t desc_len,
                 keyboard_report_id = report_id;
                 found = true;
             }
-            if (report_id != keyboard_report_id) {
-                // A second keyboard report id (e.g. a vendor NKRO alternate).
-                // This build follows exactly one, chosen deterministically as
-                // the first declared, so decoding can never depend on which
-                // report happens to arrive first.
+            // Follow EVERY report id that carries keyboard fields.
+            //
+            // A keyboard commonly declares a boot-compatible 6-key report and a
+            // vendor NKRO report, and the DEVICE chooses which to send. Locking
+            // onto the first declared id and rejecting the rest silently
+            // discards every report from a keyboard that transmits on its
+            // alternate -- which is not a decode failure the device can be
+            // blamed for, and produced no diagnostic at all.
+            if (!note_report_id(out, report_id)) {
+                // More distinct keyboard reports than this build tracks. Skip
+                // the field rather than record it against the wrong report.
                 usage_min = usage_max = 0;
                 have_usage_range = false;
                 continue;
@@ -291,6 +307,7 @@ bool bthid_keyboard_parse_descriptor(const uint8_t *desc, uint16_t desc_len,
                     out->bitmaps[out->bitmap_count].bit_offset = field_offset;
                     out->bitmaps[out->bitmap_count].count = (uint16_t)count;
                     out->bitmaps[out->bitmap_count].usage_min = (uint8_t)usage_min;
+                    out->bitmaps[out->bitmap_count].report_id = report_id;
                     out->bitmap_count++;
                 }
             } else if (!variable && report_size == 8u &&
@@ -299,6 +316,7 @@ bool bthid_keyboard_parse_descriptor(const uint8_t *desc, uint16_t desc_len,
                 out->arrays[out->array_count].bit_offset = field_offset;
                 out->arrays[out->array_count].count =
                     report_count > 255u ? 255u : (uint8_t)report_count;
+                out->arrays[out->array_count].report_id = report_id;
                 out->array_count++;
             }
         }
@@ -383,8 +401,19 @@ bthid_keyboard_decode_t bthid_keyboard_decode_report(
     const bthid_keyboard_report_map_t *map, const uint8_t *data, uint16_t len,
     uint8_t usage_bitmap[BTHID_KEYBOARD_USAGE_BYTES]) {
     if (!map || !data || !usage_bitmap || len == 0) return BTHID_KEYBOARD_DECODE_FAIL;
-    if (map->using_report_ids && data[0] != map->report_id)
-        return BTHID_KEYBOARD_DECODE_FAIL;
+
+    // Which of the declared keyboard reports this is. A descriptor that declares
+    // several -- boot plus NKRO, typically -- may send any of them, and each has
+    // its own field layout, so the id selects the fields as well as admitting
+    // the report.
+    uint8_t report_id = 0u;
+    if (map->using_report_ids) {
+        bool known = false;
+        for (uint8_t i = 0; i < map->report_id_count && !known; ++i)
+            known = data[0] == map->report_ids[i];
+        if (!known) return BTHID_KEYBOARD_DECODE_FAIL;
+        report_id = data[0];
+    }
 
     // Offsets recorded by the parser exclude the report-id byte, exactly as the
     // descriptor describes the report; add it back for the on-wire buffer.
@@ -393,6 +422,7 @@ bthid_keyboard_decode_t bthid_keyboard_decode_report(
 
     for (uint8_t f = 0; f < map->bitmap_count; ++f) {
         const bthid_keyboard_bitmap_field_t *field = &map->bitmaps[f];
+        if (map->using_report_ids && field->report_id != report_id) continue;
         for (uint16_t i = 0; i < field->count; ++i) {
             uint32_t usage = (uint32_t)field->usage_min + i;
             if (usage > 0xFFu) break;
@@ -404,6 +434,7 @@ bthid_keyboard_decode_t bthid_keyboard_decode_report(
 
     for (uint8_t f = 0; f < map->array_count; ++f) {
         const bthid_keyboard_array_field_t *field = &map->arrays[f];
+        if (map->using_report_ids && field->report_id != report_id) continue;
         uint32_t byte = (base + field->bit_offset) >> 3;
         for (uint8_t i = 0; i < field->count; ++i) {
             if (byte + i >= len) break;

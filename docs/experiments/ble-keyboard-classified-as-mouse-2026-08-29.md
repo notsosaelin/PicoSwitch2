@@ -531,3 +531,90 @@ companion; Android tolerates them unchanged (it reads named keys only).
 
 Had `undecodedReports` existed at the start of this investigation, it would have
 pointed at the descriptor parse immediately instead of at the transport.
+
+## ROOT CAUSE, confirmed on hardware 2026-08-29
+
+`undecodedReports` — added hours earlier in this same investigation — answered it
+on the first read.
+
+Live from the adapter over UART, keyboard paired and connected:
+
+```
+kbm status  {"mode":"keyboard","profile":"kb","keyboard":true,"mouse":false,
+             "keyboardConn":4,"group":4,"source":0,
+             "keyboardReports":0,"rejectedMode":0,"rejectedDuplicate":0,
+             "rejectedNotOwner":0,"rejectedNoPeerKey":0,
+             "rejectedUnclassified":0,"rejectedNoRole":0,
+             "undecodedReports":380,"rollover":0,"publishes":0}
+
+btdev       {"conn":4,"gen":4,"ble":true,"name":"Generic BT Keybo",
+             "vid":"0x2DC8","pid":"0x2028","driver":"Generic BT Keyboard",
+             "desc_len":210,"kbcap":true,"mousecap":true,"generic":false}
+
+input sources  active:4, one source, "Generic BT Keyboard"
+```
+
+Everything the previous passes established holds: classification, role, slot,
+mode, profile, group, active source — all correct. **380 reports arrived and
+decoded as nothing**, and admission never saw one of them.
+
+### Why that is decisive without the descriptor
+
+`bthid_keyboard_decode_report()` has exactly two ways to return
+`BTHID_KEYBOARD_DECODE_FAIL`:
+
+1. null/empty arguments — impossible here, the driver checks first;
+2. `map->using_report_ids && data[0] != map->report_id`.
+
+After that comparison the function can only return `OK` or `ROLLOVER`. So 380
+failures with `kbcap=true` means 380 reports whose **report ID did not match the
+one ID the parser had locked onto**.
+
+### The defect
+
+`bthid_keyboard_parse_descriptor()` followed exactly one keyboard report id, by
+its own choice, and said so:
+
+```c
+// A second keyboard report id (e.g. a vendor NKRO alternate).
+// This build follows exactly one, chosen deterministically as
+// the first declared, so decoding can never depend on which
+// report happens to arrive first.
+```
+
+The determinism was real; the assumption underneath it was not. A keyboard
+commonly declares **two** keyboard reports — a boot-compatible 6-key report and a
+vendor NKRO report — and the **device** decides which to transmit. Several
+transmit the NKRO one. The 8BitDo declares four top-level collections in 210
+bytes (Windows enumerates it as Col01–Col04, Col04 a mouse) and transmits on a
+report id that was not the first one declared.
+
+So the adapter classified it correctly, admitted it correctly, gave it the
+keyboard role, reported `keyboard=true`, and discarded 100% of its input at a
+single byte comparison — with no counter anywhere, until this pass added one.
+
+### The fix
+
+Follow every report id the descriptor declares keyboard fields for, and stamp
+each parsed field with the report it belongs to so the arriving id selects both
+the admission and the layout. A report id the descriptor never declared is still
+refused, so the accepted set widens to exactly what the device declared and no
+further. No VID/PID, no transport special-case.
+
+`tools/test_bthid_keyboard_report.c::test_every_declared_keyboard_report_decodes`
+reproduces it: with the old single-id rule the NKRO report asserts out; with the
+fix both reports decode and an undeclared id is still rejected.
+
+### Status
+
+Root cause **confirmed** (live counters + source). Fix **source- and
+test-validated**; end-to-end keyboard-to-console input on this device is not yet
+re-confirmed on hardware.
+
+### What this cost, and why
+
+Three passes went to the transport, the role model and the admission path — all
+of which were correct — because the failing stage incremented no counter and the
+UART carried no diagnostic for it. The first genuinely new instrument built
+against this bug identified it in one command. The lesson is recorded in
+STATUS.md: instrument the boundary before theorising across it.

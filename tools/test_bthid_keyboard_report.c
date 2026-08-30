@@ -146,6 +146,30 @@ static const uint8_t DESC_KEYBOARD_PUSH_POP[] = {
     0xC0
 };
 
+// A keyboard that declares TWO keyboard reports: a boot-compatible 6-key report
+// on id 1, and a vendor NKRO bitmap on id 2. Real keyboards ship this pair and
+// choose which one to transmit; several transmit the NKRO one by default.
+//
+// This build used to lock onto the first declared id and reject everything
+// else, so such a keyboard classified correctly, took the keyboard role, and
+// then had 100% of its reports discarded at one comparison.
+static const uint8_t DESC_BOOT_PLUS_NKRO[] = {
+    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01,   // Usage Page (Desktop), Usage (Keyboard)
+    0x85, 0x01,                            //   Report ID (1) -- boot compatible
+    0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01,
+    0x75, 0x01, 0x95, 0x08, 0x81, 0x02,   //   8 modifier bits
+    0x95, 0x01, 0x75, 0x08, 0x81, 0x01,   //   reserved
+    0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x25, 0x65,
+    0x19, 0x00, 0x29, 0x65, 0x81, 0x00,   //   6-key rollover array
+
+    0x85, 0x02,                            //   Report ID (2) -- NKRO
+    0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01,
+    0x75, 0x01, 0x95, 0x08, 0x81, 0x02,   //   8 modifier bits
+    0x19, 0x00, 0x29, 0x67,                //   Usage Min/Max (0x00..0x67)
+    0x95, 0x68, 0x75, 0x01, 0x81, 0x02,   //   104-bit key bitmap
+    0xC0
+};
+
 // A gaming mouse with macro keys -- the ASUS ROG KERIS II class. Opens with
 // Usage(Mouse); its keyboard collection comes second and carries a modifier
 // byte plus a SINGLE key slot, which is all a macro needs.
@@ -529,6 +553,53 @@ static void test_push_pop_restores_global_state(void) {
     puts("  push/pop restores usage page and field sizes");
 }
 
+static void test_every_declared_keyboard_report_decodes(void) {
+    // The hardware failure this fixes, reduced to its mechanism.
+    //
+    // Confirmed on an 8BitDo 2DC8:2028 on 2026-08-29: the adapter classified it
+    // as a keyboard, gave it the keyboard role, reported keyboard=true -- and
+    // counted 380 undecoded reports with every admission counter at zero,
+    // because bthid_keyboard_decode_report() rejects a report whose id is not
+    // THE one declared id, and that is its only possible FAIL after the
+    // arguments check.
+    bthid_keyboard_report_map_t map;
+    assert(bthid_keyboard_parse_descriptor(DESC_BOOT_PLUS_NKRO,
+                                           sizeof(DESC_BOOT_PLUS_NKRO), &map));
+    assert(map.using_report_ids);
+    assert(map.report_id == 1u);
+    assert(map.report_id_count == 2u);
+    assert(map.report_ids[0] == 1u && map.report_ids[1] == 2u);
+
+    uint8_t bitmap[BTHID_KEYBOARD_USAGE_BYTES];
+
+    // The boot report still decodes exactly as before.
+    const uint8_t boot[9] = {0x01, 0x02, 0x00, KEY_W, 0, 0, 0, 0, 0};
+    assert(bthid_keyboard_decode_report(&map, boot, sizeof(boot), bitmap) ==
+           BTHID_KEYBOARD_DECODE_OK);
+    assert(held(bitmap, KEY_W) && held(bitmap, KEY_LSHIFT));
+    assert(!held(bitmap, KEY_A));
+
+    // And so does the NKRO report the device may choose to send instead. Its
+    // key bit sits at usage 0x1A within the bitmap that follows the modifiers.
+    uint8_t nkro[16];
+    memset(nkro, 0, sizeof(nkro));
+    nkro[0] = 0x02;                      // report id
+    nkro[1] = 0x00;                      // modifiers
+    nkro[2 + (KEY_W >> 3)] |= (uint8_t)(1u << (KEY_W & 7u));
+    assert(bthid_keyboard_decode_report(&map, nkro, sizeof(nkro), bitmap) ==
+           BTHID_KEYBOARD_DECODE_OK);
+    assert(held(bitmap, KEY_W));
+
+    // A report id the descriptor never declared is still refused: this widens
+    // the accepted set to what the DEVICE declared, and no further.
+    uint8_t stranger[9];
+    memcpy(stranger, boot, sizeof(boot));
+    stranger[0] = 0x07;
+    assert(bthid_keyboard_decode_report(&map, stranger, sizeof(stranger),
+                                        bitmap) == BTHID_KEYBOARD_DECODE_FAIL);
+    puts("  every declared keyboard report decodes, and only those");
+}
+
 int main(void) {
     puts("bthid_keyboard_report:");
     test_classification();
@@ -537,6 +608,7 @@ int main(void) {
     test_nkro_decode();
     test_boot_fallback();
     test_push_pop_restores_global_state();
+    test_every_declared_keyboard_report_decodes();
     puts("bthid_keyboard_report tests passed");
     return 0;
 }
