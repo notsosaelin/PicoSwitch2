@@ -666,32 +666,71 @@ public static class KbmModes
     };
 }
 
-public enum KbmProfile
+public enum KbmLayout
 {
     Keyboard,
     KeyboardMouse,
 }
 
-public static class KbmProfiles
+public static class KbmLayouts
 {
-    public static readonly ValueList<KbmProfile> All =
-        new([KbmProfile.Keyboard, KbmProfile.KeyboardMouse]);
+    public static readonly ValueList<KbmLayout> All =
+        new([KbmLayout.Keyboard, KbmLayout.KeyboardMouse]);
 
-    public static string Wire(this KbmProfile value) =>
-        value == KbmProfile.Keyboard ? "kb" : "kbm";
+    public static string Wire(this KbmLayout value) =>
+        value == KbmLayout.Keyboard ? "kb" : "kbm";
 
-    public static KbmProfile? FromWire(string? value) => value switch
+    public static KbmLayout? FromWire(string? value) => value switch
     {
-        "kb" => KbmProfile.Keyboard,
-        "kbm" => KbmProfile.KeyboardMouse,
+        "kb" => KbmLayout.Keyboard,
+        "kbm" => KbmLayout.KeyboardMouse,
         _ => null,
     };
+}
+
+/// <summary>
+/// One named mapping the user can select, within one layout.
+///
+/// A profile is NOT a layout. The layout is the shape of the mapping — keyboard,
+/// or keyboard and mouse — and is derived from which peer roles are filled. The
+/// profile is which mapping of that shape is in use, and it is the user's
+/// choice. Collapsing the two is what let a binding be saved into a mapping the
+/// adapter was not resolving, report success, and do nothing at the console.
+/// </summary>
+/// <param name="Builtin">
+/// One of the two reserved Default profiles. Editable and resettable, never
+/// renameable or deletable — which is what guarantees every layout always has an
+/// active profile to fall back to.
+/// </param>
+public sealed record KbmProfileInfo(
+    int Id,
+    KbmLayout Layout,
+    string Name,
+    bool Active,
+    bool Builtin,
+    int Overrides);
+
+/// <summary>The adapter's profile table, and how many slots it has.</summary>
+public sealed record KbmProfiles(
+    ValueList<KbmProfileInfo> Profiles,
+    int Max)
+{
+    public static readonly KbmProfiles Empty =
+        new(ValueList<KbmProfileInfo>.Empty, 0);
+
+    public bool Full => Profiles.Count >= Max && Max > 0;
+
+    public KbmProfileInfo? ActiveFor(KbmLayout layout) =>
+        Profiles.FirstOrDefault(p => p.Layout == layout && p.Active);
+
+    public IEnumerable<KbmProfileInfo> For(KbmLayout layout) =>
+        Profiles.Where(p => p.Layout == layout);
 }
 
 public sealed record KbmStatus(
     KbmMode Mode = KbmMode.Automatic,
     KbmMode ModeOverride = KbmMode.Automatic,
-    KbmProfile Profile = KbmProfile.Keyboard,
+    KbmLayout Profile = KbmLayout.Keyboard,
     bool KeyboardConnected = false,
     bool MouseConnected = false,
     bool NativeMouseOutput = false,
@@ -727,7 +766,13 @@ public sealed record KbmStatus(
     long RoleLosses = 0,
     long MapGeneration = 0,
     long Publishes = 0,
-    long Recenters = 0)
+    long Recenters = 0,
+
+    // Which named profile the live layout is resolving against. A client that
+    // shows a mapping without this cannot say whether what it is showing is the
+    // mapping actually in use.
+    int ActiveProfile = 0,
+    string ActiveProfileName = "")
 {
     public bool AnyDeviceConnected => KeyboardConnected || MouseConnected;
 }
@@ -862,11 +907,11 @@ public static class KbmDestinations
 public sealed record KbmBinding(KbmSource Source, KbmDestination Destination, bool Custom);
 
 public sealed record KbmMapping(
-    KbmProfile Profile,
+    KbmLayout Profile,
     ValueList<KbmBinding> Bindings,
     bool Loaded = false)
 {
-    public static KbmMapping Empty(KbmProfile profile) =>
+    public static KbmMapping Empty(KbmLayout profile) =>
         new(profile, ValueList<KbmBinding>.Empty);
 
     public IReadOnlyList<KbmBinding> KeyBindings =>
@@ -879,7 +924,7 @@ public sealed record KbmMapping(
 }
 
 public sealed record KbmMapPage(
-    KbmProfile Profile,
+    KbmLayout Profile,
     int Page,
     int PageSize,
     int Total,

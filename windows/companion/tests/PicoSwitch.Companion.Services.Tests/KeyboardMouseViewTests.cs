@@ -18,7 +18,7 @@ public sealed class KeyboardMouseViewTests
         KbmMouseConfig? mouse = null,
         IEnumerable<KbmBinding>? bindings = null,
         CapabilityState capability = CapabilityState.Available,
-        KbmProfile profile = KbmProfile.Keyboard) => new()
+        KbmLayout profile = KbmLayout.Keyboard) => new()
     {
         Status = status ?? new KbmStatus(),
         Mouse = mouse ?? Ranged(),
@@ -42,7 +42,7 @@ public sealed class KeyboardMouseViewTests
 
     private static KeyboardMouseView Project(
         KeyboardMouseState? state = null,
-        KbmProfile profile = KbmProfile.Keyboard,
+        KbmLayout profile = KbmLayout.Keyboard,
         bool connected = true) =>
         KeyboardMouse.Project(state ?? State(), profile, connected);
 
@@ -256,26 +256,26 @@ public sealed class KeyboardMouseViewTests
         // a key in the other profile, watch every operation report success, and
         // get nothing at the console. Silence there is indistinguishable from a
         // broken keyboard, which is why this is stated rather than left implicit.
-        var state = State(new KbmStatus(Profile: KbmProfile.KeyboardMouse));
+        var state = State(new KbmStatus(Profile: KbmLayout.KeyboardMouse));
 
-        var editingOther = KeyboardMouse.Project(state, KbmProfile.Keyboard, true);
+        var editingOther = KeyboardMouse.Project(state, KbmLayout.Keyboard, true);
         Assert.True(editingOther.EditingInactiveProfile);
         Assert.Contains("keyboard and mouse profile", editingOther.InactiveProfileWarning);
         Assert.Contains("will not affect the console", editingOther.InactiveProfileWarning);
 
-        var editingLive = KeyboardMouse.Project(state, KbmProfile.KeyboardMouse, true);
+        var editingLive = KeyboardMouse.Project(state, KbmLayout.KeyboardMouse, true);
         Assert.False(editingLive.EditingInactiveProfile);
         Assert.Null(editingLive.InactiveProfileWarning);
     }
 
     [Fact]
-    public void TheActiveProfileComesFromTheAdapterNotFromTheEditor() =>
+    public void TheActiveLayoutComesFromTheAdapterNotFromTheEditor() =>
         Assert.Equal(
-            KbmProfile.KeyboardMouse,
+            KbmLayout.KeyboardMouse,
             KeyboardMouse.Project(
-                State(new KbmStatus(Profile: KbmProfile.KeyboardMouse)),
-                KbmProfile.Keyboard,
-                true).ActiveProfile);
+                State(new KbmStatus(Profile: KbmLayout.KeyboardMouse)),
+                KbmLayout.Keyboard,
+                true).ActiveLayout);
 
     [Fact]
     public void TheKeyboardOnlyProfileDoesNotOfferMouseButtons()
@@ -283,10 +283,10 @@ public sealed class KeyboardMouseViewTests
         // That profile is what the adapter uses when only a keyboard is attached,
         // so a mouse binding in it can never fire. Drawing five dead controls
         // invites the user to bind something that silently does nothing.
-        var keyboardOnly = KeyboardMouse.Project(State(), KbmProfile.Keyboard, true);
+        var keyboardOnly = KeyboardMouse.Project(State(), KbmLayout.Keyboard, true);
         Assert.False(keyboardOnly.ShowMouseButtons);
 
-        var both = KeyboardMouse.Project(State(profile: KbmProfile.KeyboardMouse), KbmProfile.KeyboardMouse, true);
+        var both = KeyboardMouse.Project(State(profile: KbmLayout.KeyboardMouse), KbmLayout.KeyboardMouse, true);
         Assert.True(both.ShowMouseButtons);
     }
 
@@ -294,10 +294,10 @@ public sealed class KeyboardMouseViewTests
     public void TheMappedCountMatchesWhatTheProfileActuallyShows()
     {
         // "27 of 88" must not count five inputs the user cannot see or press.
-        var keyboardOnly = KeyboardMouse.Project(State(), KbmProfile.Keyboard, true);
+        var keyboardOnly = KeyboardMouse.Project(State(), KbmLayout.Keyboard, true);
         var both = KeyboardMouse.Project(
-            State(profile: KbmProfile.KeyboardMouse),
-            KbmProfile.KeyboardMouse,
+            State(profile: KbmLayout.KeyboardMouse),
+            KbmLayout.KeyboardMouse,
             true);
 
         Assert.Equal(keyboardOnly.Keys.Count, keyboardOnly.MappableCount);
@@ -314,7 +314,7 @@ public sealed class KeyboardMouseViewTests
             [
                 new KbmBinding(new KbmSource(KbmSourceKind.MouseButton, 1), KbmDestination.Zr, false),
             ]),
-            KbmProfile.Keyboard,
+            KbmLayout.Keyboard,
             true);
 
         Assert.Equal(0, view.BoundCount);
@@ -327,10 +327,10 @@ public sealed class KeyboardMouseViewTests
         // user rebind the wrong thing.
         var state = State(
             bindings: [new KbmBinding(new KbmSource(KbmSourceKind.Key, 0x04), KbmDestination.A, true)],
-            profile: KbmProfile.Keyboard);
+            profile: KbmLayout.Keyboard);
 
-        Assert.Equal(1, KeyboardMouse.Project(state, KbmProfile.Keyboard, true).BoundCount);
-        Assert.Equal(0, KeyboardMouse.Project(state, KbmProfile.KeyboardMouse, true).BoundCount);
+        Assert.Equal(1, KeyboardMouse.Project(state, KbmLayout.Keyboard, true).BoundCount);
+        Assert.Equal(0, KeyboardMouse.Project(state, KbmLayout.KeyboardMouse, true).BoundCount);
     }
 
     [Fact]
@@ -364,7 +364,7 @@ public sealed class KeyboardMouseViewTests
         var view = KeyboardMouse.Project(
             State(status: new KbmStatus(
                 Mode: KbmMode.Keyboard,
-                Profile: KbmProfile.Keyboard,
+                Profile: KbmLayout.Keyboard,
                 KeyboardConnected: true,
                 KeyboardConn: 5,
                 GroupId: 2,
@@ -374,7 +374,7 @@ public sealed class KeyboardMouseViewTests
                 RejectedNotOwner: 3,
                 RejectedUnclassified: 5,
                 UndecodedReports: 9)),
-            KbmProfile.Keyboard,
+            KbmLayout.Keyboard,
             connected: true);
 
         var counters = view.Counters;
@@ -395,11 +395,60 @@ public sealed class KeyboardMouseViewTests
         // Zeroes that were never read look exactly like zeroes that were, and
         // "no reports arrived" is the conclusion this display exists to support.
         var view = KeyboardMouse.Project(
-            State(profile: KbmProfile.Keyboard) with { Loaded = false },
-            KbmProfile.Keyboard,
+            State(profile: KbmLayout.Keyboard) with { Loaded = false },
+            KbmLayout.Keyboard,
             connected: true);
 
         Assert.Null(view.Counters);
+    }
+
+    [Fact]
+    public void TheProfileSelectorOffersOnlyThisLayoutsProfiles()
+    {
+        // A profile belongs to one layout: its source domain and its canonical
+        // defaults are layout-specific, so offering the other layout's profiles
+        // would let the user activate a mapping the adapter must refuse.
+        var state = State() with
+        {
+            Profiles = new KbmProfiles(
+                new ValueList<KbmProfileInfo>(
+                [
+                    new KbmProfileInfo(0, KbmLayout.Keyboard, "Default", true, true, 0),
+                    new KbmProfileInfo(1, KbmLayout.KeyboardMouse, "Default", true, true, 0),
+                    new KbmProfileInfo(2, KbmLayout.Keyboard, "Splatoon", false, false, 3),
+                ]),
+                Max: 6),
+        };
+
+        var view = KeyboardMouse.Project(state, KbmLayout.Keyboard, connected: true);
+
+        Assert.Equal(2, view.Profiles.Count);
+        Assert.All(view.Profiles, p => Assert.Equal(KbmLayout.Keyboard, p.Layout));
+        Assert.Equal("Default", view.ActiveProfile?.Name);
+        Assert.True(view.ShowProfiles);
+    }
+
+    [Fact]
+    public void OneProfileIsNotAChoice()
+    {
+        // Firmware without named profiles reports none, and an adapter with a
+        // single profile per layout has nothing to pick between. Showing a
+        // one-option control invites the user to look for meaning that is not
+        // there.
+        var none = KeyboardMouse.Project(State(), KbmLayout.Keyboard, connected: true);
+        Assert.Empty(none.Profiles);
+        Assert.False(none.ShowProfiles);
+
+        var single = State() with
+        {
+            Profiles = new KbmProfiles(
+                new ValueList<KbmProfileInfo>(
+                [
+                    new KbmProfileInfo(0, KbmLayout.Keyboard, "Default", true, true, 0),
+                ]),
+                Max: 6),
+        };
+        Assert.False(KeyboardMouse.Project(single, KbmLayout.Keyboard, true).ShowProfiles);
     }
 }
 

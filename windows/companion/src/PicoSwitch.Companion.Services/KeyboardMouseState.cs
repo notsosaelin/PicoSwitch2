@@ -25,6 +25,13 @@ public sealed record KeyboardMouseState
 
     public ValueList<KbmMapping> Mappings { get; init; } = ValueList<KbmMapping>.Empty;
 
+    /// <summary>
+    /// The adapter's named profiles. Empty on firmware that predates them, which
+    /// is not an error: the page falls back to one mapping per layout, exactly
+    /// as it behaved before.
+    /// </summary>
+    public KbmProfiles Profiles { get; init; } = KbmProfiles.Empty;
+
     /// <summary>Whether status has been read at all this session.</summary>
     public bool Loaded { get; init; }
 
@@ -37,7 +44,7 @@ public sealed record KeyboardMouseState
     /// </summary>
     public CapabilityState Capability { get; init; } = CapabilityState.Unknown;
 
-    public KbmMapping Mapping(KbmProfile profile) =>
+    public KbmMapping Mapping(KbmLayout profile) =>
         Mappings.FirstOrDefault(mapping => mapping.Profile == profile)
         ?? new KbmMapping(profile, ValueList<KbmBinding>.Empty, Loaded: false);
 

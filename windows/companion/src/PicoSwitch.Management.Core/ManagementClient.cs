@@ -207,7 +207,7 @@ public sealed class ManagementClient(
     }
 
     public async Task<KbmMapping> LoadKbmMappingAsync(
-        KbmProfile profile,
+        KbmLayout profile,
         CancellationToken ct = default)
     {
         var bindings = new List<KbmBinding>();
@@ -259,7 +259,7 @@ public sealed class ManagementClient(
     }
 
     public async Task<KbmMapping> BindKbmAsync(
-        KbmProfile profile,
+        KbmLayout profile,
         KbmSource source,
         KbmDestination? destination,
         CancellationToken ct = default)
@@ -269,22 +269,40 @@ public sealed class ManagementClient(
         return await LoadKbmMappingAsync(profile, ct).ConfigureAwait(false);
     }
 
-    public async Task<KbmMapping> ResetKbmProfileAsync(
-        KbmProfile profile,
+    public Task<KbmProfiles> KbmProfilesAsync(CancellationToken ct = default) =>
+        ExchangeAsync(ManagementCommands.KbmProfileList,
+                      ManagementProtocol.KbmProfiles, ct);
+
+    /// <summary>
+    /// Activate a profile on the ADAPTER, then re-read the table so the caller
+    /// never has to assume the selection took.
+    /// </summary>
+    public async Task<KbmProfiles> UseKbmProfileAsync(
+        KbmLayout layout,
+        int id,
+        CancellationToken ct = default)
+    {
+        await AcknowledgeAsync(ManagementCommands.KbmProfileUse(layout, id), ct)
+            .ConfigureAwait(false);
+        return await KbmProfilesAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<KbmMapping> ResetKbmLayoutAsync(
+        KbmLayout profile,
         CancellationToken ct = default)
     {
         await AcknowledgeAsync(ManagementCommands.KbmReset(profile), ct).ConfigureAwait(false);
         return await LoadKbmMappingAsync(profile, ct).ConfigureAwait(false);
     }
 
-    public async Task<(KbmStatus Status, KbmMouseConfig Mouse, IReadOnlyDictionary<KbmProfile, KbmMapping> Mappings)>
+    public async Task<(KbmStatus Status, KbmMouseConfig Mouse, IReadOnlyDictionary<KbmLayout, KbmMapping> Mappings)>
         ResetAllKbmAsync(CancellationToken ct = default)
     {
         await AcknowledgeAsync(ManagementCommands.KbmResetAll, ct).ConfigureAwait(false);
         var status = await KbmStatusAsync(ct).ConfigureAwait(false);
         var mouse = await KbmMouseAsync(ct).ConfigureAwait(false);
-        var mappings = new Dictionary<KbmProfile, KbmMapping>();
-        foreach (var profile in KbmProfiles.All)
+        var mappings = new Dictionary<KbmLayout, KbmMapping>();
+        foreach (var profile in KbmLayouts.All)
         {
             mappings[profile] = await LoadKbmMappingAsync(profile, ct).ConfigureAwait(false);
         }

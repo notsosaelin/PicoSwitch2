@@ -20,6 +20,15 @@ public sealed class KeyboardMouseServiceTests
     private const string Mouse =
         """{"ok":true,"sensitivityX":256,"sensitivityY":256,"recenterMs":8,"invertX":false,"invertY":false,"antiDeadzone":10,"sensitivityMin":64,"sensitivityMax":1024,"recenterMinMs":2,"recenterMaxMs":32,"antiDeadzoneMax":100}""";
 
+    private const string Profiles =
+        """
+        {"profiles":[
+          {"id":0,"layout":"kb","name":"Default","active":true,"builtin":true,"overrides":0},
+          {"id":1,"layout":"kbm","name":"Default","active":true,"builtin":true,"overrides":0},
+          {"id":2,"layout":"kb","name":"Splatoon","active":false,"builtin":false,"overrides":3}
+        ],"max":6}
+        """;
+
     private static string Page(string profile, string source, string destination) =>
         $$"""{"ok":true,"profile":"{{profile}}","page":0,"pageSize":1,"total":1,"bindings":[{"src":"{{source}}","dst":"{{destination}}","custom":true}],"more":false}""";
 
@@ -27,6 +36,7 @@ public sealed class KeyboardMouseServiceTests
     {
         fixture.Transport.Replies["kbm status"] = Status;
         fixture.Transport.Replies["kbm mouse"] = Mouse;
+        fixture.Transport.Replies["kbm profiles"] = Profiles;
         fixture.Transport.Replies["kbm map kb 0"] = Page("kb", "key:04", "a");
         fixture.Transport.Replies["kbm map kbm 0"] = Page("kbm", "key:05", "b");
     }
@@ -47,8 +57,8 @@ public sealed class KeyboardMouseServiceTests
         Assert.Equal(KbmMode.Keyboard, state.Status.Mode);
         Assert.Equal(1024, state.Mouse.SensitivityMax);
         Assert.Equal(2, state.Mappings.Count);
-        Assert.Single(state.Mapping(KbmProfile.Keyboard).Bindings);
-        Assert.Single(state.Mapping(KbmProfile.KeyboardMouse).Bindings);
+        Assert.Single(state.Mapping(KbmLayout.Keyboard).Bindings);
+        Assert.Single(state.Mapping(KbmLayout.KeyboardMouse).Bindings);
     }
 
     [Fact]
@@ -99,7 +109,7 @@ public sealed class KeyboardMouseServiceTests
         fixture.Transport.Replies["kbm map kb 0"] = Page("kb", "key:04", "x");
 
         var mapping = await fixture.Service.BindAsync(
-            KbmProfile.Keyboard,
+            KbmLayout.Keyboard,
             new KbmSource(KbmSourceKind.Key, 0x04),
             KbmDestination.X);
 
@@ -120,7 +130,7 @@ public sealed class KeyboardMouseServiceTests
         fixture.Transport.Replies["kbm bind kb key:04 x"] = """{"ok":true}""";
         fixture.Transport.Replies["kbm map kb 0"] = Page("kb", "key:04", "x");
         await fixture.Service.BindAsync(
-            KbmProfile.Keyboard,
+            KbmLayout.Keyboard,
             new KbmSource(KbmSourceKind.Key, 0x04),
             KbmDestination.X);
 
@@ -128,7 +138,7 @@ public sealed class KeyboardMouseServiceTests
         Assert.Equal(2, state.Mappings.Count);
         Assert.Equal(
             KbmDestination.B,
-            state.Mapping(KbmProfile.KeyboardMouse).Bindings[0].Destination);
+            state.Mapping(KbmLayout.KeyboardMouse).Bindings[0].Destination);
     }
 
     [Fact]
@@ -145,12 +155,12 @@ public sealed class KeyboardMouseServiceTests
             """{"ok":true,"profile":"kb","page":0,"pageSize":1,"total":0,"bindings":[],"more":false}""";
 
         await fixture.Service.BindAsync(
-            KbmProfile.Keyboard,
+            KbmLayout.Keyboard,
             new KbmSource(KbmSourceKind.Key, 0x04),
             KbmDestination.None);
 
         Assert.Contains("kbm bind kb key:04 none", fixture.Transport.Sent);
-        Assert.Empty(fixture.Service.KeyboardMouse.Value.Mapping(KbmProfile.Keyboard).Bindings);
+        Assert.Empty(fixture.Service.KeyboardMouse.Value.Mapping(KbmLayout.Keyboard).Bindings);
     }
 
     [Fact]
@@ -169,7 +179,7 @@ public sealed class KeyboardMouseServiceTests
         fixture.Transport.Replies["kbm map kb 0"] = Page("kb", "key:04", "a");
 
         await fixture.Service.BindAsync(
-            KbmProfile.Keyboard,
+            KbmLayout.Keyboard,
             new KbmSource(KbmSourceKind.Key, 0x04),
             destination: null);
 
@@ -208,11 +218,11 @@ public sealed class KeyboardMouseServiceTests
         fixture.Transport.Replies["kbm map kb 0"] =
             """{"ok":true,"profile":"kb","page":0,"pageSize":1,"total":0,"bindings":[],"more":false}""";
 
-        await fixture.Service.ResetProfileAsync(KbmProfile.Keyboard);
+        await fixture.Service.ResetProfileAsync(KbmLayout.Keyboard);
 
         var state = fixture.Service.KeyboardMouse.Value;
-        Assert.Empty(state.Mapping(KbmProfile.Keyboard).Bindings);
-        Assert.Single(state.Mapping(KbmProfile.KeyboardMouse).Bindings);
+        Assert.Empty(state.Mapping(KbmLayout.Keyboard).Bindings);
+        Assert.Single(state.Mapping(KbmLayout.KeyboardMouse).Bindings);
     }
 
     [Fact]

@@ -237,7 +237,7 @@ public static class ManagementProtocol
         {
             var mode = KbmModes.FromWire(value.String("mode"));
             var modeOverride = KbmModes.FromWire(value.String("override"));
-            var profile = KbmProfiles.FromWire(value.String("profile"));
+            var profile = KbmLayouts.FromWire(value.String("profile"));
             RequireShape(
                 mode is not null && modeOverride is not null && profile is not null &&
                 value.TryGetProperty("keyboard", out _) &&
@@ -269,13 +269,49 @@ public static class ManagementProtocol
                 RoleLosses: value.Long("roleLosses"),
                 MapGeneration: value.Long("mapGeneration"),
                 Publishes: value.Long("publishes"),
-                Recenters: value.Long("recenters"));
+                Recenters: value.Long("recenters"),
+                ActiveProfile: value.Int("activeProfile"),
+                ActiveProfileName: value.OptionalString("activeProfileName") ?? string.Empty);
+        });
+
+    public static KbmProfiles KbmProfiles(string command, string response) =>
+        Decode(command, response, value =>
+        {
+            var hasList =
+                value.TryGetProperty("profiles", out var entries) &&
+                entries.ValueKind == JsonValueKind.Array;
+            RequireShape(hasList && value.TryGetProperty("max", out _), command);
+
+            var profiles = new List<KbmProfileInfo>();
+            foreach (var entry in entries.EnumerateArray())
+            {
+                var layout = KbmLayouts.FromWire(entry.String("layout"));
+                var name = entry.OptionalString("name");
+                // A profile the adapter cannot name, or names for a layout this
+                // build does not know, is skipped rather than shown as an
+                // unusable row the user cannot select or remove.
+                if (layout is null || string.IsNullOrWhiteSpace(name))
+                {
+                    continue;
+                }
+
+                profiles.Add(new KbmProfileInfo(
+                    Id: entry.Int("id"),
+                    Layout: layout.Value,
+                    Name: name!,
+                    Active: entry.Bool("active"),
+                    Builtin: entry.Bool("builtin"),
+                    Overrides: entry.Int("overrides")));
+            }
+
+            return new KbmProfiles(new ValueList<KbmProfileInfo>(profiles),
+                                   value.Int("max"));
         });
 
     public static KbmMapPage KbmMapPage(string command, string response) =>
         Decode(command, response, value =>
         {
-            var profile = KbmProfiles.FromWire(value.String("profile"));
+            var profile = KbmLayouts.FromWire(value.String("profile"));
             var hasEntries =
                 value.TryGetProperty("bindings", out var entries) &&
                 entries.ValueKind == JsonValueKind.Array;
