@@ -165,14 +165,44 @@ public sealed record KeyboardMouseView
     public required string NotReadyDetail { get; init; }
 
     /// <summary>
-    /// True only in the Ready state. There is no partial page: the profile
-    /// workflow IS the product, and showing a mapping grid without it is the
-    /// legacy fallback this replaced.
+    /// The mapping editor and the local library, which need NO adapter.
     /// </summary>
-    public bool ShowEditor => Readiness == KeyboardMouseReadiness.Ready;
+    /// <remarks>
+    /// Always true. The library belongs to the user, so creating, editing and
+    /// saving a profile must work with nothing paired — the canonical table the
+    /// grid draws against is embedded, not fetched. Gating this on a connection
+    /// is what made an unplugged app useless for the one task that never needed
+    /// a device.
+    ///
+    /// A FAILED READ is different from being offline and still hides the editor:
+    /// see <see cref="ShowNotReady"/>.
+    /// </remarks>
+    public bool ShowEditor => Readiness != KeyboardMouseReadiness.Error &&
+                              Readiness != KeyboardMouseReadiness.FirmwareUpdateRequired;
+
+    /// <summary>
+    /// The adapter-only half: the bank, activation, switch keys.
+    /// </summary>
+    /// <remarks>
+    /// These genuinely require a live session, so they are disabled rather than
+    /// hidden — a user who cannot see them cannot tell that connecting would
+    /// bring them back.
+    /// </remarks>
+    public bool AdapterAvailable => Readiness == KeyboardMouseReadiness.Ready &&
+                                    Availability.Enabled;
+
+    public bool ShowNotReady => Readiness is KeyboardMouseReadiness.Error or
+                                             KeyboardMouseReadiness.FirmwareUpdateRequired;
+
+    /// <summary>What the bank card says when there is nothing to talk to.</summary>
+    public string? AdapterUnavailableReason => AdapterAvailable
+        ? null
+        : Readiness == KeyboardMouseReadiness.Ready
+            ? "Connect the adapter to assign profiles to it."
+            : "Connect the adapter to see and manage its profiles.";
 
     /// <summary>Kept for the profile controls' own enablement rules.</summary>
-    public bool ProfilesSupported => Readiness == KeyboardMouseReadiness.Ready;
+    public bool ProfilesSupported => true;
 
     /// <summary>Which profile the editor currently has open. Never null when supported.</summary>
     public KbmProfileInfo? SelectedProfile { get; init; }
@@ -198,9 +228,15 @@ public sealed record KeyboardMouseView
     /// into a profile of the user's own. It is never offered for an unchanged
     /// draft, because there would be nothing to write.
     /// </summary>
-    public bool CanSave => DraftState == KbmDraftState.Dirty ||
-                           (SelectedProfile?.Builtin == true &&
-                            DraftState != KbmDraftState.Disconnected);
+    /// <remarks>
+    /// Asked of the DRAFT, not of a matching resident profile. Save is a local
+    /// operation and must be offered with nothing connected; deriving it from the
+    /// adapter's profile list made it depend on a session it never needed.
+    /// </remarks>
+    public bool CanSave => DraftState == KbmDraftState.Dirty || EditingBuiltin;
+
+    /// <summary>Whether the open draft is the built-in template.</summary>
+    public required bool EditingBuiltin { get; init; }
 
     /// <summary>
     /// Apply is offered whenever the selected profile is not what the console is
@@ -211,9 +247,12 @@ public sealed record KeyboardMouseView
         DraftState is not (KbmDraftState.Disconnected or KbmDraftState.Dirty) &&
         DraftState != KbmDraftState.Active;
 
-    public bool CanRename =>
-        SelectedProfile is { Builtin: false } &&
-        DraftState != KbmDraftState.Disconnected;
+    /// <remarks>
+    /// Local operations on a local profile, so they need no connection. Only the
+    /// built-in template is excluded: it is not a library profile and has nothing
+    /// to rename or delete.
+    /// </remarks>
+    public bool CanRename => !EditingBuiltin;
 
     public bool CanDelete => CanRename;
 
@@ -375,10 +414,12 @@ public static class KeyboardMouse
         KeyboardMouseState state,
         KbmLayout profile,
         bool connected,
-        KeyboardMouseDraft? draft = null)
+        KbmLocalDraft? draft = null)
     {
+        // The LOCAL draft's effective mapping, composed from the embedded
+        // canonical table -- so the grid draws with no adapter connected.
         var bindings = draft is not null
-            ? (IReadOnlyList<KbmBinding>)draft.Bindings
+            ? draft.Effective
             : state.Mapping(profile).Bindings;
         var byKey = bindings
             .Where(binding => binding.Source.Kind == KbmSourceKind.Key)
@@ -387,20 +428,22 @@ public static class KeyboardMouse
             .Where(binding => binding.Source.Kind == KbmSourceKind.MouseButton)
             .ToDictionary(binding => binding.Source.Code);
 
+        // The adapter's RESIDENT profiles, which the bank card lists. The picker
+        // lists the LOCAL library instead; these two were the same list, and
+        // that is precisely what made creating a profile write to the adapter.
         var profileRows = state.Profiles.For(profile);
-        // With a draft open, the selection is whatever the draft is editing.
-        // WITHOUT one, it is the profile the console is actually running — not
-        // nothing. A null selection left the page's profile picker blank on every
-        // fresh load and disabled Set Active, which made the profile workflow
-        // look absent rather than idle.
         var active = state.Profiles.ActiveFor(profile);
         var selected = draft is not null
-            ? profileRows.FirstOrDefault(row => row.Id == draft.ProfileId)
-            : profileRows.FirstOrDefault(row => row.Id == active?.SourceId)
-              ?? profileRows.FirstOrDefault();
+            ? profileRows.FirstOrDefault(row => row.Fingerprint == draft.Fingerprint)
+            : profileRows.FirstOrDefault(row => row.Id == active?.SourceId);
+
+        // The draft's state is a LOCAL question -- has it been edited since it
+        // was saved to the library? -- and is answerable with nothing connected.
         var draftState = draft is null
-            ? (connected ? KbmDraftState.Clean : KbmDraftState.Disconnected)
-            : draft.StateAgainst(state.Profiles, connected);
+            ? KbmDraftState.Clean
+            : draft.Dirty
+                ? KbmDraftState.Dirty
+                : KbmDraftState.Clean;
 
         var drawnKeys = KeyboardLayout.AllKeys.Select(cap => cap.Usage).ToHashSet();
 
@@ -443,6 +486,7 @@ public static class KeyboardMouse
             ActiveLayout = state.Status.Profile,
             Profiles = profileRows,
             SelectedProfile = selected,
+            EditingBuiltin = draft?.IsBuiltin ?? true,
             ActiveMapping = state.Profiles.ActiveFor(profile),
             DraftState = draftState,
             Keys = KeyboardLayout.AllKeys.Select(cap => Cell(cap, byKey)).ToArray(),

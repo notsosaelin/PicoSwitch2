@@ -10,9 +10,20 @@ namespace PicoSwitch.Companion.Services.Presentation;
 /// case and is the point of this type: see the remarks on
 /// <see cref="KbmProfileSelection"/>.
 /// </param>
+/// <summary>
+/// One row of the profile picker: a stable identity and what the control shows.
+/// </summary>
+/// <remarks>
+/// Identity is a STRING because the picker now lists LOCAL library profiles,
+/// whose ids are GUIDs no adapter has seen. The built-in Default is the empty
+/// id — it is a template rather than a stored profile, so it has no identity to
+/// carry.
+/// </remarks>
+public sealed record KbmSelectableProfile(string Id, string Label);
+
 public sealed record KbmProfileSelectionPlan(
-    IReadOnlyList<KbmProfileInfo> Rows,
-    int SelectedId,
+    IReadOnlyList<KbmSelectableProfile> Rows,
+    string SelectedId,
     int SelectedIndex,
     bool Rebuild);
 
@@ -67,9 +78,9 @@ public static class KbmProfileSelection
     /// The profile the view wants selected, or <see cref="KbmProfileIds.None"/>.
     /// </param>
     public static KbmProfileSelectionPlan Plan(
-        IReadOnlyList<KbmProfileInfo> rendered,
-        IReadOnlyList<KbmProfileInfo> rows,
-        int selectedId)
+        IReadOnlyList<KbmSelectableProfile> rendered,
+        IReadOnlyList<KbmSelectableProfile> rows,
+        string selectedId)
     {
         // Fall back to the first row rather than to nothing. A picker showing an
         // empty box when profiles exist is how "the profile workflow looks
@@ -83,7 +94,7 @@ public static class KbmProfileSelection
 
         if (rows.Count == 0)
         {
-            selectedId = KbmProfileIds.None;
+            selectedId = string.Empty;
         }
 
         return new KbmProfileSelectionPlan(rows, selectedId, index,
@@ -99,8 +110,8 @@ public static class KbmProfileSelection
     /// post-save render leaves the collection alone entirely, and the control
     /// keeps the item its selection already points at.
     /// </remarks>
-    public static bool SameRows(IReadOnlyList<KbmProfileInfo> a,
-                                IReadOnlyList<KbmProfileInfo> b)
+    public static bool SameRows(IReadOnlyList<KbmSelectableProfile> a,
+                                IReadOnlyList<KbmSelectableProfile> b)
     {
         if (a.Count != b.Count)
         {
@@ -109,9 +120,8 @@ public static class KbmProfileSelection
 
         for (var i = 0; i < a.Count; i++)
         {
-            if (a[i].Id != b[i].Id ||
-                !string.Equals(a[i].Name, b[i].Name, StringComparison.Ordinal) ||
-                a[i].Builtin != b[i].Builtin)
+            if (!string.Equals(a[i].Id, b[i].Id, StringComparison.Ordinal) ||
+                !string.Equals(a[i].Label, b[i].Label, StringComparison.Ordinal))
             {
                 return false;
             }
@@ -129,10 +139,10 @@ public static class KbmProfileSelection
     /// have been replaced by the time it resumed. Deciding up front and returning
     /// a value makes the transition atomic with respect to the await.
     /// </remarks>
-    public static KbmSelectionAction Decide(int requestedId, int openDraftId,
+    public static KbmSelectionAction Decide(string? requestedId, string openDraftId,
                                             bool draftDirty, bool suppressed)
     {
-        if (suppressed || requestedId == KbmProfileIds.None)
+        if (suppressed || requestedId is null)
         {
             return KbmSelectionAction.Ignore;
         }
@@ -140,7 +150,7 @@ public static class KbmProfileSelection
         // Already open. Re-selecting the same profile must not reload it, or a
         // render that re-asserts the selection would reopen the draft and throw
         // away unsaved edits.
-        if (requestedId == openDraftId)
+        if (string.Equals(requestedId, openDraftId, StringComparison.Ordinal))
         {
             return KbmSelectionAction.Ignore;
         }
@@ -148,11 +158,11 @@ public static class KbmProfileSelection
         return draftDirty ? KbmSelectionAction.ConfirmDiscard : KbmSelectionAction.Open;
     }
 
-    private static int IndexOf(IReadOnlyList<KbmProfileInfo> rows, int id)
+    private static int IndexOf(IReadOnlyList<KbmSelectableProfile> rows, string id)
     {
         for (var i = 0; i < rows.Count; i++)
         {
-            if (rows[i].Id == id)
+            if (string.Equals(rows[i].Id, id, StringComparison.Ordinal))
             {
                 return i;
             }

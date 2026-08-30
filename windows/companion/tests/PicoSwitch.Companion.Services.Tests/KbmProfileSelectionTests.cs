@@ -26,20 +26,19 @@ namespace PicoSwitch.Companion.Services.Tests;
 /// </remarks>
 public sealed class KbmProfileSelectionTests
 {
-    private const int Work = 2;
-    private const int Halo = 3;
+    // LOCAL library ids. The picker lists what the user owns, so identity is a
+    // local GUID and the built-in template is the empty id.
+    private const string Builtin = "";
+    private const string Work = "work-guid";
+    private const string Halo = "halo-guid";
 
-    // Builtin is derived from the id (only Default is built in), so it is never
-    // passed: the row for KbmProfileIds.Default IS the built-in one.
-    private static KbmProfileInfo Row(int id, string name, bool builtin = false,
-                                      int revision = 1, long fingerprint = 100) =>
-        new(builtin ? KbmProfileIds.Default : id, KbmLayout.Keyboard, name, revision,
-            Overrides: 0, Fingerprint: fingerprint);
+    private static KbmSelectableProfile Row(string id, string label) => new(id, label);
 
-    private static IReadOnlyList<KbmProfileInfo> Library(params KbmProfileInfo[] rows) => rows;
+    private static IReadOnlyList<KbmSelectableProfile> Library(
+        params KbmSelectableProfile[] rows) => rows;
 
-    private static IReadOnlyList<KbmProfileInfo> Standard() => Library(
-        Row(KbmProfileIds.Default, "Default", builtin: true),
+    private static IReadOnlyList<KbmSelectableProfile> Standard() => Library(
+        Row(Builtin, "Default (built-in)"),
         Row(Work, "Work"),
         Row(Halo, "Halo"));
 
@@ -48,18 +47,17 @@ public sealed class KbmProfileSelectionTests
     [Fact]
     public void SavingAProfileDoesNotForceThePickerToBeRebuilt()
     {
-        // THE CRASH, at its source. Save bumps the revision and the fingerprint,
-        // which fires a state change, which enqueues a render. The old page
-        // answered that render by clearing and repopulating the ComboBox — while
-        // the user was reaching for it to select Default.
+        // THE CRASH, at its source. A save changes the profile's CONTENT, which
+        // fires a state change, which enqueues a render. The old page answered
+        // that render by clearing and repopulating the ComboBox — while the user
+        // was reaching for it to select Default.
         //
-        // Nothing the picker DISPLAYS changed, so the collection must be left
-        // alone and the control keeps the item its selection already points at.
+        // The picker shows only identity and label, and a save changes neither,
+        // so the collection must be left alone and the control keeps the item
+        // its selection already points at. Rebuilding is decided from what is
+        // DISPLAYED, which is what makes that true.
         var before = Standard();
-        var afterSave = Library(
-            Row(KbmProfileIds.Default, "Default", builtin: true),
-            Row(Work, "Work", revision: 2, fingerprint: 999),
-            Row(Halo, "Halo"));
+        var afterSave = Standard();  // same ids and labels, new instances
 
         var plan = KbmProfileSelection.Plan(before, afterSave, Work);
 
@@ -73,16 +71,16 @@ public sealed class KbmProfileSelectionTests
     {
         // select custom -> edit -> Save -> select Default.
         var rows = Standard();
-        var rendered = (IReadOnlyList<KbmProfileInfo>)[];
+        var rendered = (IReadOnlyList<KbmSelectableProfile>)[];
 
         // First render: the picker is empty, so it genuinely must be built.
-        var open = KbmProfileSelection.Plan(rendered, rows, KbmProfileIds.Default);
+        var open = KbmProfileSelection.Plan(rendered, rows, Builtin);
         Assert.True(open.Rebuild);
         rendered = open.Rows;
 
         // Select the custom profile.
         Assert.Equal(KbmSelectionAction.Open,
-                     KbmProfileSelection.Decide(Work, KbmProfileIds.Default,
+                     KbmProfileSelection.Decide(Work, Builtin,
                                                 draftDirty: false, suppressed: false));
 
         // Edit it: renders happen, nothing displayed changes.
@@ -90,20 +88,21 @@ public sealed class KbmProfileSelectionTests
         Assert.False(editing.Rebuild);
         Assert.Equal(Work, editing.SelectedId);
 
-        // Save: revision moves, and the render that follows must not rebuild.
-        var saved = Library(rows[0], Row(Work, "Work", revision: 7, fingerprint: 42), rows[2]);
+        // Save: content moves, the label does not, and the render that follows
+        // must not rebuild.
+        var saved = Standard();
         var afterSave = KbmProfileSelection.Plan(rendered, saved, Work);
         Assert.False(afterSave.Rebuild);
         rendered = afterSave.Rows;
 
         // Select Default. The draft is clean after a save, so this opens directly.
         Assert.Equal(KbmSelectionAction.Open,
-                     KbmProfileSelection.Decide(KbmProfileIds.Default, Work,
+                     KbmProfileSelection.Decide(Builtin, Work,
                                                 draftDirty: false, suppressed: false));
 
-        var back = KbmProfileSelection.Plan(rendered, saved, KbmProfileIds.Default);
+        var back = KbmProfileSelection.Plan(rendered, saved, Builtin);
         Assert.False(back.Rebuild);
-        Assert.Equal(KbmProfileIds.Default, back.SelectedId);
+        Assert.Equal(Builtin, back.SelectedId);
         Assert.Equal(0, back.SelectedIndex);
     }
 
@@ -113,19 +112,19 @@ public sealed class KbmProfileSelectionTests
         // The same loop several times, which is how the user reported hitting it
         // ("sometimes"). No iteration may require a rebuild once the rows exist.
         var rows = Standard();
-        var rendered = KbmProfileSelection.Plan([], rows, KbmProfileIds.Default).Rows;
+        var rendered = KbmProfileSelection.Plan([], rows, Builtin).Rows;
 
         for (var i = 0; i < 5; i++)
         {
-            var revised = Library(rows[0], Row(Work, "Work", revision: i + 2), rows[2]);
+            var revised = Standard();  // a save each time; labels unchanged
 
             var custom = KbmProfileSelection.Plan(rendered, revised, Work);
             Assert.False(custom.Rebuild);
             Assert.Equal(Work, custom.SelectedId);
 
-            var def = KbmProfileSelection.Plan(rendered, revised, KbmProfileIds.Default);
+            var def = KbmProfileSelection.Plan(rendered, revised, Builtin);
             Assert.False(def.Rebuild);
-            Assert.Equal(KbmProfileIds.Default, def.SelectedId);
+            Assert.Equal(Builtin, def.SelectedId);
         }
     }
 
@@ -157,7 +156,7 @@ public sealed class KbmProfileSelectionTests
         var plan = KbmProfileSelection.Plan(rows, afterDelete, Work);
 
         Assert.True(plan.Rebuild);
-        Assert.Equal(KbmProfileIds.Default, plan.SelectedId);
+        Assert.Equal(Builtin, plan.SelectedId);
         Assert.Equal(0, plan.SelectedIndex);
     }
 
@@ -165,12 +164,12 @@ public sealed class KbmProfileSelectionTests
     public void AProfileAddedByCreateOrDuplicateRebuildsAndCanBeSelected()
     {
         var rows = Standard();
-        var added = Library(rows[0], rows[1], rows[2], Row(9, "Zelda"));
+        var added = Library(rows[0], rows[1], rows[2], Row("zelda-guid", "Zelda"));
 
-        var plan = KbmProfileSelection.Plan(rows, added, 9);
+        var plan = KbmProfileSelection.Plan(rows, added, "zelda-guid");
 
         Assert.True(plan.Rebuild);
-        Assert.Equal(9, plan.SelectedId);
+        Assert.Equal("zelda-guid", plan.SelectedId);
         Assert.Equal(3, plan.SelectedIndex);
     }
 
@@ -195,7 +194,7 @@ public sealed class KbmProfileSelectionTests
         var plan = KbmProfileSelection.Plan(Standard(), [], Work);
 
         Assert.True(plan.Rebuild);
-        Assert.Equal(KbmProfileIds.None, plan.SelectedId);
+        Assert.Equal(string.Empty, plan.SelectedId);
         Assert.Equal(-1, plan.SelectedIndex);
     }
 
@@ -223,10 +222,21 @@ public sealed class KbmProfileSelectionTests
     [Fact]
     public void AnEmptySelectionIsNotATransition()
     {
-        // Clearing the items drives SelectedIndex to -1 and raises the event.
+        // Clearing the items drives SelectedIndex to -1 and raises the event with
+        // no item at all.
         Assert.Equal(KbmSelectionAction.Ignore,
-                     KbmProfileSelection.Decide(KbmProfileIds.None, Work,
+                     KbmProfileSelection.Decide(null, Work,
                                                 draftDirty: false, suppressed: false));
+    }
+
+    [Fact]
+    public void SelectingTheBuiltinTemplateIsARealTransition()
+    {
+        // Default is the empty id, which must not be confused with "no selection".
+        // Conflating them would make the built-in template unselectable.
+        Assert.Equal(KbmSelectionAction.Open,
+                     KbmProfileSelection.Decide(Builtin, Work, draftDirty: false,
+                                                suppressed: false));
     }
 
     [Fact]

@@ -1553,6 +1553,32 @@ static void cmd_kbm(char *arg) {
         return;
     }
 
+    // REMOVE FROM ADAPTER, addressed by the position the user chose. The local
+    // library copy is untouched -- these are two separate stores, and deleting
+    // one must never delete the other.
+    if (strncmp(arg, "remove ", 7) == 0) {
+        char name[8] = {0};
+        char target[12] = {0};
+        ns2_kbm_layout_t layout;
+        uint8_t position = 0;
+        if (sscanf(arg + 7, "%7s %11s", name, target) != 2 ||
+            !kbm_layout_arg(name, &layout) ||
+            !kbm_position_arg(target, &position) ||
+            position == NS2_KBM_POSITION_DEFAULT) {
+            reply("{\"error\":\"usage: kbm remove <kb|kbm> <1-3>\"}");
+            return;
+        }
+        if (!ns2_kbm_runtime_position_clear(layout, position)) {
+            reply("{\"error\":\"position out of range\"}");
+            return;
+        }
+        config_request_save();
+        // Report the realized state: removing what a layout was running falls it
+        // back to Default, and a client must not keep showing the old mapping.
+        cmd_kbm_active();
+        return;
+    }
+
     if (strcmp(arg, "switches") == 0) {
         ns2_kbm_config_t snapshot;
         ns2_kbm_runtime_config_snapshot(&snapshot);

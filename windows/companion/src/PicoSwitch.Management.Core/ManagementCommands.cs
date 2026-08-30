@@ -226,6 +226,23 @@ public static partial class ManagementCommands
         return $"kbm draft begin {layout.Wire()} pos:{position} {baseRevision} {name}";
     }
 
+    /// <summary>
+    /// Empty one bank position on the adapter.
+    /// </summary>
+    /// <remarks>
+    /// Addressed by POSITION because that is what the user chose. The local
+    /// library copy is a separate store and is untouched.
+    /// </remarks>
+    public static string KbmRemove(KbmLayout layout, int position)
+    {
+        if (position is < 1 or > KbmLimits.PositionsPerLayout)
+        {
+            throw new ArgumentOutOfRangeException(nameof(position));
+        }
+
+        return $"kbm remove {layout.Wire()} {position.ToString(CultureInfo.InvariantCulture)}";
+    }
+
     /// <summary>The persisted boot position for one layout.</summary>
     public static string KbmBoot(KbmLayout layout, int position) =>
         position == KbmPositions.Default

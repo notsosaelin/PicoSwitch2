@@ -85,6 +85,10 @@ bool ns2_kbm_runtime_profile_delete(uint8_t profile_id);
 bool ns2_kbm_runtime_set_boot_position(ns2_kbm_layout_t layout,
                                        uint8_t position, bool *changed);
 
+// Empty one bank position. Any runtime or boot reference to it falls back to
+// Default, so removal can never leave a dangling selection.
+bool ns2_kbm_runtime_position_clear(ns2_kbm_layout_t layout, uint8_t position);
+
 // Assign or clear one profile-switch key. NS2_KBM_SWITCH_NONE clears. The
 // binding is layout-independent: it names an ACTION, resolved through whichever
 // layout is derived when the key is pressed.

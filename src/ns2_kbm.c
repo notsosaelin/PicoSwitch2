@@ -665,6 +665,7 @@ bool ns2_kbm_profile_delete(ns2_kbm_config_t *config, uint8_t profile_id) {
     ns2_kbm_profile_slot_t *slot = profile_slot(config, profile_id);
     if (!slot) return false;
     ns2_kbm_layout_t layout = (ns2_kbm_layout_t)slot->layout;
+    uint8_t position = slot->position;
     memset(slot, 0, sizeof(*slot));
 
     // A realized snapshot must never name storage that is gone. The mapping the
@@ -677,7 +678,27 @@ bool ns2_kbm_profile_delete(ns2_kbm_config_t *config, uint8_t profile_id) {
         config->active[layout].source_revision = 0u;
         ns2_kbm_template_default(layout, &config->active[layout].content);
     }
+
+    // The BOOT choice must not be left pointing at a position that is now empty
+    // either. Power-up already falls back to Default when it finds nothing, but
+    // leaving the dangling value stored would show the user a startup profile
+    // that does not exist and would silently re-adopt whatever is assigned there
+    // next.
+    if (layout < NS2_KBM_LAYOUT_COUNT && position >= 1u &&
+        config->boot_position[layout] == position) {
+        config->boot_position[layout] = (uint8_t)NS2_KBM_POSITION_DEFAULT;
+    }
     return true;
+}
+
+bool ns2_kbm_position_clear(ns2_kbm_config_t *config, ns2_kbm_layout_t layout,
+                            uint8_t position) {
+    const ns2_kbm_profile_slot_t *slot = ns2_kbm_profile_at(config, layout,
+                                                            position);
+    // Already empty is SUCCESS, not an error: the caller asked for a position to
+    // hold nothing, and it holds nothing.
+    if (!slot) return position >= 1u && position <= NS2_KBM_POSITIONS_PER_LAYOUT;
+    return ns2_kbm_profile_delete(config, slot->profile_id);
 }
 
 // ---------------------------------------------------------------------------

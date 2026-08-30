@@ -226,6 +226,27 @@ public sealed class KbmBankViewTests : IDisposable
     }
 
     [Fact]
+    public void OneResidentCopyIsClaimedByAtMostOneLibraryRow()
+    {
+        // Two local profiles can hold IDENTICAL content -- two untouched copies
+        // of Default do -- and a single resident copy must not make both of them
+        // read as "on adapter". Claiming consumes, and the strongest evidence
+        // wins: name and content together beat content alone.
+        var library = Library();
+        var halo = library.Create(KbmLayout.Keyboard, "Halo");
+        var zelda = library.Create(KbmLayout.Keyboard, "Zelda");
+        Assert.Equal(halo.Fingerprint, zelda.Fingerprint);  // same content
+
+        var state = State([Resident(2, 1, "Zelda", zelda.Fingerprint)]);
+        var rows = KbmBankView.Library(library.Value, state, KbmLayout.Keyboard);
+
+        Assert.Equal(KbmLocalState.OnAdapter,
+                     rows.Single(row => row.Profile.Id == zelda.Id).State);
+        Assert.Equal(KbmLocalState.LocalOnly,
+                     rows.Single(row => row.Profile.Id == halo.Id).State);
+    }
+
+    [Fact]
     public void TheLibraryIsFilteredToTheLayoutBeingEdited()
     {
         // A profile belongs to one layout: its canonical defaults and its source

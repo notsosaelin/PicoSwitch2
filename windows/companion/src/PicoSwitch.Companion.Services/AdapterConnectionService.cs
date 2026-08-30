@@ -616,6 +616,23 @@ public sealed class AdapterConnectionService
             return state;
         });
 
+    /// <summary>
+    /// Remove a profile from a bank position. The local library keeps its copy.
+    /// </summary>
+    public Task<KeyboardMouseState> RemoveKbmPositionAsync(
+        KbmLayout layout, int position) =>
+        RunKbmAsync(async () =>
+        {
+            var state = await repository
+                .RemoveKbmPositionAsync(layout, position)
+                .ConfigureAwait(false);
+            diagnostics.Warn(
+                "kbm",
+                $"removed {layout.Wire()} {KbmPositions.Label(position)} from the " +
+                "adapter; the local library is unchanged");
+            return state;
+        });
+
     /// <summary>Assign or clear one profile-switch key.</summary>
     public Task<KeyboardMouseState> BindKbmSwitchAsync(
         KbmSource source, int? position) =>
