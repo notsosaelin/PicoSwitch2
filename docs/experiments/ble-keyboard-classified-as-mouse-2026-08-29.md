@@ -453,3 +453,81 @@ makes most likely. Three bounded counters at branches 1, 2 and 4 would separate
 it; an arrival counter at the driver would separate "reached admission" from
 "never arrived". That instrumentation has deliberately **not** been added yet, to
 avoid a flash that the existing counters may make unnecessary.
+
+## The admission path is not the defect (2026-08-29, source-executed)
+
+The working hypothesis at the end of the counter-visibility pass was that a live
+peer could hold the keyboard role while the report path still saw its
+classification as pending — branch 2, the BLE-only silent exit.
+
+**That hypothesis is disproven.** `ns2_kbm_runtime.c` turns out to be host-
+compilable with four small stubs (the bthid device table, the source arbiter, the
+report seam and the clock), so `tools/test_kbm_runtime_lifecycle.c` now drives
+the real `admit_and_route()` through the production entry points and asserts on
+`ns2_kbm_runtime_status()` — the same view `kbm status` returns.
+
+Every ordering was executed, and **all of them accept the report**:
+
+| ordering | result |
+|---|---|
+| AUTO override, BLE keyboard declaring a pointer | accepted, published |
+| `hid_ready` before the descriptor (peer starts on the gamepad driver) | accepted |
+| report before any classification | silently dropped, then accepted the moment the descriptor lands |
+| reconnect, same index, new generation | accepted |
+| stale-generation disconnect after reconnect | accepted, role kept |
+| reconnect with no disconnect delivered | refused as `rejectedDuplicate` — counted, not silent |
+| mode change while connected | accepted |
+| keyboard + separate mouse | both admitted, one group |
+
+And end to end: binding `key:05 → B`, pressing it, and reading the published
+`switch_pro_input_t` gives `buttons[0] == 0x04`. A release clears it.
+
+**Why the contradiction is not reachable:** the role can only be granted from a
+classification, and both records are keyed on the same
+`(conn_index, connection_generation)` pair and die together. A *stale role* is
+already loud — `peer_equal()` compares generation first, so it surfaces as
+`rejectedDuplicate`. There is no path that leaves a valid role pointing at an
+unclassified peer.
+
+So the drop is **upstream of the runtime**, in the one region that differs
+between the working ROG Falchion and the failing 8BitDo: the descriptor parse.
+
+### A real parser defect, found in that region
+
+`bthid_keyboard_parse_descriptor()` defined `HID_TAG_PUSH` and `HID_TAG_POP` and
+then ignored them — `default: break; // PUSH/POP and ranges are not needed here`.
+The project's own USB descriptor parser (`hid_parser.c`) has always implemented
+them, so the two parsers in this repository disagreed about the HID spec.
+
+Push saves the Global item state; Pop restores it. A keyboard that brackets its
+LED **output** block that way — a common shape — expects Pop to put back
+`Usage Page (Keyboard)` and the Report Size/Count its key array is declared
+under. Ignoring Pop reads that array under `Usage Page (LEDs)` with the LED
+block's field sizes, so:
+
+- the key array is **not recognised as a keyboard field at all**;
+- every bit offset after the Push is wrong.
+
+The device still parses as a keyboard on its modifier byte alone. It classifies,
+admits, takes the keyboard role, shows `keyboard=true` — and types nothing.
+`tools/test_bthid_keyboard_report.c::test_push_pop_restores_global_state` fails
+before the fix (`map.array_count == 0`) and passes after it.
+
+**Confidence: this is a genuine, generic defect with exactly the observed failure
+signature. Whether it is the 8BitDo's defect is a HYPOTHESIS** — the device's
+report descriptor has never been captured, so it is unknown whether it uses
+Push/Pop. What is confirmed is that the repository contained a decode bug that
+produces this symptom, and that it is now fixed and pinned.
+
+### The fourth silent exit
+
+`keyboard_process_report()` discarded any report that decoded as neither a
+keyboard nor a pointer report, incrementing nothing. That is precisely what a
+mis-parsed descriptor produces, and it was invisible from every diagnostic the
+adapter has. It is now counted as `undecodedReports`, alongside bounded counters
+for the three admission exits: `rejectedNoPeerKey`, `rejectedUnclassified`,
+`rejectedNoRole`. All four are in `kbm status` and shown by the Windows
+companion; Android tolerates them unchanged (it reads named keys only).
+
+Had `undecodedReports` existed at the start of this investigation, it would have
+pointed at the descriptor parse immediately instead of at the transport.

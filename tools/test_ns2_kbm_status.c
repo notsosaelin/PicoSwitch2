@@ -38,6 +38,10 @@ static void test_exact_output(void) {
     status.rejected_mode = 1u;
     status.rejected_duplicate = 1547u;
     status.rejected_not_owner = 2u;
+    status.rejected_no_peer_key = 21u;
+    status.rejected_unclassified = 22u;
+    status.rejected_no_role = 23u;
+    status.undecoded_reports = 24u;
     status.rollover_reports = 3u;
     status.role_losses = 4u;
     status.config_generation = 5u;
@@ -65,6 +69,10 @@ static void test_exact_output(void) {
         "\"rejectedMode\":1,"
         "\"rejectedDuplicate\":1547,"
         "\"rejectedNotOwner\":2,"
+        "\"rejectedNoPeerKey\":21,"
+        "\"rejectedUnclassified\":22,"
+        "\"rejectedNoRole\":23,"
+        "\"undecodedReports\":24,"
         "\"rollover\":3,"
         "\"roleLosses\":4,"
         "\"mapGeneration\":5,"
@@ -100,6 +108,10 @@ static void test_every_field_is_distinct(void) {
     status.rejected_mode = 17u;
     status.rejected_duplicate = 18u;
     status.rejected_not_owner = 19u;
+    status.rejected_no_peer_key = 26u;
+    status.rejected_unclassified = 27u;
+    status.rejected_no_role = 28u;
+    status.undecoded_reports = 29u;
     status.rollover_reports = 20u;
     status.role_losses = 21u;
     status.config_generation = 22u;
@@ -120,6 +132,8 @@ static void test_every_field_is_distinct(void) {
         "\"rollover\":20",         "\"roleLosses\":21",
         "\"mapGeneration\":22",    "\"neutralizations\":23",
         "\"publishes\":24",        "\"recenters\":25",
+        "\"rejectedNoPeerKey\":26", "\"rejectedUnclassified\":27",
+        "\"rejectedNoRole\":28",    "\"undecodedReports\":29",
     };
     for (unsigned i = 0; i < sizeof(pairs) / sizeof(pairs[0]); ++i) {
         if (!strstr(out, pairs[i])) {

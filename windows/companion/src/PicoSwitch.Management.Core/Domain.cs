@@ -712,6 +712,17 @@ public sealed record KbmStatus(
     long RejectedMode = 0,
     long RejectedDuplicate = 0,
     long RejectedNotOwner = 0,
+
+    // Admission outcomes that used to increment nothing at all. A report dropped
+    // by one of these left every visible counter unchanged, so a keyboard
+    // producing no console input looked identical to a keyboard sending nothing.
+    long RejectedNoPeerKey = 0,
+    long RejectedUnclassified = 0,
+    long RejectedNoRole = 0,
+
+    // Reports that reached the keyboard driver and decoded as neither a keyboard
+    // nor a pointer report -- what a mis-parsed report descriptor looks like.
+    long UndecodedReports = 0,
     long Rollover = 0,
     long RoleLosses = 0,
     long MapGeneration = 0,

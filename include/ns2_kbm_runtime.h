@@ -112,6 +112,10 @@ bool ns2_kbm_runtime_submit_mouse(const input_event_t *event);
 // key set and the previous held state was retained.
 void ns2_kbm_runtime_note_rollover(void);
 
+// A report reached the keyboard driver and decoded as neither a keyboard nor a
+// pointer report -- what a mis-parsed report descriptor looks like downstream.
+void ns2_kbm_runtime_note_undecoded(void);
+
 // Peer teardown. Returns true when a KB/M role was released.
 bool ns2_kbm_runtime_disconnect(uint8_t conn_index, int8_t instance,
                                 uint32_t connection_generation);
@@ -138,6 +142,11 @@ typedef struct {
     uint32_t rejected_mode;
     uint32_t rejected_duplicate;
     uint32_t rejected_not_owner;
+    // Outcomes that used to be silent; see ns2_kbm_runtime.c.
+    uint32_t rejected_no_peer_key;
+    uint32_t rejected_unclassified;
+    uint32_t rejected_no_role;
+    uint32_t undecoded_reports;
     uint32_t rollover_reports;
     uint32_t role_losses;
     uint32_t config_generation;
