@@ -612,6 +612,107 @@ static void emit_corpus(FILE *corpus) {
     if (len > 0) corpus_emit(corpus, "switches", "kbm switches", len, reply);
 }
 
+// ---------------------------------------------------------------------------
+// Fingerprint parity vectors
+// ---------------------------------------------------------------------------
+// The fingerprint is what answers "is the adapter's copy of this profile still
+// the one I have?" ACROSS PLATFORMS -- Windows and Android keep separate local
+// libraries with separate ids, so content is the only thing they can compare.
+//
+// Three implementations therefore have to agree byte for byte. These vectors are
+// produced by the firmware's own function, so the clients can be tested against
+// the authority rather than against each other.
+static void emit_one_vector(FILE *out, const char *label,
+                            ns2_kbm_layout_t layout,
+                            const ns2_kbm_content_t *content, bool first) {
+    ns2_kbm_content_t canonical = *content;
+    ns2_kbm_content_canonicalize(&canonical, layout);
+
+    fprintf(out, "%s    {\"label\":\"%s\",\"layout\":\"%s\",\"overrides\":[",
+            first ? "" : ",\n", label, ns2_kbm_layout_name(layout));
+    for (uint8_t i = 0; i < canonical.overrides.count; ++i) {
+        const ns2_kbm_override_t *e = &canonical.overrides.entries[i];
+        char source[12];
+        ns2_kbm_source_format(e->source, source, sizeof(source));
+        fprintf(out, "%s{\"src\":\"%s\",\"dst\":\"%s\"}", i ? "," : "", source,
+                ns2_kbm_destination_name(e->destination));
+    }
+    fprintf(out,
+            "],\"mouse\":{\"sensitivityX\":%u,\"sensitivityY\":%u,"
+            "\"velocityWindowMs\":%u,\"invertX\":%s,\"invertY\":%s,"
+            "\"antiDeadzone\":%u},\"fingerprint\":%lu}",
+            (unsigned)canonical.mouse.sensitivity_x,
+            (unsigned)canonical.mouse.sensitivity_y,
+            (unsigned)canonical.mouse.recenter_ms,
+            canonical.mouse.invert_x ? "true" : "false",
+            canonical.mouse.invert_y ? "true" : "false",
+            (unsigned)canonical.mouse.anti_deadzone,
+            (unsigned long)ns2_kbm_content_fingerprint(&canonical, layout));
+}
+
+static void emit_fingerprint_vectors(FILE *out) {
+    fprintf(out, "  \"fingerprints\": [\n");
+
+    ns2_kbm_content_t content;
+
+    // An untouched Default: the baseline every client must reproduce.
+    ns2_kbm_template_default(NS2_KBM_LAYOUT_KEYBOARD, &content);
+    emit_one_vector(out, "kb-default", NS2_KBM_LAYOUT_KEYBOARD, &content, true);
+
+    ns2_kbm_template_default(NS2_KBM_LAYOUT_KEYBOARD_MOUSE, &content);
+    emit_one_vector(out, "kbm-default", NS2_KBM_LAYOUT_KEYBOARD_MOUSE, &content,
+                    false);
+
+    // One rebind. Proves the override contributes.
+    ns2_kbm_template_default(NS2_KBM_LAYOUT_KEYBOARD, &content);
+    {
+        ns2_kbm_source_t source = {NS2_KBM_SRC_KEY, 0x04u};
+        (void)ns2_kbm_set_binding(&content, NS2_KBM_LAYOUT_KEYBOARD, source,
+                                  NS2_DST_ZR);
+    }
+    emit_one_vector(out, "kb-one-rebind", NS2_KBM_LAYOUT_KEYBOARD, &content,
+                    false);
+
+    // Several rebinds inserted OUT OF ORDER, so a client that fails to sort
+    // canonically produces a different digest and this catches it.
+    ns2_kbm_template_default(NS2_KBM_LAYOUT_KEYBOARD, &content);
+    {
+        const uint8_t codes[] = {0x20u, 0x05u, 0x1Au, 0x0Cu};
+        const uint8_t dsts[] = {NS2_DST_A, NS2_DST_B, NS2_DST_X, NS2_DST_Y};
+        for (unsigned i = 0; i < 4; ++i) {
+            ns2_kbm_source_t source = {NS2_KBM_SRC_KEY, codes[i]};
+            (void)ns2_kbm_set_binding(&content, NS2_KBM_LAYOUT_KEYBOARD, source,
+                                      dsts[i]);
+        }
+    }
+    emit_one_vector(out, "kb-unsorted-rebinds", NS2_KBM_LAYOUT_KEYBOARD,
+                    &content, false);
+
+    // Mouse settings only. Profile-owned tuning must move the fingerprint
+    // exactly as a rebind does, or "the adapter's copy is out of date" would
+    // miss a sensitivity change.
+    ns2_kbm_template_default(NS2_KBM_LAYOUT_KEYBOARD_MOUSE, &content);
+    content.mouse.sensitivity_x = 1234u;
+    content.mouse.sensitivity_y = 777u;
+    content.mouse.recenter_ms = 42u;
+    content.mouse.invert_y = 1u;
+    content.mouse.anti_deadzone = 17u;
+    emit_one_vector(out, "kbm-mouse-only", NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
+                    &content, false);
+
+    // A binding explicitly cleared to NONE, which is stored rather than dropped.
+    ns2_kbm_template_default(NS2_KBM_LAYOUT_KEYBOARD, &content);
+    {
+        ns2_kbm_source_t source = {NS2_KBM_SRC_KEY, 0x1Au};
+        (void)ns2_kbm_set_binding(&content, NS2_KBM_LAYOUT_KEYBOARD, source,
+                                  NS2_DST_NONE);
+    }
+    emit_one_vector(out, "kb-cleared-binding", NS2_KBM_LAYOUT_KEYBOARD, &content,
+                    false);
+
+    fprintf(out, "\n  ]");
+}
+
 int main(void) {
     printf("== ns2_kbm_commands ==\n");
 
@@ -648,7 +749,9 @@ int main(void) {
     emit_corpus(corpus);
 
     if (corpus) {
-        fprintf(corpus, "\n  ]\n}\n");
+        fprintf(corpus, "\n  ],\n");
+        emit_fingerprint_vectors(corpus);
+        fprintf(corpus, "\n}\n");
         fclose(corpus);
     }
 
