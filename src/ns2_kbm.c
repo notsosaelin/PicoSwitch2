@@ -556,9 +556,10 @@ bool ns2_kbm_profile_name_taken(const ns2_kbm_config_t *config,
     return false;
 }
 
-uint8_t ns2_kbm_profile_create(ns2_kbm_config_t *config,
-                               ns2_kbm_layout_t layout, const char *name,
-                               const ns2_kbm_content_t *content) {
+uint8_t ns2_kbm_profile_create_at(ns2_kbm_config_t *config,
+                                  ns2_kbm_layout_t layout, uint8_t requested,
+                                  const char *name,
+                                  const ns2_kbm_content_t *content) {
     if (!config || layout >= NS2_KBM_LAYOUT_COUNT)
         return (uint8_t)NS2_KBM_PROFILE_ID_NONE;
 
@@ -574,7 +575,15 @@ uint8_t ns2_kbm_profile_create(ns2_kbm_config_t *config,
     // records is exactly three positions in each of two layouts, so a layout
     // whose three positions are taken is full even while records remain -- and
     // reporting that as "storage full" would be a lie the user cannot act on.
-    uint8_t position = ns2_kbm_free_position(config, layout);
+    uint8_t position = requested;
+    if (position == 0u) {
+        position = ns2_kbm_free_position(config, layout);
+    } else if (position > NS2_KBM_POSITIONS_PER_LAYOUT ||
+               ns2_kbm_profile_at(config, layout, position)) {
+        // An explicitly requested position must be in range and free. Silently
+        // landing somewhere else would break "Assign to Profile 2".
+        return (uint8_t)NS2_KBM_PROFILE_ID_NONE;
+    }
     if (position == 0u) return (uint8_t)NS2_KBM_PROFILE_ID_NONE;
 
     for (uint8_t i = 0; i < NS2_KBM_MAX_PROFILES; ++i) {
@@ -597,6 +606,14 @@ uint8_t ns2_kbm_profile_create(ns2_kbm_config_t *config,
         return id;
     }
     return (uint8_t)NS2_KBM_PROFILE_ID_NONE;
+}
+
+uint8_t ns2_kbm_profile_create(ns2_kbm_config_t *config,
+                               ns2_kbm_layout_t layout, const char *name,
+                               const ns2_kbm_content_t *content) {
+    // Position 0 means "the lowest free one", which is what an ordinary New
+    // wants; an explicit assignment names its position instead.
+    return ns2_kbm_profile_create_at(config, layout, 0u, name, content);
 }
 
 uint16_t ns2_kbm_profile_save(ns2_kbm_config_t *config, uint8_t profile_id,

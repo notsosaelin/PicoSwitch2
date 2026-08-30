@@ -229,11 +229,13 @@ public sealed partial class KeyboardMousePage : Page
             }
         }
 
-        // Save and Apply are separate actions with separate enablement, which is
-        // the whole contract this page exists to express.
+        // These are LOCAL commands only. Activation moved to the bank card,
+        // where the row shows which position it acts on -- an "apply" button
+        // beside Save invited exactly the confusion the two-layer model removes.
         SaveButton.IsEnabled = view.CanSave;
         DiscardButton.IsEnabled = view.Dirty;
-        ApplyButton.IsEnabled = view.CanApply;
+        DuplicateButton.IsEnabled = view.SelectedProfile is not null &&
+                                    view.DraftState != KbmDraftState.Disconnected;
         RenameButton.IsEnabled = view.CanRename;
         DeleteButton.IsEnabled = view.CanDelete;
         NewButton.IsEnabled = view.ProfilesSupported &&
@@ -350,19 +352,6 @@ public sealed partial class KeyboardMousePage : Page
         Render();
     }
 
-    private async void OnApplyProfile(object sender, RoutedEventArgs e) =>
-        await GuardAsync(async () =>
-        {
-            if (draft is null)
-            {
-                return;
-            }
-
-            await SafeAsync(() =>
-                adapters.ApplyKeyboardMouseProfileAsync(draft.Layout, draft.ProfileId));
-            Render();
-        });
-
     private async void OnNewProfile(object sender, RoutedEventArgs e) =>
         await GuardAsync(async () =>
     {
@@ -472,6 +461,148 @@ public sealed partial class KeyboardMousePage : Page
 
         Render();
     });
+
+    private async void OnDuplicateProfile(object sender, RoutedEventArgs e) =>
+        await GuardAsync(async () =>
+        {
+            if (draft is null)
+            {
+                return;
+            }
+
+            var name = await PromptAsync("Duplicate profile", "Profile name",
+                                         SuggestName($"{draft.Name} copy"));
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return;
+            }
+
+            // LOCAL. A duplicate is a new library profile and touches no adapter
+            // state at all, which is why it does not go through the repository's
+            // management path.
+            await SafeAsync(() => adapters.DuplicateKeyboardMouseProfileAsync(
+                draft.ProfileId, name!));
+            Render();
+        });
+
+    /// <summary>
+    /// ASSIGN the open profile into one of this layout's bank positions.
+    /// </summary>
+    /// <remarks>
+    /// The only path from the library to the adapter, and the only place on this
+    /// page that costs a flash write. Explicit for that reason: a user who edits
+    /// and saves has changed their library, not the adapter, and the two must
+    /// stay separate acts.
+    ///
+    /// Deliberately does NOT activate. If the chosen position is currently
+    /// running, the console keeps its realized snapshot until the user activates,
+    /// so an assignment cannot change gameplay mid-session.
+    /// </remarks>
+    private async void OnAssignToAdapter(object sender, RoutedEventArgs e) =>
+        await GuardAsync(async () =>
+        {
+            if (draft is null || view is null)
+            {
+                return;
+            }
+
+            var state = adapters.KeyboardMouse.Value;
+            var bank = KbmBankView.Bank(state, profile)
+                .Where(slot => slot.Position != KbmPositions.Default)
+                .ToList();
+
+            var list = new ListView
+            {
+                SelectionMode = ListViewSelectionMode.Single,
+                ItemsSource = bank
+                    .Select(slot => slot.Empty
+                        ? $"{slot.PositionLabel} — Empty"
+                        : $"{slot.PositionLabel} — {slot.ResidentLabel} (replace)")
+                    .ToArray(),
+            };
+            // Preselect a free position: filling an empty slot is the common
+            // case, and replacing one should be a deliberate choice.
+            list.SelectedIndex = bank.FindIndex(slot => slot.Empty);
+            if (list.SelectedIndex < 0)
+            {
+                list.SelectedIndex = 0;
+            }
+
+            var dialog = new ContentDialog
+            {
+                Title = $"Assign '{draft.Name}' to",
+                Content = list,
+                PrimaryButtonText = "Assign",
+                CloseButtonText = "Cancel",
+                DefaultButton = ContentDialogButton.Primary,
+            };
+
+            if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary ||
+                list.SelectedIndex < 0)
+            {
+                return;
+            }
+
+            var chosen = bank[list.SelectedIndex];
+            var local = new KbmLocalProfile
+            {
+                Id = string.Empty,
+                Layout = profile,
+                Name = draft.Name,
+                Bindings = draft.Bindings,
+                Mouse = draft.Mouse,
+            };
+
+            await SafeAsync(() => adapters.AssignKbmPositionAsync(
+                profile, chosen.Position, local));
+            Report(
+                $"'{draft.Name}' is now {chosen.PositionLabel} on the adapter. " +
+                "Activate it to use it now.",
+                InfoBarSeverity.Success);
+            Render();
+        });
+
+    /// <summary>
+    /// Bind a physical key to one semantic switch action.
+    /// </summary>
+    /// <remarks>
+    /// Any keyboard usage the model accepts. Function keys are offered first
+    /// because they are the obvious choice, but nothing is reserved: the list is
+    /// the same drawn keyboard the mapping grid uses.
+    /// </remarks>
+    private async Task ChooseSwitchKeyAsync(int position)
+    {
+        var caps = KeyboardLayout.AllKeys
+            .Concat(KeyboardLayout.Other.Keys)
+            .OrderBy(cap => cap.Usage is >= 0x3A and <= 0x45 ? 0 : 1)
+            .ThenBy(cap => cap.Usage)
+            .ToList();
+
+        var list = new ListView
+        {
+            SelectionMode = ListViewSelectionMode.Single,
+            MaxHeight = 380,
+            ItemsSource = caps.Select(cap => cap.Label).ToArray(),
+        };
+
+        var dialog = new ContentDialog
+        {
+            Title = $"Key for {KbmPositions.Label(position)}",
+            Content = list,
+            PrimaryButtonText = "Assign",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+
+        if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary ||
+            list.SelectedIndex < 0)
+        {
+            return;
+        }
+
+        var source = new KbmSource(KbmSourceKind.Key, caps[list.SelectedIndex].Usage);
+        await SafeAsync(() => adapters.BindKbmSwitchAsync(source, position));
+    }
 
     /// <summary>A name that is not already taken in this layout.</summary>
     private string SuggestName(string basis)
@@ -711,6 +842,7 @@ public sealed partial class KeyboardMousePage : Page
                                   !adapters.KeyboardMouseBusy.Value;
 
         EditorCard.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
+        BankCard.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
         MouseCard.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
         ResetCard.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
 
@@ -778,6 +910,8 @@ public sealed partial class KeyboardMousePage : Page
 
         BuildKeyboard(view, enabled);
         BuildMouseButtons(view, enabled);
+        BuildBank(view, interactive);
+        BuildSwitchKeys(interactive);
         BuildSliders(view, enabled);
         BuildMouseToggles(view, enabled);
 
@@ -960,6 +1094,190 @@ public sealed partial class KeyboardMousePage : Page
         }
 
         return button;
+    }
+
+    /// <summary>
+    /// The adapter's bank: one row per position, empty ones included.
+    /// </summary>
+    /// <remarks>
+    /// Each row carries the operations that act on THAT position, so the user can
+    /// see what an Activate or a Remove is about to affect. The library's Save
+    /// sends nothing; everything on these rows does.
+    /// </remarks>
+    private void BuildBank(KeyboardMouseView current, bool enabled)
+    {
+        BankHost.Children.Clear();
+        var state = adapters.KeyboardMouse.Value;
+        var bank = KbmBankView.Bank(state, profile);
+
+        foreach (var slot in bank)
+        {
+            var row = new Grid { ColumnSpacing = 12, Margin = new Thickness(0, 2, 0, 2) };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var position = new TextBlock
+            {
+                Text = slot.PositionLabel,
+                Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"],
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetColumn(position, 0);
+            row.Children.Add(position);
+
+            var detail = new StackPanel { Spacing = 0, VerticalAlignment = VerticalAlignment.Center };
+            detail.Children.Add(new TextBlock
+            {
+                Text = slot.ResidentLabel,
+                Foreground = slot.Empty
+                    ? (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"]
+                    : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"],
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            });
+
+            // Runtime and boot are separate facts and are labelled separately: a
+            // switch key moves the first and not the second, so after one press
+            // they differ for the rest of the session.
+            var marks = new List<string>();
+            if (slot.IsRuntime)
+            {
+                marks.Add("active now");
+            }
+
+            if (slot.IsBoot)
+            {
+                marks.Add("on startup");
+            }
+
+            if (slot.SwitchKey is { } key)
+            {
+                marks.Add($"key {KeyboardLayout.Describe(key)}");
+            }
+
+            if (marks.Count > 0)
+            {
+                detail.Children.Add(new TextBlock
+                {
+                    Text = string.Join(" · ", marks),
+                    Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
+                    Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+                });
+            }
+
+            Grid.SetColumn(detail, 1);
+            row.Children.Add(detail);
+
+            var activate = new Button
+            {
+                Content = "Activate",
+                MinWidth = 88,
+                Height = 32,
+                // Runtime activation only: zero flash writes. An empty position
+                // has nothing to activate, and the position already running does
+                // not need it.
+                IsEnabled = enabled && !slot.Empty && !slot.IsRuntime,
+                Tag = slot.Position,
+            };
+            activate.Click += async (_, _) => await GuardAsync(() => SafeAsync(
+                () => adapters.ActivateKbmPositionAsync(profile, slot.Position)));
+            Grid.SetColumn(activate, 2);
+            row.Children.Add(activate);
+
+            var boot = new Button
+            {
+                Content = "On startup",
+                MinWidth = 96,
+                Height = 32,
+                // The one profile selection worth a flash write, and the only
+                // reason it is a separate button from Activate.
+                IsEnabled = enabled && !slot.Empty && !slot.IsBoot,
+                Tag = slot.Position,
+            };
+            boot.Click += async (_, _) => await GuardAsync(() => SafeAsync(
+                () => adapters.SetKbmBootPositionAsync(profile, slot.Position)));
+            Grid.SetColumn(boot, 3);
+            row.Children.Add(boot);
+
+            BankHost.Children.Add(row);
+        }
+
+        var used = bank.Count(slot => !slot.Empty && slot.Position != KbmPositions.Default);
+        BankSummary.Text =
+            $"{used} of {KbmLimits.PositionsPerLayout} positions used for " +
+            $"{(profile == KbmLayout.Keyboard ? "keyboard" : "keyboard and mouse")}. " +
+            "These work with no app connected.";
+        AssignButton.IsEnabled = enabled && draft is not null;
+    }
+
+    /// <summary>
+    /// One row per semantic switch action, bound or not.
+    /// </summary>
+    /// <remarks>
+    /// Rendered from the ACTIONS rather than from the adapter's bindings: a list
+    /// built from the bindings would hide the actions the user has not set up
+    /// yet, which are exactly the ones they came here to set up.
+    /// </remarks>
+    private void BuildSwitchKeys(bool enabled)
+    {
+        SwitchHost.Children.Clear();
+        foreach (var (position, key) in
+                 KbmBankView.SwitchActions(adapters.KeyboardMouse.Value))
+        {
+            var row = new Grid { ColumnSpacing = 12 };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var label = new TextBlock
+            {
+                Text = KbmPositions.Label(position),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetColumn(label, 0);
+            row.Children.Add(label);
+
+            var assigned = new TextBlock
+            {
+                Text = key is null ? "Not assigned" : KeyboardLayout.Describe(key),
+                Foreground = key is null
+                    ? (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"]
+                    : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"],
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetColumn(assigned, 1);
+            row.Children.Add(assigned);
+
+            var buttons = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 8,
+            };
+            var choose = new Button
+            {
+                Content = key is null ? "Assign key" : "Change",
+                MinWidth = 96,
+                Height = 32,
+                IsEnabled = enabled,
+            };
+            choose.Click += async (_, _) => await GuardAsync(
+                () => ChooseSwitchKeyAsync(position));
+            buttons.Children.Add(choose);
+
+            if (key is not null)
+            {
+                var clear = new Button { Content = "Clear", MinWidth = 72, Height = 32,
+                                         IsEnabled = enabled };
+                clear.Click += async (_, _) => await GuardAsync(() => SafeAsync(
+                    () => adapters.BindKbmSwitchAsync(key, position: null)));
+                buttons.Children.Add(clear);
+            }
+
+            Grid.SetColumn(buttons, 2);
+            row.Children.Add(buttons);
+            SwitchHost.Children.Add(row);
+        }
     }
 
     /// <summary>

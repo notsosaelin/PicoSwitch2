@@ -34,9 +34,14 @@ public sealed class KeyboardMouseServiceTests
     private const string Profiles =
         """
         {"cursor":0,"total":1,"max":6,"profiles":[
-          {"id":2,"layout":"kb","name":"Splatoon","revision":3,"overrides":3,"fingerprint":111}
+          {"id":2,"position":1,"layout":"kb","name":"Splatoon","revision":3,"overrides":3,"fingerprint":111}
         ],"next":null}
         """;
+
+    // One table for both layouts: a binding names a semantic position and the
+    // adapter resolves it through whichever layout is derived at press time.
+    private const string Switches =
+        """{"switches":[{"src":"key:3B","position":1}],"positions":3}""";
 
     // What each layout is REALLY running. The Keyboard layout is running the
     // built-in Default here, not the Splatoon profile.
@@ -57,6 +62,7 @@ public sealed class KeyboardMouseServiceTests
         fixture.Transport.Replies["kbm counters"] = Counters;
         fixture.Transport.Replies["kbm mouse"] = Mouse;
         fixture.Transport.Replies["kbm profiles 0"] = Profiles;
+        fixture.Transport.Replies["kbm switches"] = Switches;
         fixture.Transport.Replies["kbm active"] = Active;
         fixture.Transport.Replies["kbm map kb 0"] = Page("kb", "key:04", "a");
         fixture.Transport.Replies["kbm map kbm 0"] = Page("kbm", "key:05", "b");
@@ -108,6 +114,8 @@ public sealed class KeyboardMouseServiceTests
         fixture.Transport.Replies["kbm status"] = Status;
         fixture.Transport.Replies["kbm counters"] = Counters;
         fixture.Transport.Replies["kbm mouse"] = Mouse;
+        fixture.Transport.Replies["kbm profiles 0"] = Profiles;
+        fixture.Transport.Replies["kbm switches"] = Switches;
         fixture.Transport.Failures["kbm map kb 0"] = new ManagementException("link dropped");
 
         await Assert.ThrowsAsync<ManagementException>(

@@ -562,6 +562,75 @@ public sealed class AdapterConnectionService
         int id, string name) =>
         RunKbmAsync(() => repository.DuplicateKbmProfileAsync(id, name));
 
+    /// <summary>
+    /// ASSIGN a mapping into one of the adapter's bank positions.
+    /// </summary>
+    /// <remarks>
+    /// The library-to-adapter operation, and the only one on this page that
+    /// costs a flash write. It does not activate: if the position is currently
+    /// running, the console keeps its realized snapshot until the user says
+    /// otherwise, so a stored-copy update cannot change gameplay mid-session.
+    /// </remarks>
+    public Task<KeyboardMouseState> AssignKbmPositionAsync(
+        KbmLayout layout, int position, KbmLocalProfile local) =>
+        RunKbmAsync(async () =>
+        {
+            var state = await repository
+                .AssignKbmPositionAsync(layout, position, local)
+                .ConfigureAwait(false);
+            diagnostics.Info(
+                "kbm",
+                $"assigned '{local.Name}' to {layout.Wire()} " +
+                $"{KbmPositions.Label(position)}");
+            return state;
+        });
+
+    /// <summary>Runtime activation. Zero flash writes.</summary>
+    public Task<KeyboardMouseState> ActivateKbmPositionAsync(
+        KbmLayout layout, int position) =>
+        RunKbmAsync(async () =>
+        {
+            var state = await repository
+                .ActivateKbmPositionAsync(layout, position)
+                .ConfigureAwait(false);
+            diagnostics.Info(
+                "kbm",
+                $"activated {layout.Wire()} {KbmPositions.Label(position)}");
+            return state;
+        });
+
+    /// <summary>
+    /// Persist the position a layout realizes at power-up. One save if changed.
+    /// </summary>
+    public Task<KeyboardMouseState> SetKbmBootPositionAsync(
+        KbmLayout layout, int position) =>
+        RunKbmAsync(async () =>
+        {
+            var state = await repository
+                .SetKbmBootPositionAsync(layout, position)
+                .ConfigureAwait(false);
+            diagnostics.Info(
+                "kbm",
+                $"startup profile for {layout.Wire()} is now " +
+                KbmPositions.Label(position));
+            return state;
+        });
+
+    /// <summary>Assign or clear one profile-switch key.</summary>
+    public Task<KeyboardMouseState> BindKbmSwitchAsync(
+        KbmSource source, int? position) =>
+        RunKbmAsync(async () =>
+        {
+            var state = await repository.BindKbmSwitchAsync(source, position)
+                .ConfigureAwait(false);
+            diagnostics.Info(
+                "kbm",
+                position is null
+                    ? $"cleared switch key {source.Wire}"
+                    : $"switch key {source.Wire} selects {KbmPositions.Label(position.Value)}");
+            return state;
+        });
+
     public Task<KeyboardMouseState> DeleteKeyboardMouseProfileAsync(int id) =>
         RunKbmAsync(async () =>
         {

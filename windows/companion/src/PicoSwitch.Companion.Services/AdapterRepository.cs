@@ -584,12 +584,14 @@ public sealed class AdapterRepository(IManagementTransport transport)
         KbmStatus status;
         KbmMouseConfig mouse;
         KbmProfiles profiles;
+        ValueList<KbmSwitchBinding> switches;
         var mappings = new List<KbmMapping>();
         try
         {
             status = await client.KbmStatusAsync(cancellationToken).ConfigureAwait(false);
             mouse = await client.KbmMouseAsync(cancellationToken).ConfigureAwait(false);
             profiles = await client.KbmProfilesAsync(cancellationToken).ConfigureAwait(false);
+            switches = await client.KbmSwitchesAsync(cancellationToken).ConfigureAwait(false);
             foreach (var profile in KbmLayouts.All)
             {
                 mappings.Add(await client.LoadKbmMappingAsync(profile, cancellationToken)
@@ -633,6 +635,7 @@ public sealed class AdapterRepository(IManagementTransport transport)
             Mouse = mouse,
             Mappings = new ValueList<KbmMapping>(mappings),
             Profiles = profiles,
+            Switches = switches,
             Readiness = KeyboardMouseReadiness.Ready,
             Capability = CapabilityState.Available,
         });
@@ -738,6 +741,102 @@ public sealed class AdapterRepository(IManagementTransport transport)
         // The state is published through keyboardMouse; the draft is what the
         // caller cannot reconstruct, so it is what comes back.
         return draft.Rebased(id, revision, draft.Name);
+    }
+
+    /// <summary>
+    /// ASSIGN a local profile into one of the adapter's bank positions.
+    /// </summary>
+    /// <remarks>
+    /// The one operation that moves content from the library to the adapter, and
+    /// the only place a flash write happens on this path. It deliberately does
+    /// NOT change what the console is running: if the position is currently
+    /// active the realized snapshot is preserved, and the page reports
+    /// "resident updated — activate to use it". Silently mutating gameplay
+    /// because a stored copy was refreshed is the behaviour this avoids.
+    /// </remarks>
+    public async Task<KeyboardMouseState> AssignKbmPositionAsync(
+        KbmLayout layout,
+        int position,
+        KbmLocalProfile profile,
+        CancellationToken cancellationToken = default)
+    {
+        // The revision the occupant currently carries, so a concurrent change on
+        // the adapter is a refusal rather than a silent overwrite.
+        var occupant = keyboardMouse.Value.Profiles.At(layout, position);
+        await client.AssignKbmPositionAsync(
+                layout, position, occupant?.Revision ?? 0, profile.Name,
+                profile.Bindings, profile.Mouse, cancellationToken)
+            .ConfigureAwait(false);
+
+        var profiles = await client.KbmProfilesAsync(cancellationToken)
+            .ConfigureAwait(false);
+        keyboardMouse.Set(keyboardMouse.Value with { Profiles = profiles });
+        return keyboardMouse.Value;
+    }
+
+    /// <summary>
+    /// ACTIVATE a bank position for a layout. Runtime only: zero flash writes.
+    /// </summary>
+    public async Task<KeyboardMouseState> ActivateKbmPositionAsync(
+        KbmLayout layout, int position,
+        CancellationToken cancellationToken = default)
+    {
+        var id = position == KbmPositions.Default
+            ? KbmProfileIds.Default
+            : keyboardMouse.Value.Profiles.At(layout, position)?.Id;
+        if (id is null)
+        {
+            // An empty position is not activatable, and asking the adapter would
+            // only earn a refusal the user cannot act on.
+            return keyboardMouse.Value;
+        }
+
+        return await ApplyKbmProfileAsync(layout, id.Value, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Persist which position a layout realizes at POWER-UP.
+    /// </summary>
+    /// <remarks>
+    /// Separate from activation on purpose. "Use this now" and "use this after a
+    /// reboot" are different intentions, and only the second is worth a flash
+    /// write.
+    /// </remarks>
+    public async Task<KeyboardMouseState> SetKbmBootPositionAsync(
+        KbmLayout layout, int position,
+        CancellationToken cancellationToken = default)
+    {
+        var profiles = await client.SetKbmBootPositionAsync(layout, position,
+                                                            cancellationToken)
+            .ConfigureAwait(false);
+        keyboardMouse.Set(keyboardMouse.Value with { Profiles = profiles });
+        return keyboardMouse.Value;
+    }
+
+    /// <summary>Assign or clear one profile-switch key.</summary>
+    public async Task<KeyboardMouseState> BindKbmSwitchAsync(
+        KbmSource source, int? position,
+        CancellationToken cancellationToken = default)
+    {
+        var switches = await client.BindKbmSwitchAsync(source, position,
+                                                       cancellationToken)
+            .ConfigureAwait(false);
+        keyboardMouse.Set(keyboardMouse.Value with { Switches = switches });
+        return keyboardMouse.Value;
+    }
+
+    /// <summary>
+    /// Read one resident profile's stored content, for copying into the library.
+    /// </summary>
+    public Task<KbmMapping> LoadKbmPositionAsync(
+        KbmLayout layout, int position,
+        CancellationToken cancellationToken = default)
+    {
+        var occupant = keyboardMouse.Value.Profiles.At(layout, position)
+            ?? throw new InvalidOperationException(
+                $"{KbmPositions.Label(position)} is empty for {layout.Wire()}");
+        return client.LoadKbmProfileMappingAsync(occupant, cancellationToken);
     }
 
     public async Task<KeyboardMouseState> RenameKbmProfileAsync(

@@ -338,7 +338,8 @@ public static class ManagementProtocol
                     Name: name!,
                     Revision: entry.Int("revision"),
                     Overrides: entry.Int("overrides"),
-                    Fingerprint: entry.Long("fingerprint")));
+                    Fingerprint: entry.Long("fingerprint"),
+                    Position: entry.Int("position")));
             }
 
             var cursor = value.Int("cursor");
@@ -380,10 +381,44 @@ public static class ManagementProtocol
                     SourceId: entry.Int("sourceId"),
                     Revision: entry.Int("revision"),
                     Fingerprint: entry.Long("fingerprint"),
-                    MatchesSaved: entry.Bool("matchesSaved")));
+                    MatchesSaved: entry.Bool("matchesSaved"),
+                    BootPosition: entry.Int("bootPosition"),
+                    RuntimePosition: entry.Int("runtimePosition")));
             }
 
             return new ValueList<KbmActiveMapping>(active);
+        });
+
+    /// <summary>
+    /// The profile-switch key assignments. One table for both layouts.
+    /// </summary>
+    public static ValueList<KbmSwitchBinding> KbmSwitches(string command,
+                                                          string response) =>
+        Decode(command, response, value =>
+        {
+            var hasList =
+                value.TryGetProperty("switches", out var entries) &&
+                entries.ValueKind == JsonValueKind.Array;
+            RequireShape(hasList && value.TryGetProperty("positions", out _),
+                         command);
+
+            var bindings = new List<KbmSwitchBinding>();
+            foreach (var entry in entries.EnumerateArray())
+            {
+                var source = KbmSource.Parse(entry.String("src"));
+                var position = entry.Int("position");
+                // A binding this build cannot read is skipped rather than shown
+                // as a key that does nothing when pressed.
+                if (source is null || position < 0 ||
+                    position > KbmLimits.PositionsPerLayout)
+                {
+                    continue;
+                }
+
+                bindings.Add(new KbmSwitchBinding(source, position));
+            }
+
+            return new ValueList<KbmSwitchBinding>(bindings);
         });
 
     /// <summary>

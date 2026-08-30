@@ -582,6 +582,15 @@ uint8_t ns2_kbm_profile_create(ns2_kbm_config_t *config,
                                ns2_kbm_layout_t layout, const char *name,
                                const ns2_kbm_content_t *content);
 
+// Create at a SPECIFIC position of the layout's bank, which is what an explicit
+// "assign this local profile to Profile 2" needs. `requested` of 0 means the
+// lowest free position. Refuses when the position is out of range or occupied:
+// landing somewhere else would quietly break the assignment the user made.
+uint8_t ns2_kbm_profile_create_at(ns2_kbm_config_t *config,
+                                  ns2_kbm_layout_t layout, uint8_t requested,
+                                  const char *name,
+                                  const ns2_kbm_content_t *content);
+
 // Store `content` into an existing profile, guarded by `expected_revision`.
 // Returns the resulting revision, or 0 when rejected -- a stale revision, an
 // unknown id, or content that fails validation. Never partially applied.
