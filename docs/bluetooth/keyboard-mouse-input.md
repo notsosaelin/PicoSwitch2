@@ -425,7 +425,21 @@ migrated to the new mapping.
 
 ---
 
-## Default Keyboard profile
+## Terminology note (schema 14, 2026-08-30)
+
+This document predates the profile system and uses "profile" for what is now
+called a **layout** — the SHAPE of a mapping, derived from which peer roles are
+filled and never chosen by the user. The tables below are the two layouts'
+canonical **Default templates**.
+
+A **profile** is now a named user mapping within a layout, and what the console
+actually runs is a separate realized **snapshot** that only Apply changes. See
+[`../architecture/kbm-profile-system-hld.md`](../architecture/kbm-profile-system-hld.md).
+Wire names `kb` and `kbm` are unchanged and still name a layout.
+
+---
+
+## Default Keyboard layout (template)
 
 The keyboard is the entire controller, so it carries both sticks.
 
@@ -451,12 +465,13 @@ The keyboard is the entire controller, so it carries both sticks.
 
 `C`/GameChat, GL, and GR are addressable destinations but unassigned by default.
 
-## Default Keyboard + Mouse profile
+## Default Keyboard + Mouse layout (template)
 
-Deliberately **not** the Keyboard profile plus mouse buttons: the mouse owns the right stick, so
+Deliberately **not** the Keyboard layout plus mouse buttons: the mouse owns the right stick, so
 IJKL are unassigned here and R3 moves to the middle mouse button. This is what makes the two
-profiles genuinely independent, and it is why a disconnected mouse must not silently fall back to
-the Keyboard profile.
+layouts genuinely independent, why a disconnected mouse must not silently fall back to the
+Keyboard layout, and why a profile belongs to exactly one layout and cannot be applied to the
+other — every unoverridden key would resolve against the wrong canonical table.
 
 | Input | Destination |
 |---|---|

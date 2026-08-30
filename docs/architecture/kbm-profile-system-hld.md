@@ -1,342 +1,322 @@
-# Keyboard / Mouse Mode, Template and Profile System — High-Level Design
+# Keyboard / Mouse Layout, Template and Profile System
 
-**Status:** Implemented in firmware and Windows (steps 1-6), 2026-08-30. Android
-parity (step 7) outstanding. Six profiles and Default-only templates were the
-maintainer's decisions from §13.
-**Date:** 2026-08-29
+**Status:** SHIPPED across firmware, Windows and Android, 2026-08-30. Source- and
+test-validated; end-to-end hardware validation outstanding (see §14).
+**Date:** 2026-08-29, rewritten 2026-08-30 to describe what actually shipped
 **Scope:** KB/M mapping selection in firmware, the management surface, Windows and Android
 **Evidence baseline:** hardware failures recorded in
-[`ble-keyboard-classified-as-mouse-2026-08-29.md`](../experiments/ble-keyboard-classified-as-mouse-2026-08-29.md);
-current implementation in `include/ns2_kbm.h`, `src/ns2_kbm.c`, `src/config.c`
+[`ble-keyboard-classified-as-mouse-2026-08-29.md`](../experiments/ble-keyboard-classified-as-mouse-2026-08-29.md)
 
-## 1. Executive summary
+## 1. What this fixes
 
-PicoSwitch2 has two KB/M mapping profiles. They are not chosen — they are
-**derived** from which peer roles happen to be filled, one-to-one from the input
-mode. There is no `kbm profile` command, and there never was.
+PicoSwitch2 had two KB/M mapping profiles. They were not chosen — they were
+**derived** from which peer roles happened to be filled, one-to-one from the
+input mode. There was no `kbm profile` command and there never had been.
 
-That produced a real, hardware-observed failure: a user bound `key:05 → B`, the
-adapter reported success, the binding persisted and read back correctly, and the
-key did nothing at the console — because the adapter was resolving the *other*
-profile. Every management operation is truthful in that situation and the
-product is still wrong. The Windows companion now warns about it, which treats
-the symptom.
+That produced a hardware-observed failure: a user bound `key:05 → B`, the adapter
+reported success, the binding persisted and read back correctly, and the key did
+nothing at the console — because the adapter was resolving the *other* mapping.
+Every management operation was truthful and the product was still wrong.
 
-This design separates three things the current model collapses into two:
+A second, quieter problem: the editor wrote `kbm bind` on every keystroke. That
+erased flash once per changed key, and made Save and Discard impossible to offer,
+because the change had already happened.
 
-| Concept | Question it answers | Chosen by |
+## 2. The five concepts, kept apart
+
+Collapsing any two of these is what produced the failures above.
+
+| Concept | Answers | Chosen by |
 |---|---|---|
-| **Mode** | Which peers may own the console? | User (or inferred, `auto`) |
-| **Layout** | Which *shape* of mapping applies — keyboard alone, or keyboard and mouse? | Derived from admitted roles. Never chosen. |
-| **Profile** | *Which* mapping of that shape is in use? | **User. This is new.** |
+| **Runtime mode** | Which peers may own the console? | User, or inferred (`auto`) |
+| **Layout** | Keyboard, or keyboard and mouse? | Derived from admitted roles. **Never** a user assertion about hardware. |
+| **Template** | What does a mapping start from? | Immutable ROM. One `Default` per layout. |
+| **Saved profile** | A named mapping in the library | User. Six custom, across both layouts. |
+| **Active realized mapping** | What the console is **actually** running | Only ever changed by Apply. |
 
-A **profile** is a named set of overrides belonging to exactly one layout.
-Several may exist per layout; exactly one per layout is **active**. A
-**template** is immutable ROM data — a starting point that can be applied into a
-profile, never a thing that is selected or edited.
+The critical one is the last. Active is a **snapshot**, not a pointer into a
+mutable profile slot. A pointer model cannot express "saved but not applied" at
+all — saving would silently become applying.
 
-The sparse-override model is preserved unchanged: a profile stores only
-deviations from its layout's canonical defaults, so "restore defaults" remains
-"drop the overrides" rather than a procedural rebuild.
-
-### Architectural decisions
-
-| Decision | Selected approach | Reason |
-|---|---|---|
-| Vocabulary | Rename the derived `kb`/`kbm` axis to **layout**; `profile` becomes the user-selected named mapping | The word "profile" currently names a thing the user cannot select, which is exactly the confusion that produced the silent-binding failure |
-| Profile scope | A profile belongs to one layout | The bindable source domain differs — mouse buttons exist only in `kbm` — and the two canonical defaults are deliberately not supersets of each other |
-| Active selection | Exactly one active profile per layout, persisted | Gives the editor an unambiguous target, which removes the "bound into the wrong profile" failure class structurally rather than by warning |
-| Templates | Immutable ROM tables, applied *into* a profile | Costs no flash, makes "apply" auditable and reversible, and keeps template content a data-only change |
-| Override storage | Unchanged sparse override list over canonical defaults | Already validated; restoring defaults stays a deletion |
-| Wire compatibility | `kb` / `kbm` keep working, resolving to that layout's active profile | Old clients and existing UART habits keep working unchanged |
-| Schema | Append-only v14, record widened within the existing sector | `config.c` already documents widening the programmed region as costing "nothing but a slightly longer program" |
-| Layout selection | Still derived, still not user-selectable | Which roles are filled is a fact, not a preference; letting a user assert `kbm` with no mouse would silently drop the right stick |
-
-## 2. What exists today
-
-Established by reading the implementation, not assumed:
-
-- `ns2_kbm_mode_t` — `controller` / `keyboard` / `kbmouse` / `auto`. Persisted as
-  an **override**; the live mode comes from `ns2_kbm_effective_mode(override,
-  keyboard_present, mouse_present)`.
-- `ns2_kbm_profile_t` — exactly `NS2_KBM_PROFILE_KEYBOARD` and
-  `NS2_KBM_PROFILE_KEYBOARD_MOUSE`, obtained from `ns2_kbm_mode_profile(mode)`.
-  **A pure function of the mode.** There is no selection anywhere.
-- Canonical defaults are two immutable ROM tables (`KBM_DEFAULT_KEYBOARD`,
-  `KBM_DEFAULT_KEYBOARD_MOUSE`). They are genuinely different, and the source
-  says why: in `kbm` the mouse owns the right stick, so IJKL are unassigned and
-  R3 moves to the middle mouse button.
-- User configuration is `ns2_kbm_profile_overrides_t profiles[2]` — a count plus
-  up to `NS2_KBM_MAX_OVERRIDES` (48) `{source, destination}` entries. 196 bytes
-  each.
-- Command family: `kbm status`, `kbm mode`, `kbm map <kb|kbm> [page]`,
-  `kbm bind <kb|kbm> <src> <dst|none|default>`, `kbm reset <kb|kbm|all>`,
-  `kbm mouse …`.
-
-### Measured budget
-
-| | |
-|---|---|
-| `config_record_t` today | **476 bytes** |
-| `CONFIG_RECORD_BYTES` | 1024 (4 × 256-byte pages) |
-| Hard ceiling | `FLASH_SECTOR_SIZE` = 4096 |
-| One override table | 196 bytes |
-
-`config.c` states the widening rule explicitly: *"The settings sector is 4 KiB
-and is erased whole on every save, so widening the programmed region costs
-nothing but a slightly longer program; keep it a whole number of pages."*
-
-## 3. The problems this solves
-
-1. **The active mapping is unselectable.** Hardware-proven silent failure.
-2. **Two profiles are two identities, not two slots.** A user cannot keep a
-   Splatoon layout and a Zelda layout.
-3. **No starting points.** The only path from the canonical default to a
-   different feel is rebinding ~28 keys by hand.
-4. **Mode and mapping are welded together.** Choosing a mapping means choosing a
-   mode, which also changes *admission policy* — an unrelated concern.
-
-## 4. Model
-
-```
-effective_mode = ns2_kbm_effective_mode(override, keyboard_role, mouse_role)   [unchanged]
-layout         = ns2_kbm_mode_layout(effective_mode)                           [renamed]
-profile        = config.active_profile[layout]                                 [NEW]
-binding(src)   = override(profile, src)  ??  canonical_default(layout, src)     [unchanged shape]
-```
-
-Only the third line is new. Resolution, admission, publication and the whole
-runtime path below it are untouched.
-
-### Invariants
-
-- **P1.** A profile belongs to exactly one layout and may never be applied to
-  another. Its source domain and its defaults are layout-specific.
-- **P2.** Every layout always has exactly one active profile. There is no
-  "nothing selected" state to represent or recover from.
-- **P3.** Slot 0 of each layout is the built-in **Default** profile. It may be
-  edited and reset, but never deleted or renamed, so P2 can always be satisfied
-  by falling back to it.
-- **P4.** Deleting the active profile activates slot 0 of that layout.
-- **P5.** A template is never referenced after it is applied. Applying copies
-  overrides; the profile does not remember where they came from. A profile that
-  remembered its template would have to answer what happens when the user edits
-  one binding, and there is no good answer.
-- **P6.** The wire names `kb` and `kbm` continue to mean "the active profile of
-  that layout" and remain valid everywhere they are accepted today.
-
-## 5. Storage (schema v14)
+## 3. Storage (schema 14)
 
 ```c
-#define NS2_KBM_MAX_PROFILES      6u   // total, shared across layouts
-#define NS2_KBM_PROFILE_NAME_MAX 16u   // bytes including NUL
+#define NS2_KBM_MAX_PROFILES 6u        // CUSTOM profiles; Defaults are built in
+#define NS2_KBM_PROFILE_NAME_MAX 20u   // 19 usable characters
+
+typedef struct {                       // everything a profile OWNS
+    ns2_kbm_profile_overrides_t overrides;   // sparse, unchanged from v13
+    ns2_kbm_mouse_config_t mouse;            // now profile-owned
+} ns2_kbm_content_t;                   // 206 bytes
 
 typedef struct {
-    uint8_t used;
-    uint8_t layout;                        // ns2_kbm_layout_t
-    char    name[NS2_KBM_PROFILE_NAME_MAX];
-    uint8_t reserved[2];                   // keeps overrides 4-byte aligned
-    ns2_kbm_profile_overrides_t overrides; // 196, unchanged
-} ns2_kbm_profile_slot_t;                  // 216 bytes
+    uint8_t used, layout, profile_id, reserved;
+    uint16_t revision;
+    char name[NS2_KBM_PROFILE_NAME_MAX];
+    ns2_kbm_content_t content;
+} ns2_kbm_profile_slot_t;              // 232 bytes
 
 typedef struct {
-    uint8_t mode;
-    uint8_t active[NS2_KBM_LAYOUT_COUNT];  // slot index per layout
-    uint8_t reserved;
+    uint8_t source_id, reserved;       // which profile produced this snapshot
+    uint16_t source_revision;
+    ns2_kbm_content_t content;         // the REALIZED mapping
+} ns2_kbm_active_t;                    // 210 bytes
+
+typedef struct {
+    uint8_t mode, next_profile_id, reserved[2];
     ns2_kbm_profile_slot_t profiles[NS2_KBM_MAX_PROFILES];
-    ns2_kbm_mouse_config_t mouse;
-} ns2_kbm_config_t;
+    ns2_kbm_active_t active[NS2_KBM_LAYOUT_COUNT];
+} ns2_kbm_config_t;                    // 1816 bytes
 ```
 
-**Cost:** 6 × 216 = 1296 bytes of profiles. The record grows from 476 to
-approximately 1390, so `CONFIG_RECORD_BYTES` must rise from 1024 to **2048** —
-still a whole number of pages and still inside the 4 KiB sector that is already
-erased whole on every save. This also leaves headroom for the appearance HLD's
-nine appended triplets, so the widening happens once.
+**`config_record_t` is 1888 of `CONFIG_RECORD_BYTES` (2048)**, asserted at compile
+time. Widening from 1024 was verified against the persistence map rather than
+inferred from the sector size:
 
-**Six profiles, not four:** four fits in the current 1024 but leaves nothing.
-Six is two spare per layout beyond Default, which is what makes the feature
-worth having, and the page cost is already sunk by the erase.
-
-### Migration v13 → v14
-
-Append-only, following the established protocol in `include/config_persist.h`:
-
-- Freeze `config_record_v13_t`.
-- `profiles[0]` ← v13's `profiles[NS2_KBM_PROFILE_KEYBOARD]`, layout Keyboard,
-  name `"Default"`.
-- `profiles[1]` ← v13's `profiles[NS2_KBM_PROFILE_KEYBOARD_MOUSE]`, layout
-  Keyboard + Mouse, name `"Default"`.
-- Remaining slots unused; `active[]` = {0, 1}.
-
-**An upgraded adapter is byte-for-byte equivalent in behaviour.** Every existing
-binding keeps working and lands in the profile that is already active. This is
-the migration test's central assertion.
-
-## 6. Templates
-
-Immutable ROM data, in the same shape the canonical defaults already use:
-
-```c
-typedef struct {
-    const char *name;
-    ns2_kbm_layout_t layout;
-    const kbm_default_binding_t *bindings;
-    uint8_t count;
-} ns2_kbm_template_t;
+```
+SIZE-1S  reserved by the SDK on RP2350
+SIZE-2S  BTstack TLV bank B
+SIZE-3S  BTstack TLV bank A
+SIZE-4S  PicoSwitch2 config   <- ours alone, erased whole on every save
+SIZE-5S  amiibo journal bank 1
+SIZE-6S  amiibo journal bank 0
 ```
 
-Applying template `T` to profile `P` computes the override set that turns `P`'s
-layout defaults into `T`, and writes exactly that. So a template identical to
-the defaults produces an **empty** override list, and "apply Default" and "reset"
-converge on the same state by construction rather than by agreement between two
-code paths.
+There is no A/B config record whose atomicity widening could compromise. The
+erase already covers all 4096 bytes whatever `CONFIG_RECORD_BYTES` is, so the
+window in which a power loss costs the settings is unchanged.
 
-### Template content is a separate product decision
+### Identity, revision, fingerprint
 
-This design ships the mechanism and exactly one template per layout — the
-existing canonical defaults, named **Default** — because that content is already
-hardware-validated and documented.
+- **`profile_id`** is stable across storage-slot reuse. A companion caches drafts
+  against an id; if ids were slot indexes, deleting a profile and creating
+  another would silently rebind a stale draft to an unrelated mapping. Ids are
+  monotonic from 2, wrapping and skipping ids still in use. `1` is the built-in
+  Default; `0` is none.
+- **`revision`** is bumped by every successful save. A draft carries the revision
+  it was built from, and a mismatch is a **conflict**, never a silent overwrite.
+  Rename deliberately does *not* bump it: no draft's mapping content became
+  stale, so invalidating drafts would be a conflict the user cannot explain.
+- **Fingerprint** is FNV-1a over canonicalized content, computed identically in
+  C, C# and Kotlin. Canonical form sorts overrides by (kind, code) and drops
+  entries that merely restate the layout's default, so two mappings that *behave*
+  identically fingerprint identically however they were built. It answers "is
+  what I saved what is running?" without trusting a local flag, and lets Apply
+  skip a flash write when content is already realized.
 
-Inventing game-shaped templates ("FPS", "Platformer") without evidence about
-what users actually want would be exactly the speculation
-[`PLAN.md`](../../PLAN.md) warns against. Adding one later is a data-only change:
-one table entry, no logic. Candidates worth *asking about* rather than assuming:
+**It is not a security primitive and not the record's integrity check.**
 
-- a left-handed mirror (arrows drive movement, WASD the right stick) — the one
-  with a genuine accessibility argument;
-- an arrow-keys-movement variant for compact boards with an awkward WASD reach.
+### What is profile-owned
 
-Neither is proposed for implementation here.
+Audited rather than assumed:
+
+| Field | Owner | Why |
+|---|---|---|
+| Key and mouse-button bindings | **Profile** | The mapping itself |
+| Mouse sensitivity X/Y | **Profile** | A user expects a different feel between a mapping built for one game and one built for another |
+| Mouse inversion X/Y | **Profile** | Same |
+| Anti-deadzone | **Profile** | Compensation for a specific destination's dead low end |
+| Velocity window / idle deadline | Compile-time | Properties of the Bluetooth transport, not preferences |
+| Input mode override | Global | Admission policy, unrelated to mapping |
+| Colours, wake identity, bonds | Global | Nothing to do with KB/M |
+
+## 4. Migration v13 → v14
+
+Non-destructive, and proven by resolving bindings through the migrated record
+rather than by comparing structs.
+
+Per layout:
+
+- **the stored mapping equals the canonical default** → realize the built-in
+  Default template. No custom slot is consumed, because there is nothing of the
+  user's to keep.
+- **it differs** → keep it as a named custom profile, `Current Keyboard` or
+  `Current KB + Mouse`, and realize it. The user's mapping survives, gains a name
+  they can see, and is immediately the one in use, so nothing about their console
+  changes on upgrade.
+
+Mouse settings were global in v13 and are profile-owned in v14, so they are
+copied into **both** layouts — whichever layout the adapter resolves, it finds
+the settings the user had.
+
+**The v13 management-companion table survives byte for byte.** A dedicated
+regression asserts a v13 companion is still recognised after migration, because
+regressing it would bring back fake Paired Controllers and let a front end be
+forgotten through the wrong companion.
+
+v11 and v12 lift to the v13 shape first and then through the same one migration,
+so an adapter on any supported schema reaches byte-identical v14 state.
+
+## 5. Save is not Apply
+
+The contract, pinned by tests at the model layer rather than left to UI
+convention:
+
+```
+Work revision 3, applied.        console runs revision 3
+  user edits locally             console runs revision 3, ZERO adapter writes
+  user saves                     Work becomes revision 4
+                                 console STILL runs revision 3
+                                 activeMatchesSaved -> false
+  user presses Set Active        console runs revision 4
+                                 activeMatchesSaved -> true
+```
+
+`ns2_kbm_resolve()` reads **only** the realized snapshot. Resolving through the
+library would make Save an implicit Apply, which is precisely the bug.
+
+`ns2_kbm_active_matches_source()` checks both the revision and the content: the
+revision catches "saved but not applied", and the content comparison catches a
+legacy per-binding write that mutated the realized mapping without touching any
+saved profile.
+
+## 6. Staged save transaction
+
+A profile does not fit one management frame, and a loop of `kbm bind` is not a
+transaction — a disconnect halfway leaves the adapter running half of one mapping
+and half of another, and every step erases flash.
+
+```
+kbm draft begin <kb|kbm> <id|new> <baseRevision> <name>
+kbm draft bind <src> <dst>          (repeated, bounded by the override table)
+kbm draft mouse <field> <value>     (repeated)
+kbm draft commit                    -> {"ok":true,"id":N,"revision":M}
+kbm draft abort
+```
+
+Nothing before `commit` touches stored or realized state. `begin` replaces the
+staging buffer rather than failing, so a client that reconnected after a dropped
+session can start over without a stuck transaction it cannot see. One buffer is
+enough because management admits a single trusted session; it is static for the
+same reason the peers workspace is — Pico W's core-1 stack is 2048 bytes.
+
+**This protects against a partial or abandoned TRANSFER.** It is *not* protection
+against power loss during the final config-sector write, which remains an
+existing limitation of the single-bank, non-CRC record.
 
 ## 7. Management surface
 
-New verbs, following the existing pagination and naming conventions:
-
-| Command | Reply |
+| Command | Purpose |
 |---|---|
-| `kbm profiles [page]` | `{"profiles":[{"id":0,"layout":"kb","name":"Default","active":true,"overrides":3}],"page":0,"more":false}` |
-| `kbm profile use <layout> <id>` | `{"ok":true,"layout":"kb","id":2}` |
-| `kbm profile new <layout> <name>` | `{"ok":true,"id":4}` — or `{"error":"profile storage full"}` |
-| `kbm profile rename <id> <name>` | `{"ok":true}` |
-| `kbm profile delete <id>` | `{"ok":true,"active":0}` — reports the resulting active id (P4) |
-| `kbm templates` | `{"templates":[{"name":"Default","layout":"kb"}]}` |
-| `kbm template apply <id> <name>` | `{"ok":true,"overrides":0}` |
+| `kbm profiles` | The library. Paginated defensively with a suffix reserve. |
+| `kbm active` | Both realized mappings, with `matchesSaved` |
+| `kbm apply <kb\|kbm> <id\|default>` | **The only command that changes console behaviour** |
+| `kbm pmap <id> [page]` | One STORED profile's mapping |
+| `kbm profile rename\|dup\|delete` | Library metadata |
+| `kbm draft …` | The staged save above |
+| `kbm status` | Gains `activeProfile`, `activeRevision`, `activeFingerprint`, `activeMatchesSaved` |
 
-Extended, compatibly:
+Error strings are stable and specific: `profile storage full or name in use`,
+`profile not found`, `profile not found for that layout`, `stale revision`,
+`no draft`, `incomplete transaction`, `invalid settings`, `mapping storage full`.
 
-- `kbm map <kb|kbm|id> [page]` — a bare layout name still means its active
-  profile.
-- `kbm bind <kb|kbm|id> …`, `kbm reset <kb|kbm|id|all>` — the same widening.
-- `kbm status` gains `activeProfile` (id) and `activeProfileName`, so a client
-  can show what is live without a second round trip.
+All new verbs are `kbm …`, already covered by the BLE allowlist's `kbm ` prefix
+and gated behind the existing trusted management session. Parity: **60 companion
+commands, all dispatched and all reachable over BLE.**
 
-Replies stay inside the ~512-byte management frame: six profiles at 16-character
-names paginate comfortably, and `kbm profiles` is bounded by
-`NS2_KBM_MAX_PROFILES` rather than by peer state, so it cannot grow unbounded
-the way `peers list` did.
+### Legacy compatibility
 
-## 8. Client behaviour
+`kbm map`, `kbm bind`, `kbm reset` and `kbm mouse` keep their existing meaning:
+they name a **layout** and act on its **realized** mapping, immediately, as their
+clients have always relied on. A legacy write therefore makes the snapshot stop
+matching the profile that produced it, and `matchesSaved` reports that truthfully
+rather than letting a client keep claiming the profile is applied.
 
-**Windows.** The Keyboard & Mouse page gains a profile selector beside the
-existing layout indicator. The selector changes *which profile is active on the
-adapter* — not merely which one is being edited — so the editor's target and the
-console's behaviour are the same thing by construction. The
-`EditingInactiveProfile` warning added earlier stays as a safety net for the case
-where the adapter's active profile changes underneath the page (another client,
-a reconnect), but it should stop firing in normal use.
+`kbm map kb` still reports what the console is really using, which is what an old
+client expects.
 
-**Android.** Same surface, same wire. No new capability negotiation: absent
-verbs report Unsupported and the page falls back to today's single-profile
-behaviour, matching how `peerForget` and `remotePairing` already degrade.
+## 8. Client draft model
 
-**Both.** Layout stays presented as a *fact* — "Keyboard and mouse connected" —
-never a control. The user picks a profile within it.
+Both companions implement the same state machine, and the rules live beside the
+wire types (`KeyboardMouseDraft` / `KbmDraft`) so the two cannot drift:
 
-## 9. What this design deliberately does not do
-
-- **No per-game or per-title switching.** The adapter cannot know what is
-  running on the console; a title-aware profile would be a guess wearing a
-  feature's clothes.
-- **No profile switching from a key combination.** Tempting and cheap, but every
-  chord is a chord some game wants. Needs its own product decision.
-- **No user-selectable layout.** Asserting `kbm` with no mouse silently loses the
-  right stick.
-- **No profile import/export.** Useful, but it is a management-transport and file
-  question, not a mapping-model one.
-- **No generic mapping framework.** `PLAN.md` is explicit, and this design stays
-  within the KB/M feature it belongs to.
-
-## 10. Risks
-
-| Risk | Mitigation |
+| State | Meaning |
 |---|---|
-| Schema migration reinterprets stored bytes | Append-only, frozen v13, field-by-field migration, and the existing `CONFIG_PERSIST_VERSION` tripwire test which forces whoever bumps the version to confirm every older layout still migrates |
-| Record widening breaks the save path | `CONFIG_RECORD_BYTES` stays a whole number of pages inside one erase sector; the existing static asserts already enforce both |
-| Flash wear from profile switching | `use` writes one byte of `active[]`; it is still a full sector erase, so the UI must not switch profiles speculatively — only on explicit user action |
-| Wire regressions for old clients | `kb`/`kbm` keep their meaning (P6); the shared protocol fixture gains vectors for the new verbs and the old ones are asserted unchanged |
-| Two clients disagreeing about the active profile | `kbm status` carries `activeProfile`; clients re-read after every mutation, as they already do for peers |
+| Clean | Draft equals the saved profile, which is not applied |
+| Active | The realized mapping matches this profile's saved content |
+| Dirty | Edited locally. **Zero adapter writes have happened** |
+| SavedNotApplied | Stored in the library; the console runs something else |
+| Conflict | The adapter's profile moved on since this draft was based on it |
+| Disconnected | No live session — nothing may be presented as live truth |
 
-## 11. Test matrix
+Dirty is computed from **content**, not tracked with a flag, so putting an edit
+back correctly disables Save. "Active" requires the id **and** the content to
+match; an id match alone is what would let the UI claim a profile is applied when
+it was saved and never applied.
 
-Host, firmware:
+**Flash writes:** editing 30 controls → 0. Save → 1. Apply → 1 (0 when the
+content is already realized). Rename / duplicate / delete → 1 each.
 
-1. v13 → v14 migration preserves both existing override sets, names them
-   Default, and activates them.
-2. A migrated adapter resolves byte-identical bindings to before the upgrade.
-3. Applying the Default template yields an **empty** override set.
-4. Applying a template then resetting the profile converge on the same state.
-5. A profile cannot be applied to the wrong layout.
-6. Deleting the active profile activates slot 0 (P4).
-7. Slot 0 cannot be deleted or renamed (P3).
-8. `NS2_KBM_MAX_PROFILES` exhaustion reports `profile storage full`, never
-   silently overwrites.
-9. Override exhaustion inside one profile still reports `mapping storage full`.
-10. `kbm map kb` and `kbm map <active id>` return identical pages (P6).
-11. Name sanitisation: length, NUL termination, non-printable rejection.
-12. `kbm profiles` pagination terminates for every reachable slot count.
+## 9. UX
 
-Client:
+Both platforms: a profile selector that **opens** a profile (never applies it),
+`Save` / `Discard` / `Set Active` as separate controls with separate enablement,
+`New` / `Rename` / `Delete`, and one line of status plus a detail sentence for the
+states a single word cannot carry. Built-in Default is labelled as such and
+cannot be renamed or deleted; saving while viewing it creates a profile of the
+user's own.
 
-13. Selecting a profile issues `use` and re-reads status.
-14. An adapter without the new verbs degrades to single-profile behaviour.
-15. The inactive-profile warning does not fire in ordinary use.
+Windows keeps its section-scoped busy ring rather than disabling the page, and
+business rules stay in Services/Presentation. Android keeps rules in the
+repository and ViewModel; the composable reads state and raises events.
 
-## 12. Implementation order
+## 10. Older firmware
 
-Each step is independently shippable and testable:
+`kbm profiles` answering `unknown command` is not a degraded state to apologise
+for: that adapter has exactly one mapping per layout and behaves as the app
+always did. The profile controls are not offered, and per-binding writes remain —
+because that is genuinely the only mapping surface such an adapter has. Detected
+by capability probe, never by version-string comparison.
 
-1. **Vocabulary only.** Rename the derived axis to *layout* in firmware, keeping
-   `kb`/`kbm` on the wire. No behaviour change, no schema change.
-2. **Schema v14 + migration**, with the profile table present but exactly two
-   slots used. Still no new commands. Proves the migration in isolation.
-3. **Selection**: `active[]`, `kbm profile use`, `activeProfile` in status.
-4. **Lifecycle**: `new` / `rename` / `delete`.
-5. **Templates**: table, `kbm templates`, `kbm template apply`.
-6. **Windows** profile selector.
-7. **Android** parity.
+## 11. Config durability — stated plainly
 
-Steps 1 and 2 carry the schema risk and no user-visible change, which is
-deliberate: if either is wrong, it is wrong on its own commit.
+- The settings record is **single-bank, erase-then-program, and carries no CRC**.
+- `ns2_kbm_config_sanitize()` rejects malformed or impossible state: a profile
+  whose layout is unreadable is dropped rather than resolved against the wrong
+  canonical map, duplicate ids are dropped, a live profile carrying the reserved
+  revision-0 sentinel is repaired, and an active snapshot naming a source that no
+  longer exists **keeps its content** — the user's console behaviour does not
+  change because a profile vanished — and is re-labelled as matching nothing.
+- **Sanitize is not torn-write detection.** A power loss during the final flash
+  programming remains an existing durability limitation.
+- The staged transaction protects against partial or abandoned BLE transfers, not
+  against power loss during the final config-sector write.
+- A CRC or A/B config store is a separate future durability decision and was
+  deliberately **not** smuggled into this feature.
 
-## 13. Open product decisions
+## 12. Deliberately not built
 
-Settled 2026-08-29:
+- Per-game or title-aware switching — the adapter cannot know what is running.
+- Profile-switch key chords — every chord is a chord some game wants.
+- User-selectable layout — asserting Keyboard + Mouse with no mouse silently
+  drops the right stick.
+- Game-shaped templates (FPS, platformer, …) — inventing them without evidence is
+  the speculation `PLAN.md` warns against. The mechanism takes a new template as
+  a one-row data change.
+- A generic mapping framework.
 
-1. ~~**Six profiles, or four?**~~ **Six**, widening the record to 2048 bytes.
-   Verified before implementing that this compromises nothing: the config sector
-   is ours alone and is erased whole on every save regardless, so the window in
-   which a power loss costs the settings is unchanged. The torn-program surface
-   does grow from four pages to eight and the record has no CRC, so
-   `ns2_kbm_config_sanitize()` now repairs the profile table.
-2. ~~**Which templates ship?**~~ **Default only.** The mechanism is content-free
-   by design; see §6. Adding one later is one ROM table entry.
+## 13. Settled decisions
 
-Still open:
-3. **Is a profile-switch chord wanted?** Explicitly out of scope here.
-4. **Should a CRC cover the settings record?** Separate from this feature, but
-   this feature doubled the pages a torn write can half-fill. Sanitize fails
-   that closed for the KB/M block; nothing does for the rest of the record.
-5. **Should profiles be per-peer?** A user with two keyboards may want different
-   mappings per device. This design says no — the mapping belongs to the layout,
-   not the hardware — but that is a judgement, not a fact.
+1. **Six CUSTOM profiles**, shared across layouts. Built-in Defaults consume no
+   slot.
+2. **`CONFIG_RECORD_BYTES` = 2048.** Verified against the flash map; nothing
+   transactional is compromised.
+3. **Default template only.** Content is a data-only addition later.
+4. **Mouse settings are profile-owned.**
+5. **No CRC / A-B config store in this feature.**
+
+## 14. What is not proven
+
+Everything here is source- and test-validated. **No part of the profile system
+has run on hardware.** Specifically unproven until the smoke test in the final
+report is run:
+
+- the v13 → v14 migration against a real adapter's stored bytes;
+- the staged transaction over a real BLE management session;
+- that Apply changes console behaviour and Save does not, at the console;
+- persistence of the realized mapping across a real power cycle;
+- cross-platform hand-off between the two companions.
+
+The hardware-confirmed 8BitDo multi-report-ID fix and the durable
+management-companion fix are both covered by regressions in the host suite and
+are not affected by this work.
