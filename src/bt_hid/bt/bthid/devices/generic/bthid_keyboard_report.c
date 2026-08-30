@@ -92,6 +92,7 @@ bool bthid_keyboard_parse_descriptor(const uint8_t *desc, uint16_t desc_len,
     uint32_t usage_max = 0;
     bool have_usage_range = false;
     bool found = false;
+    bool seen_application_collection = false;
     uint8_t keyboard_report_id = 0;
 
     uint32_t pending_usages[KB_MAX_PENDING_USAGES];
@@ -165,7 +166,19 @@ bool bthid_keyboard_parse_descriptor(const uint8_t *desc, uint16_t desc_len,
                     if (page == HID_USAGE_PAGE_GENERIC_DESKTOP &&
                         (usage == HID_USAGE_JOYSTICK || usage == HID_USAGE_GAME_PAD))
                         out->has_gamepad_collection = true;
+
+                    // FIRST application collection only. What a descriptor opens
+                    // with is the device stating what it primarily is -- a
+                    // keyboard opens with Usage(Keyboard), a mouse with
+                    // Usage(Mouse) and declares its macro keys after. Later
+                    // collections are extras and must not overwrite it.
+                    if (!seen_application_collection &&
+                        page == HID_USAGE_PAGE_GENERIC_DESKTOP && usage <= 0xFFu) {
+                        out->primary_application_usage = (uint8_t)usage;
+                        seen_application_collection = true;
+                    }
                 }
+                seen_application_collection = true;
             }
             usage_min = usage_max = 0;
             have_usage_range = false;
@@ -266,6 +279,58 @@ static void set_usage(uint8_t bitmap[BTHID_KEYBOARD_USAGE_BYTES], uint8_t usage)
 static bool read_bit(const uint8_t *data, uint16_t len, uint32_t bit) {
     if ((bit >> 3) >= len) return false;
     return (data[bit >> 3] & (1u << (bit & 7u))) != 0u;
+}
+
+bthid_keyboard_shape_t bthid_keyboard_shape(const bthid_keyboard_report_map_t *map) {
+    bthid_keyboard_shape_t shape;
+    memset(&shape, 0, sizeof(shape));
+    if (!map) return shape;
+
+    for (uint8_t i = 0; i < map->array_count; ++i)
+        shape.rollover_slots = (uint16_t)(shape.rollover_slots + map->arrays[i].count);
+
+    for (uint8_t i = 0; i < map->bitmap_count; ++i) {
+        const bthid_keyboard_bitmap_field_t *field = &map->bitmaps[i];
+        // The modifier byte is exactly the eight flags over 0xE0..0xE7. Every
+        // keyboard has it; a macro collection generally does not, and when it
+        // does it is not on its own enough (see below).
+        if (field->usage_min == 0xE0u && field->count == 8u) {
+            shape.has_modifier_byte = true;
+            continue;
+        }
+        shape.key_bitmap_bits = (uint16_t)(shape.key_bitmap_bits + field->count);
+    }
+
+    shape.keyboard_is_primary_collection =
+        map->primary_application_usage == BTHID_HID_USAGE_KEYBOARD ||
+        map->primary_application_usage == BTHID_HID_USAGE_KEYPAD;
+
+    /*
+     * Three facts must agree, and each rules out a different wrong answer.
+     *
+     * 1. The descriptor OPENS with a keyboard application collection. This is
+     *    the device's own statement about what it is, and it is what keeps a
+     *    gaming mouse out: an ASUS ROG KERIS II opens with Usage(Mouse) and
+     *    declares its macro keys afterwards, so it can never pass this clause
+     *    no matter how complete that macro collection is.
+     * 2. A standard modifier byte. Shift/Ctrl/Alt/GUI as eight flags is
+     *    something a keyboard has and a handful of macro buttons does not.
+     * 3. Enough key capacity to be a keyboard: a rollover array of several
+     *    slots, OR -- for an NKRO board that has no array at all -- a wide key
+     *    bitmap. Requiring the array alone would fail every NKRO keyboard.
+     *
+     * A controller that carries keyboard usages is already excluded upstream by
+     * has_gamepad_collection, and is excluded again here for the same reason
+     * clause 1 exists.
+     */
+    shape.strong_keyboard =
+        shape.keyboard_is_primary_collection &&
+        shape.has_modifier_byte &&
+        !map->has_gamepad_collection &&
+        (shape.rollover_slots >= BTHID_KEYBOARD_STRONG_ROLLOVER_SLOTS ||
+         shape.key_bitmap_bits >= BTHID_KEYBOARD_STRONG_BITMAP_BITS);
+
+    return shape;
 }
 
 bthid_keyboard_decode_t bthid_keyboard_decode_report(

@@ -351,16 +351,15 @@ static void primary_record(uint8_t conn_index, uint32_t connection_generation,
 void ns2_kbm_runtime_note_classification(uint8_t conn_index,
                                          uint32_t connection_generation,
                                          bool has_keyboard, bool has_pointer,
-                                         bool declares_combo) {
+                                         bool declares_combo, bool strong_keyboard) {
     caps_record(conn_index, connection_generation, has_keyboard, has_pointer);
     ns2_kbm_peer_caps_t caps = {has_keyboard ? 1u : 0u, has_pointer ? 1u : 0u};
-    // COMBO only from a positive declaration by the device. Otherwise the
-    // capability precedence decides, and pointer wins -- a gaming mouse with
-    // macro keys must not consume the keyboard role.
+
+    // The rule itself lives in ns2_kbm.c so it can be host-tested: this file
+    // cannot be compiled without the Bluetooth stack, and the KERIS II
+    // regression boundary is far too important to sit somewhere no test reaches.
     primary_record(conn_index, connection_generation,
-                   declares_combo && has_keyboard && has_pointer
-                       ? NS2_KBM_PRIMARY_COMBO
-                       : ns2_kbm_primary_from_caps(caps));
+                   ns2_kbm_primary_from_evidence(caps, declares_combo, strong_keyboard));
 }
 
 // Forget exactly one connection generation.

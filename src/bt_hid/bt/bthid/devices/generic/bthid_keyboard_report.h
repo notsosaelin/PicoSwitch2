@@ -50,7 +50,59 @@ typedef struct {
     // keyboard usages as well, not a keyboard -- see
     // bthid_keyboard_parse_descriptor().
     bool has_gamepad_collection;
+
+    // The Generic Desktop usage of the FIRST top-level application collection,
+    // or 0 when the descriptor opens with something else.
+    //
+    // This is the closest a descriptor comes to a Class of Device: the device
+    // stating what it primarily is. A keyboard opens with Usage(Keyboard); a
+    // mouse opens with Usage(Mouse) and declares its macro keys afterwards.
+    // BLE has no Class of Device, so this is the only self-declaration
+    // available there.
+    uint8_t primary_application_usage;
 } bthid_keyboard_report_map_t;
+
+// Generic Desktop application usages worth naming.
+#define BTHID_HID_USAGE_MOUSE 0x02u
+#define BTHID_HID_USAGE_KEYBOARD 0x06u
+#define BTHID_HID_USAGE_KEYPAD 0x07u
+
+// How strongly a descriptor argues that its owner is a real keyboard.
+//
+// Exists to answer one question the capability bits cannot: a peer declaring
+// BOTH keyboard and pointer capability is either a keyboard with a pointing
+// extra, or a mouse with macro keys, and those need opposite roles.
+typedef struct {
+    // Total key slots across the rollover array fields. A boot keyboard
+    // declares six; a macro pad declares one or two, or none at all.
+    uint16_t rollover_slots;
+
+    // Key-bitmap bits EXCLUDING the modifier byte. An NKRO keyboard reports
+    // one bit per usage here and may have no array at all.
+    uint16_t key_bitmap_bits;
+
+    // A standard 8-bit modifier field over usages 0xE0..0xE7.
+    bool has_modifier_byte;
+
+    // The descriptor opens with Usage(Keyboard) or Usage(Keypad).
+    bool keyboard_is_primary_collection;
+
+    // All of the above agreeing. See bthid_keyboard_shape().
+    bool strong_keyboard;
+} bthid_keyboard_shape_t;
+
+// A real keyboard's shape needs at least this many rollover slots, or this many
+// key-bitmap bits for an NKRO board that has no array.
+#define BTHID_KEYBOARD_STRONG_ROLLOVER_SLOTS 4u
+#define BTHID_KEYBOARD_STRONG_BITMAP_BITS 32u
+
+// Measure the keyboard evidence in a parsed map.
+//
+// Pure and host-testable, and deliberately conservative: everything it needs is
+// already recorded by bthid_keyboard_parse_descriptor(), and an ambiguous
+// descriptor must produce strong_keyboard = false so the caller keeps its
+// existing behaviour.
+bthid_keyboard_shape_t bthid_keyboard_shape(const bthid_keyboard_report_map_t *map);
 
 typedef enum {
     BTHID_KEYBOARD_DECODE_FAIL = 0,      // not a keyboard report / malformed

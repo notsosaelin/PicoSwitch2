@@ -1437,6 +1437,38 @@ static ns2_kbm_role_policy_t policy(bool keyboard, bool mouse) {
 
 // Capability precedence for an unresolved peer: pointer wins, and "has both"
 // is never combo.
+// Role resolution once the transport's self-declaration is taken into account.
+//
+// The regression boundary for the BLE-keyboard-as-mouse defect, and it has to
+// hold in BOTH directions: a genuine keyboard with a pointer must reach COMBO,
+// and a gaming mouse with macro keys must still reach MOUSE.
+static void test_primary_from_evidence(void) {
+    ns2_kbm_peer_caps_t both = caps(true, true);
+
+    // Capability alone is unchanged: still MOUSE. This is the clause that keeps
+    // the ASUS ROG KERIS II out of the keyboard role, and nothing here weakens it.
+    assert(ns2_kbm_primary_from_evidence(both, false, false) == MS);
+
+    // A Classic combo peripheral declares itself. Unchanged behaviour.
+    assert(ns2_kbm_primary_from_evidence(both, true, false) == CB);
+
+    // A BLE keyboard whose DESCRIPTOR says keyboard. The defect this fixes:
+    // BLE has no Class of Device, so before this the peer fell to precedence
+    // and lost the keyboard role.
+    assert(ns2_kbm_primary_from_evidence(both, false, true) == CB);
+
+    // Strong keyboard evidence is only ever a tie-breaker between two present
+    // capabilities. It cannot invent a role the device does not have.
+    assert(ns2_kbm_primary_from_evidence(caps(true, false), false, true) == KB);
+    assert(ns2_kbm_primary_from_evidence(caps(false, true), false, true) == MS);
+    assert(ns2_kbm_primary_from_evidence(caps(false, false), true, true) ==
+           NS2_KBM_PRIMARY_NONE);
+
+    // A mouse that declares no keyboard capability at all is untouched by
+    // either flag.
+    assert(ns2_kbm_primary_from_evidence(caps(false, true), true, true) == MS);
+}
+
 static void test_primary_from_caps(void) {
     assert(ns2_kbm_primary_from_caps(caps(false, false)) == NS2_KBM_PRIMARY_NONE);
     assert(ns2_kbm_primary_from_caps(caps(true, false)) == NS2_KBM_PRIMARY_KEYBOARD);
@@ -2242,6 +2274,7 @@ int main(void) {
     test_discovery_ownership_matrix();
     test_discovery_pairing_window_survives_first_peer();
     test_primary_from_caps();
+    test_primary_from_evidence();
     test_roles_and_admission();
     test_role_reconnect_while_partner_live();
     test_freed_role_is_not_absorbed();
