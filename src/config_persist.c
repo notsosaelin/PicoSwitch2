@@ -71,6 +71,21 @@ _Static_assert(offsetof(config_record_t, kbm) + sizeof(ns2_kbm_config_t) <=
                    sizeof(config_record_t),
                "the v12 KB/M block must fit inside the record it is stored in");
 
+// Schema 13 appends the management-companion table. Unlike v12 this IS a strict
+// size increase -- v12's record had no trailing room left -- so a stored v12
+// record is shorter, and the version field still decides, never the length.
+_Static_assert(offsetof(config_record_t, kbm) ==
+                   offsetof(config_record_v12_t, kbm),
+               "v13 must keep v12's kbm offset");
+_Static_assert(offsetof(config_record_t, wake_identity) ==
+                   offsetof(config_record_v12_t, wake_identity),
+               "v13 must keep v12's wake_identity offset");
+_Static_assert(offsetof(config_record_t, mgmt_companions) >=
+                   sizeof(config_record_v12_t),
+               "v13's additions must not overlap any v12 field");
+_Static_assert(sizeof(config_record_t) > sizeof(config_record_v12_t),
+               "v13 appends to v12");
+
 void config_persist_defaults(config_record_t *out) {
     if (!out) return;
     memset(out, 0, sizeof(*out));
@@ -89,6 +104,76 @@ void config_persist_defaults(config_record_t *out) {
     out->joycon2_right_accent[1] = 0x8C;
     out->joycon2_right_accent[2] = 0x5F;
     ns2_kbm_config_defaults(&out->kbm);
+    // No remembered companions. An adapter that has never held a management
+    // session has no role evidence, and zero is that statement.
+    memset(out->mgmt_companions, 0, sizeof(out->mgmt_companions));
+}
+
+// A zeroed address is not an identity. BTstack hands out all-zero addresses for
+// unresolved or absent peers, and remembering one would match every other
+// unresolved peer for the life of the table.
+static bool companion_addr_usable(const uint8_t addr[6]) {
+    if (!addr) return false;
+    for (unsigned i = 0; i < 6u; ++i)
+        if (addr[i] != 0u) return true;
+    return false;
+}
+
+static int companion_slot(const config_mgmt_companion_t *table, uint8_t capacity,
+                          const uint8_t addr[6]) {
+    for (uint8_t i = 0; i < capacity; ++i) {
+        if (!table[i].valid) continue;
+        if (memcmp(table[i].addr, addr, 6u) == 0) return (int)i;
+    }
+    return -1;
+}
+
+bool config_mgmt_companion_remember(config_mgmt_companion_t *table,
+                                    uint8_t capacity, const uint8_t addr[6],
+                                    uint8_t addr_type) {
+    if (!table || capacity == 0u || !companion_addr_usable(addr)) return false;
+
+    int slot = companion_slot(table, capacity, addr);
+    if (slot >= 0) {
+        // Already known. Only an address-type correction is a change worth a
+        // flash write.
+        if (table[slot].addr_type == addr_type) return false;
+        table[slot].addr_type = addr_type;
+        return true;
+    }
+
+    for (uint8_t i = 0; i < capacity; ++i) {
+        if (table[i].valid) continue;
+        table[i].valid = 1u;
+        table[i].addr_type = addr_type;
+        memcpy(table[i].addr, addr, 6u);
+        return true;
+    }
+
+    // Full: evict the oldest by shifting down, so slot order IS recency and no
+    // separate timestamp has to be stored or kept consistent.
+    for (uint8_t i = 1; i < capacity; ++i) table[i - 1u] = table[i];
+    table[capacity - 1u].valid = 1u;
+    table[capacity - 1u].addr_type = addr_type;
+    memcpy(table[capacity - 1u].addr, addr, 6u);
+    return true;
+}
+
+bool config_mgmt_companion_known(const config_mgmt_companion_t *table,
+                                 uint8_t capacity, const uint8_t addr[6]) {
+    if (!table || capacity == 0u || !companion_addr_usable(addr)) return false;
+    return companion_slot(table, capacity, addr) >= 0;
+}
+
+bool config_mgmt_companion_forget(config_mgmt_companion_t *table,
+                                  uint8_t capacity, const uint8_t addr[6]) {
+    if (!table || capacity == 0u || !companion_addr_usable(addr)) return false;
+    int slot = companion_slot(table, capacity, addr);
+    if (slot < 0) return false;
+    // Close the gap so recency order survives a removal.
+    for (uint8_t i = (uint8_t)slot + 1u; i < capacity; ++i) table[i - 1u] = table[i];
+    memset(&table[capacity - 1u], 0, sizeof(table[capacity - 1u]));
+    return true;
 }
 
 config_persist_load_t config_persist_load(const void *stored, uint32_t stored_len,
@@ -150,6 +235,29 @@ config_persist_load_t config_persist_load(const void *stored, uint32_t stored_le
         // cannot change how it already feels: anti-deadzone 0 is exactly the
         // hardware-validated linear response.
         out->kbm.mouse.anti_deadzone = (uint8_t)NS2_KBM_MOUSE_ADZ_DEFAULT;
+        result = CONFIG_PERSIST_MIGRATED;
+    } else if (header.version == 12u) {
+        if (stored_len < sizeof(config_record_v12_t))
+            return CONFIG_PERSIST_DEFAULTED;
+        config_record_v12_t v12;
+        memcpy(&v12, stored, sizeof(v12));
+        out->body_color[0] = header.body_color[0];
+        out->body_color[1] = header.body_color[1];
+        out->body_color[2] = header.body_color[2];
+        memcpy(out->joycon2_left_accent, header.joycon2_left_accent,
+               sizeof(out->joycon2_left_accent));
+        memcpy(out->joycon2_right_accent, header.joycon2_right_accent,
+               sizeof(out->joycon2_right_accent));
+        out->wake_valid = header.wake_valid;
+        out->wake_identity = header.wake_identity;
+        // The KB/M block is byte-identical between v12 and v13, so this one may
+        // be copied whole -- the static asserts above are what license that.
+        out->kbm = v12.kbm;
+        // The companion table starts EMPTY on an upgraded adapter, and must.
+        // Inventing membership from an existing bond would do exactly what this
+        // field exists to stop: assert a role the adapter never observed. Each
+        // companion re-registers itself on its next authenticated session.
+        memset(out->mgmt_companions, 0, sizeof(out->mgmt_companions));
         result = CONFIG_PERSIST_MIGRATED;
     } else {
         // An unknown (older or newer) schema. Falling back to defaults is the

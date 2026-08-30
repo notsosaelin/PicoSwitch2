@@ -123,6 +123,7 @@ extern int find_player_index(int dev_addr, int instance);
 #include "bt_identity_log.h"
 #include "config_wireless_bridge.h"
 #include "config.h"
+#include "config_persist.h"  // CONFIG_MGMT_COMPANIONS_MAX
 #include "usb.h" // read-only personality gate for automatic native Pro2 motion setup
 #include "ns2_kbm_runtime.h" // KB/M role-aware Classic discovery admission
 
@@ -3202,9 +3203,28 @@ static bool config_ble_durable_addr(bd_addr_t out)
  */
 static bool config_ble_addr_is_companion(const uint8_t addr[6])
 {
+    if (addr == NULL) return false;
     bd_addr_t durable;
-    if (addr == NULL || !config_ble_durable_addr(durable)) return false;
-    return memcmp(durable, addr, sizeof(bd_addr_t)) == 0;
+    if (config_ble_durable_addr(durable) &&
+        memcmp(durable, addr, sizeof(bd_addr_t)) == 0)
+        return true;
+    // A companion that is not connected right now is still a companion.
+    //
+    // config_ble_durable_addr() is cleared on disconnect -- deliberately, since
+    // a resolved identity belongs to the ACL that resolved it -- so before this
+    // BOTH of the forget guard's "two independent guards" were false for every
+    // management client except the one issuing the command. A second PC or
+    // phone appeared in the controller list and could be forgotten out of its
+    // own management relationship.
+    return config_is_management_companion(addr);
+}
+
+// Persist an authenticated management companion under its durable identity.
+// Wrapped so the two call sites cannot drift on what counts as evidence.
+static void btstack_host_note_management_companion(const bd_addr_t addr,
+                                                   uint8_t addr_type)
+{
+    config_note_management_companion(addr, addr_type);
 }
 
 // The individual terms of the companion-session conjunction, evaluated once.
@@ -6637,6 +6657,17 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *pa
             uint8_t status = sm_event_pairing_complete_get_status(packet);
             printf("[BTSTACK_HOST] SM: Pairing complete, handle=0x%04X status=0x%02X\n", handle, status);
 
+            if (status == ERROR_CODE_SUCCESS && handle == config_ble.handle) {
+                // A FIRST management bond. Identity resolution does not fire for
+                // it -- there was no stored IRK to match -- so without this a
+                // companion would only become durable evidence on its SECOND
+                // session, and be a fake controller row until then.
+                bd_addr_t companion;
+                if (config_ble_durable_addr(companion)) {
+                    btstack_host_note_management_companion(
+                        companion, config_ble.client_identity_addr_type);
+                }
+            }
             if (status == ERROR_CODE_SUCCESS) {
                 printf("[BTSTACK_HOST] SM: Pairing successful!\n");
                 ble_connection_t* conn = find_connection_by_handle(handle);
@@ -6694,6 +6725,13 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *pa
                 config_ble.client_identity_addr_type =
                     sm_event_identity_resolving_succeeded_get_identity_addr_type(packet);
                 config_ble.client_identity_valid = true;
+                // Durable role evidence. Identity resolution means BTstack
+                // matched this RPA against an IRK it already holds, so the peer
+                // is BONDED and is here on the management peripheral -- both
+                // halves of "this bond belongs to a management client",
+                // observed rather than inferred.
+                btstack_host_note_management_companion(
+                    identity, config_ble.client_identity_addr_type);
                 printf("[BTSTACK_HOST] Management identity resolved: %s (type=%u)\n",
                        bd_addr_to_str(identity),
                        (unsigned)config_ble.client_identity_addr_type);
@@ -7461,6 +7499,37 @@ static size_t peers_collect_observations(mgmt_peer_observation_t *out,
             peers_add_observation(out, capacity, &count, companion,
                                   NULL, true, true, false, false, false);
         }
+    }
+
+    // (1b) Management companions this adapter REMEMBERS but that are not
+    //      connected right now.
+    //
+    //      Role used to be live evidence only, so a management bond became
+    //      role `unknown` the moment its session ended -- and a bonded,
+    //      non-connected, roleless peer is exactly what a companion routes into
+    //      the PAIRED CONTROLLER list. With two front ends that is not an edge
+    //      case: whichever one is connected sees the other as a controller the
+    //      user never paired, complete with an offer to forget it.
+    //
+    //      `connected` stays false, because it is not. Only the ROLE is being
+    //      asserted here, from a membership the adapter recorded when that
+    //      companion last authenticated.
+    bd_addr_t live_companion;
+    bool have_live_companion =
+        config_ble.handle != HCI_CON_HANDLE_INVALID &&
+        config_ble_durable_addr(live_companion);
+    for (uint8_t i = 0; i < CONFIG_MGMT_COMPANIONS_MAX; ++i) {
+        bd_addr_t remembered;
+        if (!config_management_companion_at(i, remembered, NULL))
+            continue;
+        // Skip the live one: observation (1) already covers it with
+        // connected=true, and a second observation would assert connected=false
+        // about a peer that is connected.
+        if (have_live_companion &&
+            memcmp(live_companion, remembered, sizeof(bd_addr_t)) == 0)
+            continue;
+        peers_add_observation(out, capacity, &count, remembered, NULL, false,
+                              true, false, false, false);
     }
 
     // (2) Live Classic HID links. The arbiter says which of them is the bridge.
@@ -13581,6 +13650,18 @@ static bool btstack_host_forget_device_typed(const uint8_t bd_addr[6],
         memset(existing, 0, sizeof(existing));
         gap_drop_link_key_for_bd_addr(addr);
 #endif
+    }
+
+    // A remembered role must never outlive the credential it describes.
+    //
+    // Without this, forgetting a management companion would leave its durable
+    // membership behind: the peer would keep reporting role `management` with
+    // no bond, so it would sit in Diagnostics forever and could never be
+    // removed. The membership is dropped only on the address-only form, which
+    // is what "forget this device" means; a typed LE-only removal leaves a
+    // cross-transport companion intact and its role with it.
+    if (!match_address_type) {
+        config_forget_management_companion(addr);
     }
 
     // Clear last-connected if it matches

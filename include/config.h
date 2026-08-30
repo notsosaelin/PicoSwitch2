@@ -64,6 +64,31 @@ typedef struct {
 // usable wake identity. Safe across cores.
 bool config_get_wake_identity(config_wake_identity_t *out);
 
+// ---------------------------------------------------------------------------
+// Management companions
+// ---------------------------------------------------------------------------
+// The adapter's only DURABLE role evidence. Everything else about a peer's role
+// is live: a bond alone cannot say whether it belongs to a controller or to a
+// management client, so before this a management bond that was not connected
+// right now was reported as role `unknown` -- which a companion correctly reads
+// as a paired controller.
+
+// Remember an authenticated management companion by its durable identity.
+// Persisted only when the set actually changes, so reconnecting is free.
+void config_note_management_companion(const uint8_t addr[6], uint8_t addr_type);
+
+// Is this durable identity a remembered management companion?
+bool config_is_management_companion(const uint8_t addr[6]);
+
+// Drop a remembered companion, because its credential was deleted. The
+// remembered role must never outlive the bond it describes.
+void config_forget_management_companion(const uint8_t addr[6]);
+
+// Enumerate remembered companions. Returns false when `index` holds none, so a
+// caller can walk 0..CONFIG_MGMT_COMPANIONS_MAX-1 without knowing the layout.
+bool config_management_companion_at(uint8_t index, uint8_t addr[6],
+                                    uint8_t *addr_type);
+
 // Store a validated identity in RAM and schedule a deferred flash save. The
 // delay deliberately keeps flash erase/programming out of the console's
 // timing-sensitive USB pairing handshake.
