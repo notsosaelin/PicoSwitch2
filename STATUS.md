@@ -41,20 +41,40 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   consumes no slot; **the v13 management-companion table survives byte for byte**, with its own
   regression. The record remains single-bank and non-CRC: sanitize rejects malformed state and is
   explicitly **not** torn-write detection.
-  **One defect was found on hardware and fixed the same day:** adding the active-mapping identity
-  pushed `kbm status` to 729 bytes worst case (559 measured on the adapter) against the 512-byte
-  `CONFIG_WIRELESS_RESPONSE_CAPACITY`. An oversized reply is not truncated — the bridge substitutes
-  `response_too_large`, so the whole Keyboard & Mouse read failed and the new profile UI never
-  rendered at all. Product state and the 15 ingress counters are now two commands (`kbm status`
-  318 B, `kbm counters` 414 B worst case), a client merges them, and an adapter that does not know
-  `kbm counters` degrades to zeroed counters rather than failing. `kbm profiles` and `kbm map` now
-  page against `NS2_KBM_REPLY_MAX_BYTES` and compute `more` from what was actually emitted; both
-  previously budgeted against a 4096-byte firmware-local buffer. The status test asserted against
-  that same local buffer, which is exactly why it passed while the adapter was broken — it now
-  saturates every field and asserts the **wire** limit.
-  77/77 host, 585 Windows, all Android JVM tests, lint clean, debug APK, both boards build,
+  **Two wire defects were found on hardware and fixed.** Both were the same mistake — a size
+  assumption checked against the wrong constraint — and both are recorded in
+  [`docs/experiments/kbm-wire-pagination-data-loss-2026-08-30.md`](docs/experiments/kbm-wire-pagination-data-loss-2026-08-30.md).
+  **(1)** Adding the active-mapping identity pushed `kbm status` to 729 bytes worst case
+  (559 measured on the adapter) against a 511-byte usable slot. An oversized reply is not
+  truncated — the bridge substitutes `response_too_large` — so the whole read failed and the
+  profile UI never rendered. Split into `kbm status` (318 B) and `kbm counters` (414 B).
+  **(2)** The pagination added by that fix kept a **fixed `page * 8` offset** while emitting only
+  as many rows as the byte budget allowed, so every page silently dropped its last row. Reproduced
+  exactly against the content on the adapter: the Keyboard layout has 26 bindings and a client
+  received 25 — index 7, `key:0F → rstick_right` (the longest destination name, so the row the
+  budget cut), never sent. That is `Adapter returned an incomplete KB/M binding list`.
+  **A fixed page size cannot be rescued by choosing a smaller constant** — any constant is either
+  unsafe for the worst-case row or wasteful for the common one, and guessing wrong loses rows
+  silently. `kbm map`, `kbm pmap` and `kbm profiles` now use **cursor pagination**: `next` is the
+  index of the first item not in the reply, null exactly at the end, decided by the firmware, which
+  alone knows how many rows it serialized.
+  The read formatters moved to `src/ns2_kbm_commands.c` because `config.c` cannot compile on the
+  host — which is why their pagination was covered only by hand-written client fixtures, in both
+  C# and Kotlin, that agreed with the bug. `tools/test_ns2_kbm_commands.c` drives the real
+  formatter (1077 checks) and generates `tools/fixtures/management/kbm-wire-corpus.json`, the exact
+  firmware bytes, which the Windows and Android integration tests replay through their real
+  clients. One authority for three implementations.
+  **Pre-release companion fallbacks are gone.** `kbm counters`/`kbm profiles`/`kbm active` are
+  required, not probed; a missing one gives **Firmware update required** naming the command, rather
+  than degrading to a pre-profile editor or synthesizing zeroed counters — the old fallback is what
+  made a protocol defect look like an unfinished app. Both companions now expose explicit page
+  states (NotRead/Loading/Ready/FirmwareUpdateRequired/Error) and the editor exists only in Ready.
+  Firmware config migration (v11/v12/v13 → v14) is unaffected and still supported.
+  `cfg <command>` on the UART console now runs any management command and reports the size the
+  wireless bridge would see, closing the gap that forced both defects to be diagnosed from source.
+  78/78 host, 594 Windows, 435 Android JVM, lint clean, debug APK, both boards build,
   management command parity 62/62 and descriptor parity green.
-  **The rest of the profile system has still not run on hardware.**
+  **The fix has not yet run on hardware — it needs a reflash.**
   [`docs/architecture/kbm-profile-system-hld.md`](docs/architecture/kbm-profile-system-hld.md)
 
 - **BLE keyboard input — root-caused and fixed 2026-08-29; HARDWARE-CONFIRMED.** An 8BitDo

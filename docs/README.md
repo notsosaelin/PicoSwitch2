@@ -41,6 +41,7 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Android LE bond transport, admission latch, and coexistence soak | [`experiments/android-le-bond-transport-and-coexistence-soak-2026-08-21.md`](experiments/android-le-bond-transport-and-coexistence-soak-2026-08-21.md) |
 | Controller Link input published to a slot nothing reads | [`experiments/controller-link-console-slot-misroute-2026-08-21.md`](experiments/controller-link-console-slot-misroute-2026-08-21.md) |
 | Explicit Controller Link versus standalone Touch differential | [`experiments/controller-link-explicit-vs-touch-differential-2026-08-25.md`](experiments/controller-link-explicit-vs-touch-differential-2026-08-25.md) |
+| KB/M wire-size and pagination data loss (why the page would not load) | [`experiments/kbm-wire-pagination-data-loss-2026-08-30.md`](experiments/kbm-wire-pagination-data-loss-2026-08-30.md) |
 | Retro Fighters BattlerGC Pro | [`bluetooth/retrofighters-battlergc-pro.md`](bluetooth/retrofighters-battlergc-pro.md) |
 | 8BitDo Ultimate Bluetooth paddles | [`../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md`](../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md) |
 | Pro Controller 2 USB protocol | [`switch2/usb-spec.md`](switch2/usb-spec.md) |
