@@ -78,6 +78,21 @@ static uint32_t s_rejected_no_role;
 static uint32_t s_undecoded_reports;
 static uint32_t s_rollover_reports;
 static uint32_t s_remap_neutralizations;
+
+// The RAW previous keyboard bitmap, for switch-key edge detection.
+//
+// Separate from the state's key set, which holds the MASKED bitmap: a switch key
+// is removed from gameplay, so the state can never tell whether it is held, and
+// an edge computed from it would re-fire on every report while the key is down.
+static uint8_t s_prev_keys[NS2_KBM_KEY_BITMAP_BYTES];
+
+// Which resident slot each layout is realizing RIGHT NOW.
+//
+// Distinct from the persisted boot choice: a switch key changes this and nothing
+// else. A companion must be able to report what the adapter is actually running
+// rather than assuming it is still the profile that was last persisted.
+static uint8_t s_runtime_profile_id[NS2_KBM_LAYOUT_COUNT];
+static uint32_t s_runtime_switches;
 static uint32_t s_publishes;
 static uint32_t s_stick_recenters;
 static uint32_t s_source_id;
@@ -137,6 +152,12 @@ void ns2_kbm_runtime_init(void) {
     s_undecoded_reports = 0u;
     s_rollover_reports = 0u;
     s_remap_neutralizations = 0u;
+    memset(s_prev_keys, 0, sizeof(s_prev_keys));
+    s_runtime_switches = 0u;
+    // Power-up runs the PERSISTED boot choice for each layout. config_persist
+    // has already realized it into the record this snapshots from.
+    for (uint8_t i = 0; i < NS2_KBM_LAYOUT_COUNT; ++i)
+        s_runtime_profile_id[i] = s_config.boot_profile_id[i];
     s_publishes = 0u;
     s_stick_recenters = 0u;
     s_source_id = 0u;
@@ -665,7 +686,47 @@ bool ns2_kbm_runtime_submit_keyboard(const input_event_t *event,
 
     sync_config();
     note_battery(event);
-    ns2_kbm_state_set_keys(&s_state, usage_bitmap);
+
+    // PROFILE-SWITCH KEYS ARE RESOLVED BEFORE GAMEPLAY BINDING.
+    //
+    // A switch key selects a resident slot while the adapter runs standalone,
+    // which is the reason the adapter stores profiles at all. It is handled
+    // here, ahead of the mapping, and consumed: the raw bitmap drives the edge,
+    // and a masked copy drives gameplay, so pressing the key changes profile
+    // WITHOUT also firing whatever the outgoing profile mapped that usage to.
+    //
+    // Entirely RAM. No config save, no flash erase -- switching profiles mid-game
+    // must not wear the sector. The persisted boot choice is untouched.
+    ns2_kbm_layout_t layout = ns2_kbm_mode_layout(ns2_kbm_runtime_mode());
+    uint8_t target = ns2_kbm_switch_edge(&s_active, layout, s_prev_keys,
+                                         usage_bitmap);
+
+    uint8_t gameplay[NS2_KBM_KEY_BITMAP_BYTES];
+    memcpy(gameplay, usage_bitmap, sizeof(gameplay));
+    ns2_kbm_switch_mask(&s_active, layout, gameplay);
+    memcpy(s_prev_keys, usage_bitmap, sizeof(s_prev_keys));
+
+    if (target != NS2_KBM_PROFILE_ID_NONE) {
+        bool changed = false;
+        // An empty or wrong-layout slot is refused by ns2_kbm_apply, which is
+        // where that rule already lives. A refused switch changes nothing.
+        if (ns2_kbm_apply(&s_active, layout, target, &changed)) {
+            // Neutralize BEFORE the new mapping takes effect. A key held across
+            // the switch would otherwise leave the destination it drove in the
+            // OLD profile latched, with no report coming to release it.
+            ns2_kbm_state_clear_keyboard(&s_state);
+            ns2_kbm_state_clear_mouse(&s_state);
+            report_neutralize_slot(0);
+            ns2_native_motion_clear();
+            s_remap_neutralizations++;
+            s_runtime_profile_id[layout] = target;
+            s_runtime_switches++;
+            // The releasing report re-establishes whatever is genuinely held.
+            memset(gameplay, 0, sizeof(gameplay));
+        }
+    }
+
+    ns2_kbm_state_set_keys(&s_state, gameplay);
     s_roles.keyboard_reports++;
     // Keep the translator clock moving even on a keyboard-only report so a
     // stale mouse deflection cannot be frozen by keyboard traffic.

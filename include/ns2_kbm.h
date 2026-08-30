@@ -390,6 +390,31 @@ typedef struct {
     ns2_kbm_content_t content;
 } ns2_kbm_active_t;
 
+// ---------------------------------------------------------------------------
+// Profile-switch bindings
+// ---------------------------------------------------------------------------
+// A physical key that selects a RESIDENT SLOT, so the six stored profiles are
+// usable while the adapter runs standalone with no companion connected. That is
+// the entire point of the adapter holding profiles at all.
+//
+// THESE ARE LAYOUT-LEVEL CONFIGURATION, NOT PART OF ANY PROFILE'S MAPPING.
+//
+// Putting a switch key inside a profile's own bindings would let switching to a
+// profile that does not define it leave the user with no way to switch again --
+// a one-way door out of every other profile. They live beside the library so
+// they survive whichever profile is active.
+//
+// No usage is reserved or hardcoded. F1..F6 are a convenient default the UI may
+// offer; the user may bind any source the model accepts.
+#define NS2_KBM_SWITCH_BINDINGS_MAX NS2_KBM_MAX_PROFILES
+
+typedef struct {
+    uint8_t used;         // 0 when this entry is unassigned
+    uint8_t kind;         // ns2_kbm_source_kind_t
+    uint8_t code;         // HID usage, or mouse button number
+    uint8_t profile_id;   // the resident slot to select
+} ns2_kbm_switch_binding_t;
+
 typedef struct {
     uint8_t mode;  // ns2_kbm_mode_t
     // Next stable id to hand out. Monotonic, wrapping past
@@ -398,7 +423,65 @@ typedef struct {
     uint8_t reserved[2];
     ns2_kbm_profile_slot_t profiles[NS2_KBM_MAX_PROFILES];
     ns2_kbm_active_t active[NS2_KBM_LAYOUT_COUNT];
+
+    // v15 -------------------------------------------------------------------
+
+    // Which resident slot each layout realizes AT BOOT.
+    //
+    // Separate from `active[]` on purpose. `active[]` is the RUNTIME realized
+    // snapshot and a profile-switch key rewrites it in RAM with no flash write
+    // at all -- switching profiles mid-game must not erase a config sector. This
+    // is the persisted choice, written only by the explicit companion action,
+    // and it is what init realizes. So a power cycle always returns to a
+    // deterministic profile rather than to whatever key was pressed last.
+    uint8_t boot_profile_id[NS2_KBM_LAYOUT_COUNT];
+    uint8_t reserved2[2];
+
+    ns2_kbm_switch_binding_t switches[NS2_KBM_LAYOUT_COUNT]
+                                     [NS2_KBM_SWITCH_BINDINGS_MAX];
 } ns2_kbm_config_t;
+
+// Find the resident slot a source selects in this layout, or
+// NS2_KBM_PROFILE_ID_NONE when the source is not a switch key here.
+//
+// Pure and layout-scoped: a Keyboard switch key must never reach the
+// Keyboard+Mouse active state, and vice versa.
+uint8_t ns2_kbm_switch_target(const ns2_kbm_config_t *config,
+                              ns2_kbm_layout_t layout, ns2_kbm_source_t source);
+
+// Assign or clear one switch binding. `profile_id` of NS2_KBM_PROFILE_ID_NONE
+// clears any binding on that source. Returns false when the source is invalid,
+// the table is full, or the target is not a resident slot of `layout`.
+bool ns2_kbm_switch_bind(ns2_kbm_config_t *config, ns2_kbm_layout_t layout,
+                         ns2_kbm_source_t source, uint8_t profile_id);
+
+// Detect a profile-switch KEY-DOWN EDGE between two keyboard bitmaps.
+//
+// Returns the resident slot to select, or NS2_KBM_PROFILE_ID_NONE. Held keys do
+// not repeat: only a transition from clear to set fires.
+uint8_t ns2_kbm_switch_edge(const ns2_kbm_config_t *config,
+                            ns2_kbm_layout_t layout, const uint8_t *previous,
+                            const uint8_t *current);
+
+// Clear every bound switch source from a keyboard bitmap, so the key is
+// consumed by the switch and never also emits its gameplay binding.
+void ns2_kbm_switch_mask(const ns2_kbm_config_t *config,
+                         ns2_kbm_layout_t layout, uint8_t *bitmap);
+
+// Choose the slot this layout realizes AT POWER-UP, and realize it now.
+//
+// The only operation that changes boot behaviour, and the only one worth a flash
+// write. ns2_kbm_apply() on its own is a RUNTIME change: it is what the app's
+// Activate and a profile-switch key both do, and it costs no persistence.
+// `changed` reports whether anything actually moved, so a caller can skip the
+// save entirely when it did not.
+bool ns2_kbm_set_boot_profile(ns2_kbm_config_t *config, ns2_kbm_layout_t layout,
+                              uint8_t profile_id, bool *changed);
+
+// Realize each layout's PERSISTED boot-active slot into its runtime snapshot.
+// Called once at load, so power-up is deterministic no matter which profile a
+// switch key happened to select before the adapter was last written.
+void ns2_kbm_realize_boot_profiles(ns2_kbm_config_t *config);
 
 // ---------------------------------------------------------------------------
 // Content fingerprint

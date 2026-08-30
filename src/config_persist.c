@@ -85,6 +85,19 @@ _Static_assert(sizeof(((ns2_kbm_content_t *)0)->mouse) ==
                "v14 content must carry v13's mouse block unchanged");
 _Static_assert(sizeof(config_record_t) > sizeof(config_record_v13_t),
                "v14 appends to v13");
+
+// v15 appends the boot-active slot and the switch table to v14's KB/M block.
+// Every v14 field keeps its offset, which is what makes the migration a copy.
+_Static_assert(offsetof(ns2_kbm_config_t, profiles) ==
+                   offsetof(ns2_kbm_config_v14_t, profiles),
+               "v15 must not move v14's profile library");
+_Static_assert(offsetof(ns2_kbm_config_t, active) ==
+                   offsetof(ns2_kbm_config_v14_t, active),
+               "v15 must not move v14's realized snapshots");
+_Static_assert(sizeof(ns2_kbm_config_t) > sizeof(ns2_kbm_config_v14_t),
+               "v15 appends to v14");
+_Static_assert(sizeof(config_record_t) > sizeof(config_record_v14_t),
+               "v15 appends to v14's record");
 // The whole feature has to fit the widened record. If this ever fails, compact
 // the representation before widening further -- the sector is 4096 but the
 // programmed region is deliberately the smallest thing that holds the model.
@@ -349,6 +362,35 @@ config_persist_load_t config_persist_load(const void *stored, uint32_t stored_le
         // companion re-registers itself on its next authenticated session.
         memset(out->mgmt_companions, 0, sizeof(out->mgmt_companions));
         result = CONFIG_PERSIST_MIGRATED;
+    } else if (header.version == 14u) {
+        // v14 -> v15. The six stored profiles ARE the adapter's resident slots;
+        // nothing about them changes. What is added is the persisted boot-active
+        // slot and the profile-switch key table.
+        if (stored_len < sizeof(config_record_v14_t))
+            return CONFIG_PERSIST_DEFAULTED;
+        config_record_v14_t v14;
+        memcpy(&v14, stored, sizeof(v14));
+        out->body_color[0] = header.body_color[0];
+        out->body_color[1] = header.body_color[1];
+        out->body_color[2] = header.body_color[2];
+        memcpy(out->joycon2_left_accent, header.joycon2_left_accent,
+               sizeof(out->joycon2_left_accent));
+        memcpy(out->joycon2_right_accent, header.joycon2_right_accent,
+               sizeof(out->joycon2_right_accent));
+        out->wake_valid = header.wake_valid;
+        out->wake_identity = header.wake_identity;
+        memcpy(out->mgmt_companions, v14.mgmt_companions,
+               sizeof(out->mgmt_companions));
+
+        // The v14 KB/M prefix moves across verbatim: ids, names, layouts,
+        // mappings, revisions and both realized snapshots.
+        out->kbm.mode = v14.kbm.mode;
+        out->kbm.next_profile_id = v14.kbm.next_profile_id;
+        memcpy(out->kbm.profiles, v14.kbm.profiles, sizeof(out->kbm.profiles));
+        memcpy(out->kbm.active, v14.kbm.active, sizeof(out->kbm.active));
+        // boot_profile_id and the switch table are filled in below, by the rule
+        // that applies to every migrated schema.
+        result = CONFIG_PERSIST_MIGRATED;
     } else if (header.version == 13u) {
         if (stored_len < sizeof(config_record_v13_t))
             return CONFIG_PERSIST_DEFAULTED;
@@ -375,7 +417,29 @@ config_persist_load_t config_persist_load(const void *stored, uint32_t stored_le
 
     out->magic = CONFIG_PERSIST_MAGIC;
     out->version = CONFIG_PERSIST_VERSION;
+
+    // EVERY migrated schema predates the boot/runtime split, so its record says
+    // what the layout was realizing but not what it should realize at power-up.
+    // The answer is the same thing: an upgraded adapter must come back doing
+    // exactly what it did before. Defaulting these to Default instead would
+    // silently discard a migrated mapping -- which is precisely what happened
+    // when only the v14 branch set them.
+    //
+    // No switch key is invented on any path. Reserving F1..F6 would steal six
+    // keys out of a mapping the user already has.
+    if (result == CONFIG_PERSIST_MIGRATED) {
+        for (uint8_t i = 0; i < NS2_KBM_LAYOUT_COUNT; ++i)
+            out->kbm.boot_profile_id[i] = out->kbm.active[i].source_id;
+        memset(out->kbm.switches, 0, sizeof(out->kbm.switches));
+    }
+
     if (!ns2_kbm_config_sanitize(&out->kbm) && result == CONFIG_PERSIST_CURRENT)
         result = CONFIG_PERSIST_REPAIRED;
+    // AFTER sanitize, so a boot choice that had to fall back to Default is the
+    // one realized. Power-up follows the persisted choice, never whatever the
+    // runtime snapshot held when the record was last written -- a profile-switch
+    // key changes the runtime without a flash write, and an unrelated save must
+    // not turn that into the boot profile.
+    ns2_kbm_realize_boot_profiles(&out->kbm);
     return result;
 }

@@ -185,9 +185,9 @@ static void test_v11_migration(void) {
            CONFIG_PERSIST_MIGRATED);
     assert(record.version == CONFIG_PERSIST_VERSION);
     // Deliberate tripwire: bumping the schema must bring whoever did it here to
-    // confirm every older layout still has a migration. v11 upgrades three
+    // confirm every older layout still has a migration. v11 upgrades four
     // steps in one load.
-    assert(CONFIG_PERSIST_VERSION == 14u);
+    assert(CONFIG_PERSIST_VERSION == 15u);
 
     assert(record.body_color[0] == 0x11);
     assert(record.wake_valid == 0xA5u);
@@ -693,7 +693,13 @@ static void test_round_trip(void) {
     content.mouse.sensitivity_x = 900u;
     uint8_t work = ns2_kbm_profile_create(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD,
                                           "Work", &content);
-    assert(ns2_kbm_apply(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD, work, NULL));
+    // SET BOOT, not merely apply. Since v15 those are different acts: apply is
+    // the runtime change an app's Activate and a profile-switch key both make,
+    // and it deliberately does not survive a power cycle. Only an explicit boot
+    // choice does -- otherwise whichever profile a hotkey happened to select
+    // would become the boot profile the next time anything was saved.
+    assert(ns2_kbm_set_boot_profile(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD, work,
+                                    NULL));
 
     uint8_t sector[2048];
     memset(sector, 0xFF, sizeof(sector));
@@ -810,6 +816,142 @@ static void test_arbitrary_bytes_are_survivable(void) {
     puts("  arbitrary bytes sanitize into a usable configuration");
 }
 
+// v14 -> v15. The adapter has ALREADY RUN v14 during development, so this is a
+// real installation being upgraded, not a hypothetical one.
+//
+// v15 adds the persisted boot-active slot and the profile-switch key table. The
+// six stored profiles are reinterpreted as the adapter's RESIDENT SLOTS -- a
+// change of meaning in the documentation, not of bytes -- so nothing about them
+// may move, and the console must behave identically after the upgrade.
+static void test_v14_migration(void) {
+    config_record_v14_t old;
+    memset(&old, 0, sizeof(old));
+    old.magic = CONFIG_PERSIST_MAGIC;
+    old.version = 14u;
+    old.body_color[0] = 0x77;
+    old.wake_valid = 0x5Au;
+    old.wake_identity.product_id = 0x2069u;
+    old.mgmt_companions[0].valid = 1u;
+    old.mgmt_companions[0].addr[0] = 0xC0;
+
+    // A v14 library: two resident profiles, and the Keyboard layout realizing
+    // the custom one rather than Default.
+    ns2_kbm_config_t seed;
+    ns2_kbm_config_defaults(&seed);
+    ns2_kbm_content_t work;
+    ns2_kbm_template_default(NS2_KBM_LAYOUT_KEYBOARD, &work);
+    assert(ns2_kbm_set_binding(&work, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F),
+                               NS2_DST_X));
+    uint8_t work_id = ns2_kbm_profile_create(&seed, NS2_KBM_LAYOUT_KEYBOARD,
+                                             "Work", &work);
+    assert(work_id != NS2_KBM_PROFILE_ID_NONE);
+    ns2_kbm_content_t desk;
+    ns2_kbm_template_default(NS2_KBM_LAYOUT_KEYBOARD_MOUSE, &desk);
+    uint8_t desk_id = ns2_kbm_profile_create(&seed, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
+                                             "Desktop", &desk);
+    assert(desk_id != NS2_KBM_PROFILE_ID_NONE);
+    bool changed = false;
+    assert(ns2_kbm_apply(&seed, NS2_KBM_LAYOUT_KEYBOARD, work_id, &changed));
+
+    // Copy the v14 prefix of that config into the frozen v14 container.
+    old.kbm.mode = seed.mode;
+    old.kbm.next_profile_id = seed.next_profile_id;
+    memcpy(old.kbm.profiles, seed.profiles, sizeof(old.kbm.profiles));
+    memcpy(old.kbm.active, seed.active, sizeof(old.kbm.active));
+
+    uint8_t sector[2048];
+    memset(sector, 0xFF, sizeof(sector));
+    memcpy(sector, &old, sizeof(old));
+
+    config_record_t record;
+    assert(config_persist_load(sector, sizeof(sector), &record) ==
+           CONFIG_PERSIST_MIGRATED);
+    assert(record.version == 15u);
+
+    // (1) Unrelated settings and the companion table survive.
+    assert(record.body_color[0] == 0x77);
+    assert(record.wake_identity.product_id == 0x2069u);
+    assert(config_mgmt_companion_known(record.mgmt_companions,
+                                       CONFIG_MGMT_COMPANIONS_MAX,
+                                       old.mgmt_companions[0].addr));
+
+    // (2) EVERY RESIDENT SLOT SURVIVES, with its id, name, layout and mapping.
+    const ns2_kbm_profile_slot_t *work_slot =
+        ns2_kbm_profile_find(&record.kbm, work_id);
+    assert(work_slot != NULL);
+    assert(strcmp(work_slot->name, "Work") == 0);
+    assert(work_slot->layout == (uint8_t)NS2_KBM_LAYOUT_KEYBOARD);
+    assert(ns2_kbm_binding(&work_slot->content, NS2_KBM_LAYOUT_KEYBOARD,
+                           key(KEY_F)) == NS2_DST_X);
+    const ns2_kbm_profile_slot_t *desk_slot =
+        ns2_kbm_profile_find(&record.kbm, desk_id);
+    assert(desk_slot != NULL);
+    assert(strcmp(desk_slot->name, "Desktop") == 0);
+
+    // (3) THE CONSOLE BEHAVES IDENTICALLY. The boot choice takes the profile the
+    // layout was ALREADY realizing, so a firmware update does not silently
+    // change what the adapter does at power-up.
+    assert(record.kbm.boot_profile_id[NS2_KBM_LAYOUT_KEYBOARD] == work_id);
+    assert(record.kbm.boot_profile_id[NS2_KBM_LAYOUT_KEYBOARD_MOUSE] ==
+           NS2_KBM_PROFILE_ID_DEFAULT);
+    assert(realized_binding(&record, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
+           NS2_DST_X);
+
+    // (4) No switch key is invented. Reserving F1..F6 on an upgrade would
+    // silently steal six keys out of the user's existing mapping.
+    for (unsigned l = 0; l < NS2_KBM_LAYOUT_COUNT; ++l)
+        for (unsigned i = 0; i < NS2_KBM_SWITCH_BINDINGS_MAX; ++i)
+            assert(record.kbm.switches[l][i].used == 0u);
+}
+
+// Boot-active and runtime-active are different facts, and only one is persisted.
+static void test_boot_active_is_what_power_up_realizes(void) {
+    config_record_t record;
+    config_persist_defaults(&record);
+    ns2_kbm_content_t content;
+    ns2_kbm_template_default(NS2_KBM_LAYOUT_KEYBOARD, &content);
+    assert(ns2_kbm_set_binding(&content, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F),
+                               NS2_DST_Y));
+    uint8_t id = ns2_kbm_profile_create(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD,
+                                        "Halo", &content);
+    assert(id != NS2_KBM_PROFILE_ID_NONE);
+
+    // A hotkey switch changes the RUNTIME snapshot only; the persisted boot
+    // choice stays Default. Simulated here by applying without touching
+    // boot_profile_id, which is exactly what the runtime does.
+    bool changed = false;
+    assert(ns2_kbm_apply(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD, id, &changed));
+    assert(realized_binding(&record, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
+           NS2_DST_Y);
+    assert(record.kbm.boot_profile_id[NS2_KBM_LAYOUT_KEYBOARD] ==
+           NS2_KBM_PROFILE_ID_DEFAULT);
+
+    // Now persist and reload: power-up follows the BOOT choice, not the runtime
+    // one. Without this, an unrelated save would silently promote whichever
+    // profile a switch key happened to select into the boot profile.
+    uint8_t sector[2048];
+    memset(sector, 0xFF, sizeof(sector));
+    memcpy(sector, &record, sizeof(record));
+    config_record_t reloaded;
+    assert(config_persist_load(sector, sizeof(sector), &reloaded) !=
+           CONFIG_PERSIST_DEFAULTED);
+    assert(reloaded.kbm.active[NS2_KBM_LAYOUT_KEYBOARD].source_id ==
+           NS2_KBM_PROFILE_ID_DEFAULT);
+    assert(realized_binding(&reloaded, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
+           ns2_kbm_default_binding(NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)));
+
+    // Setting the boot slot explicitly is what makes it survive.
+    assert(ns2_kbm_set_boot_profile(&reloaded.kbm, NS2_KBM_LAYOUT_KEYBOARD, id,
+                                    NULL));
+    memset(sector, 0xFF, sizeof(sector));
+    memcpy(sector, &reloaded, sizeof(reloaded));
+    config_record_t again;
+    assert(config_persist_load(sector, sizeof(sector), &again) !=
+           CONFIG_PERSIST_DEFAULTED);
+    assert(realized_binding(&again, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
+           NS2_DST_Y);
+}
+
 int main(void) {
     puts("config persistence:");
     test_defaults();
@@ -819,6 +961,8 @@ int main(void) {
     test_v11_migration();
     test_v12_migration();
     test_v13_migration();
+    test_v14_migration();
+    test_boot_active_is_what_power_up_realizes();
     test_v13_canonical_mapping_consumes_no_slot();
     test_profile_library();
     test_stable_ids_do_not_alias_reused_slots();
