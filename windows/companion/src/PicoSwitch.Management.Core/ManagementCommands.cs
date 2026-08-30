@@ -144,8 +144,14 @@ public static partial class ManagementCommands
     /// has changed the library, not the adapter's behaviour, and conflating the
     /// two is what made a mapping edit feel like it had silently failed.
     /// </summary>
+    // Built as whole command strings rather than assembled from a bare "default"
+    // fragment, matching the Kotlin builder: the parity checker reads string
+    // literals in the command object as commands, and a fragment would look like
+    // a verb the firmware never dispatches.
     public static string KbmApply(KbmLayout layout, int id) =>
-        $"kbm apply {layout.Wire()} {Target(id)}";
+        id == KbmProfileIds.Default
+            ? $"kbm apply {layout.Wire()} default"
+            : $"kbm apply {layout.Wire()} {id.ToString(CultureInfo.InvariantCulture)}";
 
     public static string KbmProfileRename(int id, string name) =>
         $"kbm profile rename {id} {name}";
@@ -174,7 +180,9 @@ public static partial class ManagementCommands
     /// </param>
     public static string KbmDraftBegin(KbmLayout layout, int id,
                                        int baseRevision, string name) =>
-        $"kbm draft begin {layout.Wire()} {(id == KbmProfileIds.None ? "new" : id.ToString(CultureInfo.InvariantCulture))} {baseRevision} {name}";
+        id == KbmProfileIds.None
+            ? $"kbm draft begin {layout.Wire()} new {baseRevision} {name}"
+            : $"kbm draft begin {layout.Wire()} {id} {baseRevision} {name}";
 
     public static string KbmDraftBind(KbmSource source, KbmDestination destination) =>
         $"kbm draft bind {source.Wire} {destination.Wire()}";
@@ -184,11 +192,6 @@ public static partial class ManagementCommands
 
     public const string KbmDraftCommit = "kbm draft commit";
     public const string KbmDraftAbort = "kbm draft abort";
-
-    private static string Target(int id) =>
-        id == KbmProfileIds.Default
-            ? "default"
-            : id.ToString(CultureInfo.InvariantCulture);
 
     public static string KbmBind(KbmLayout profile, KbmSource source, KbmDestination? destination) =>
         $"kbm bind {profile.Wire()} {source.Wire} {(destination is null ? "default" : destination.Value.Wire())}";

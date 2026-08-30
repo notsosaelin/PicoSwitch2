@@ -247,6 +247,30 @@ typealias KbmMapping = dev.picoswitch.management.KbmMapping
 /** One page of `kbm map <profile> <page>`. */
 typealias KbmMapPage = dev.picoswitch.management.KbmMapPage
 
+// --- profile library -------------------------------------------------------
+// A profile is a NAMED user mapping within a layout, and it is the user's
+// choice. The layout above is the SHAPE of the mapping and is derived from
+// which roles are filled. Save stores a profile; Apply is what changes the
+// console. Those three distinctions are the feature.
+
+/** One named mapping the user can select, within one layout. */
+typealias KbmProfileInfo = dev.picoswitch.management.KbmProfileInfo
+
+/** What a layout is REALLY resolving against, and whether it still matches. */
+typealias KbmActiveMapping = dev.picoswitch.management.KbmActiveMapping
+
+/** The adapter's profile library and both realized mappings. */
+typealias KbmProfiles = dev.picoswitch.management.KbmProfiles
+
+/** Reserved profile identities; Default is a template, not a stored profile. */
+typealias KbmProfileIds = dev.picoswitch.management.KbmProfileIds
+
+/** A local, editable copy of one profile. Editing it sends nothing. */
+typealias KbmDraft = dev.picoswitch.management.KbmDraft
+
+/** Where an open draft stands against adapter truth. */
+typealias KbmDraftState = dev.picoswitch.management.KbmDraftState
+
 // ---------------------------------------------------------------------------
 // Mouse translation
 // ---------------------------------------------------------------------------
@@ -319,11 +343,39 @@ data class KbmState(
     val dirty: Boolean = false,
     val saving: Boolean = false,
     val loading: Boolean = false,
+
+    /**
+     * The adapter's profile library and both realized mappings. Empty on
+     * firmware that predates them, which is not an error: that adapter has
+     * exactly one mapping per layout and the profile controls are not offered.
+     */
+    val profiles: KbmProfiles = KbmProfiles(),
+
+    /**
+     * The local, unsaved copy of the profile being edited.
+     *
+     * Every edit in the UI mutates THIS and nothing else. No management command
+     * is sent until the user saves, which is what makes Save and Discard mean
+     * anything and what stops a flash erase per keystroke.
+     */
+    val draft: KbmDraft? = null,
 ) {
     fun mapping(profile: KbmProfile): KbmMapping = mappings[profile] ?: KbmMapping(profile)
 
-    /** The profile whose bindings are currently in force on the adapter. */
+    /** The layout whose bindings are currently in force on the adapter. */
     val activeProfile: KbmProfile get() = status.profile
+
+    /** Where the open draft stands against adapter truth. */
+    fun draftState(connected: Boolean): KbmDraftState =
+        draft?.stateAgainst(profiles, connected)
+            ?: if (connected) KbmDraftState.Clean else KbmDraftState.Disconnected
+
+    /**
+     * The bindings the editor should show: the DRAFT when one is open, so an
+     * edit appears immediately without any adapter write.
+     */
+    fun editorBindings(layout: KbmProfile): List<KbmBinding> =
+        draft?.takeIf { it.layout == layout }?.bindings ?: mapping(layout).bindings
 
     /**
      * Mouse tuning only affects the translated-stick path. When the adapter is

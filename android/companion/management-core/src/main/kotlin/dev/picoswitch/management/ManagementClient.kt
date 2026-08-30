@@ -146,6 +146,108 @@ class ManagementClient(
         return KbmMapping(profile, bindings, loaded = true)
     }
 
+    /**
+     * One STORED profile's mapping, as opposed to the layout's realized one.
+     *
+     * Shares the pagination guards above by construction: the same page-shape,
+     * total-stability and progress checks apply, because the same class of
+     * adapter bug would be just as invisible here.
+     */
+    suspend fun loadKbmProfileMapping(profile: KbmProfileInfo): KbmMapping {
+        val bindings = mutableListOf<KbmBinding>()
+        var pageNumber = 0
+        var expectedTotal: Int? = null
+        while (true) {
+            val command = ManagementCommands.kbmProfileMap(profile.id, pageNumber)
+            val page = exchange(command, ManagementProtocol::kbmMapPage)
+            if (page.page != pageNumber) {
+                throw ManagementPaginationException("Adapter returned a different KB/M page")
+            }
+            if (expectedTotal == null) expectedTotal = page.total
+            if (expectedTotal != page.total || bindings.size + page.bindings.size > page.total) {
+                throw ManagementPaginationException("Adapter changed the KB/M binding total during pagination")
+            }
+            bindings += page.bindings
+            if (!page.more) break
+            if (page.bindings.isEmpty() || ++pageNumber > MAX_KBM_MAP_PAGES) {
+                throw ManagementPaginationException("Adapter returned a non-progressing KB/M binding list")
+            }
+        }
+        if (bindings.size != expectedTotal) {
+            throw ManagementPaginationException("Adapter returned an incomplete KB/M binding list")
+        }
+        return KbmMapping(profile.layout, bindings, loaded = true)
+    }
+
+    /** The profile library and both realized mappings. */
+    suspend fun kbmProfiles(): KbmProfiles {
+        val profiles = exchange(ManagementCommands.KBM_PROFILES, ManagementProtocol::kbmProfileList)
+        val active = exchange(ManagementCommands.KBM_ACTIVE, ManagementProtocol::kbmActive)
+        return KbmProfiles(profiles, active, max = KBM_PROFILE_CAPACITY)
+    }
+
+    /**
+     * APPLY. The only call that changes what the console is doing.
+     *
+     * Re-reads afterwards rather than trusting the acknowledgement: a mutation
+     * returning `ok` is not evidence the adapter realized what was asked.
+     */
+    suspend fun applyKbmProfile(layout: KbmProfile, id: Int): KbmProfiles {
+        acknowledge(ManagementCommands.kbmApply(layout, id))
+        return kbmProfiles()
+    }
+
+    /**
+     * SAVE. Writes a complete profile in one staged transaction, then reads the
+     * stored revision back.
+     *
+     * This deliberately does NOT change what the console is running. On any
+     * failure the draft is aborted, so a half-transferred mapping can never be
+     * left staged for the next caller to commit by accident.
+     */
+    suspend fun saveKbmProfile(draft: KbmDraft): Pair<Int, Int> {
+        acknowledge(
+            ManagementCommands.kbmDraftBegin(
+                draft.layout,
+                // A draft on the built-in template becomes a NEW profile: the
+                // Default is a template and is never written into.
+                if (draft.isBuiltin) KbmProfileIds.NONE else draft.profileId,
+                if (draft.isBuiltin) 0 else draft.baseRevision,
+                draft.name,
+            ),
+        )
+        try {
+            draft.bindings.forEach {
+                acknowledge(ManagementCommands.kbmDraftBind(it.source, it.destination))
+            }
+            KbmMouseField.profileOwned(draft.mouse).forEach { (field, value) ->
+                acknowledge(ManagementCommands.kbmDraftMouse(field, value))
+            }
+            val reply = raw(ManagementCommands.KBM_DRAFT_COMMIT)
+            return ManagementProtocol.kbmDraftResult(ManagementCommands.KBM_DRAFT_COMMIT, reply)
+        } catch (error: Throwable) {
+            // Best effort: the adapter also discards staging on disconnect and on
+            // the next begin, so a failed abort cannot strand anything.
+            runCatching { acknowledge(ManagementCommands.KBM_DRAFT_ABORT) }
+            throw error
+        }
+    }
+
+    suspend fun renameKbmProfile(id: Int, name: String): KbmProfiles {
+        acknowledge(ManagementCommands.kbmProfileRename(id, name))
+        return kbmProfiles()
+    }
+
+    suspend fun duplicateKbmProfile(id: Int, name: String): KbmProfiles {
+        acknowledge(ManagementCommands.kbmProfileDuplicate(id, name))
+        return kbmProfiles()
+    }
+
+    suspend fun deleteKbmProfile(id: Int): KbmProfiles {
+        acknowledge(ManagementCommands.kbmProfileDelete(id))
+        return kbmProfiles()
+    }
+
     suspend fun setKbmMode(mode: KbmMode): KbmStatus {
         acknowledge(ManagementCommands.kbmMode(mode))
         return kbmStatus()
@@ -510,6 +612,14 @@ class ManagementClient(
         // address produces. Used only to probe whether `peers forget` exists.
         const val UNADDRESSABLE_PEER_ID = "p_00000000"
         const val MAX_KBM_MAP_PAGES = 32
+
+        /**
+         * Custom profile slots the adapter offers. Read from the wire would be
+         * better, but the list reply's `max` is only present when the library is
+         * supported at all, and this value is what distinguishes "no library"
+         * from "empty library".
+         */
+        const val KBM_PROFILE_CAPACITY = 6
         const val MAX_BOND_PAGES = 128
         // 32 possible peers and at least one per page, so this bound can only be
         // reached by an adapter that is misbehaving.
