@@ -1,6 +1,10 @@
 # A BLE keyboard is classified as a mouse
 
-**Status:** FIXED in firmware, 2026-08-29. Awaiting one hardware smoke test.
+**Status:** FIXED in firmware and **confirmed on hardware**, 2026-08-29.
+
+The 8BitDo Retro keyboard now pairs and is reported as **keyboard and mouse
+connected** — the COMBO outcome. Before the fix the same device reported
+`keyboard=False mouse=True` and its keys never reached the keyboard role.
 
 The discriminator is the report descriptor's OPENING application collection plus
 the shape of its keyboard half — see "The fix" below.
@@ -153,6 +157,36 @@ device.
 
 A firmware built from this change does carry `btid`, so a future capture will
 return the real bytes — useful confirmation, not a prerequisite.
+
+## Hardware result, 2026-08-29
+
+The 8BitDo pairs and reports **keyboard and mouse connected**. That is COMBO, and
+it is the intended outcome: the peer now holds both roles rather than only the
+mouse.
+
+It also confirms something the fix assumed rather than measured — the device
+declares a REAL pointer collection. `bthid_mouse_parse_descriptor()` requires
+relative X and Y, so `has_pointer` could not have been true otherwise. The
+pointer half is not an artefact of the keyboard parser; the device genuinely
+declares a pointing device alongside its keyboard.
+
+### The consequence worth knowing
+
+`ns2_kbm_roles_admit()` gives a COMBO peer every role it offers that is free, so
+this keyboard now holds the mouse role as well. **A separate mouse connected
+afterwards is refused as a duplicate** (`NS2_KBM_ADMIT_REJECT_DUPLICATE`), because
+the composite already has both halves.
+
+For a genuine combo — a keyboard with a trackpad or trackpoint — that is correct,
+and it is exactly how a Classic combo peripheral has always behaved. It is only
+unwanted if a device declares a pointer collection it cannot actually drive, in
+which case it squats the mouse role for nothing.
+
+**Not changed, because nothing has been observed to need it.** If a real mouse is
+ever refused while this keyboard is connected, the smallest fix is to let a COMBO
+peer yield its pointer half to a peer whose primary role is MOUSE, rather than to
+narrow the classification again. Recorded here so that option is found rather than
+rediscovered.
 
 ## The unrelated timeout in the same session
 
