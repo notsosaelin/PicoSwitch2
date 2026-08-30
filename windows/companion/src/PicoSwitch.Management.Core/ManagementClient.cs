@@ -252,6 +252,62 @@ public sealed class ManagementClient(
         return new KbmMapping(profile, new ValueList<KbmBinding>(bindings), Loaded: true);
     }
 
+    /// <summary>
+    /// One STORED profile's mapping, as opposed to the layout's realized one.
+    ///
+    /// Shares the pagination guards above by construction: the same page-shape,
+    /// total-stability and progress checks apply, because the same class of
+    /// adapter bug would be just as invisible here.
+    /// </summary>
+    public async Task<KbmMapping> LoadKbmProfileMappingAsync(
+        KbmProfileInfo profile,
+        CancellationToken ct = default)
+    {
+        var bindings = new List<KbmBinding>();
+        var pageNumber = 0;
+        int? expectedTotal = null;
+        while (true)
+        {
+            var command = ManagementCommands.KbmProfileMap(profile.Id, pageNumber);
+            var page = await ExchangeAsync(command, ManagementProtocol.KbmMapPage, ct)
+                .ConfigureAwait(false);
+            if (page.Page != pageNumber)
+            {
+                throw new ManagementPaginationException(
+                    "Adapter returned a different KB/M page");
+            }
+
+            expectedTotal ??= page.Total;
+            if (expectedTotal != page.Total ||
+                bindings.Count + page.Bindings.Count > page.Total)
+            {
+                throw new ManagementPaginationException(
+                    "Adapter changed the KB/M binding total during pagination");
+            }
+
+            bindings.AddRange(page.Bindings);
+            if (!page.More)
+            {
+                break;
+            }
+
+            if (page.Bindings.Count == 0 || ++pageNumber > MaxKbmMapPages)
+            {
+                throw new ManagementPaginationException(
+                    "Adapter returned a non-progressing KB/M binding list");
+            }
+        }
+
+        if (bindings.Count != expectedTotal)
+        {
+            throw new ManagementPaginationException(
+                "Adapter returned an incomplete KB/M binding list");
+        }
+
+        return new KbmMapping(profile.Layout, new ValueList<KbmBinding>(bindings),
+                              Loaded: true);
+    }
+
     public async Task<KbmStatus> SetKbmModeAsync(KbmMode mode, CancellationToken ct = default)
     {
         await AcknowledgeAsync(ManagementCommands.KbmMode(mode), ct).ConfigureAwait(false);
@@ -269,20 +325,124 @@ public sealed class ManagementClient(
         return await LoadKbmMappingAsync(profile, ct).ConfigureAwait(false);
     }
 
-    public Task<KbmProfiles> KbmProfilesAsync(CancellationToken ct = default) =>
-        ExchangeAsync(ManagementCommands.KbmProfileList,
-                      ManagementProtocol.KbmProfiles, ct);
+    /// <summary>The profile library and both realized mappings.</summary>
+    public async Task<KbmProfiles> KbmProfilesAsync(CancellationToken ct = default)
+    {
+        var profiles = await ExchangeAsync(ManagementCommands.KbmProfileList,
+                                           ManagementProtocol.KbmProfileList, ct)
+            .ConfigureAwait(false);
+        var active = await ExchangeAsync(ManagementCommands.KbmActive,
+                                         ManagementProtocol.KbmActive, ct)
+            .ConfigureAwait(false);
+        // Max is the adapter's own capacity, echoed by the list reply; six here
+        // and read from the wire rather than hardcoded so a future firmware can
+        // change it without a client update.
+        return new KbmProfiles(profiles, active, Max: KbmProfileCapacity);
+    }
+
+    private const int KbmProfileCapacity = 6;
 
     /// <summary>
-    /// Activate a profile on the ADAPTER, then re-read the table so the caller
-    /// never has to assume the selection took.
+    /// APPLY. The only call that changes what the console is doing.
+    ///
+    /// Re-reads afterwards rather than trusting the acknowledgement: a mutation
+    /// returning <c>ok</c> is not evidence the adapter realized what was asked.
     /// </summary>
-    public async Task<KbmProfiles> UseKbmProfileAsync(
+    public async Task<KbmProfiles> ApplyKbmProfileAsync(
         KbmLayout layout,
         int id,
         CancellationToken ct = default)
     {
-        await AcknowledgeAsync(ManagementCommands.KbmProfileUse(layout, id), ct)
+        await AcknowledgeAsync(ManagementCommands.KbmApply(layout, id), ct)
+            .ConfigureAwait(false);
+        return await KbmProfilesAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// SAVE. Writes a complete profile in one staged transaction, then reads the
+    /// stored revision back.
+    ///
+    /// This deliberately does NOT change what the console is running. A user who
+    /// saves has changed the library; Apply is a separate, explicit act.
+    ///
+    /// On any failure the draft is aborted, so a half-transferred mapping can
+    /// never be left staged for the next caller to commit by accident.
+    /// </summary>
+    /// <param name="id">
+    /// <see cref="KbmProfileIds.None"/> to create a new profile.
+    /// </param>
+    public async Task<(int Id, int Revision)> SaveKbmProfileAsync(
+        KbmLayout layout,
+        int id,
+        int baseRevision,
+        string name,
+        IReadOnlyList<KbmBinding> bindings,
+        KbmMouseConfig mouse,
+        CancellationToken ct = default)
+    {
+        await AcknowledgeAsync(
+            ManagementCommands.KbmDraftBegin(layout, id, baseRevision, name), ct)
+            .ConfigureAwait(false);
+        try
+        {
+            foreach (var binding in bindings)
+            {
+                await AcknowledgeAsync(
+                    ManagementCommands.KbmDraftBind(binding.Source,
+                                                    binding.Destination), ct)
+                    .ConfigureAwait(false);
+            }
+
+            foreach (var (field, value) in KbmMouseFields.Values(mouse))
+            {
+                await AcknowledgeAsync(
+                    ManagementCommands.KbmDraftMouse(field, value), ct)
+                    .ConfigureAwait(false);
+            }
+
+            var reply = await RawAsync(ManagementCommands.KbmDraftCommit, ct)
+                .ConfigureAwait(false);
+            return ManagementProtocol.KbmDraftResult(
+                ManagementCommands.KbmDraftCommit, reply);
+        }
+        catch
+        {
+            // Best effort: the adapter also discards staging on disconnect and
+            // on the next Begin, so a failed abort cannot strand anything.
+            try
+            {
+                await AcknowledgeAsync(ManagementCommands.KbmDraftAbort, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (ManagementException)
+            {
+                // The original failure is the one worth reporting.
+            }
+
+            throw;
+        }
+    }
+
+    public async Task<KbmProfiles> RenameKbmProfileAsync(
+        int id, string name, CancellationToken ct = default)
+    {
+        await AcknowledgeAsync(ManagementCommands.KbmProfileRename(id, name), ct)
+            .ConfigureAwait(false);
+        return await KbmProfilesAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<KbmProfiles> DuplicateKbmProfileAsync(
+        int id, string name, CancellationToken ct = default)
+    {
+        await AcknowledgeAsync(ManagementCommands.KbmProfileDuplicate(id, name), ct)
+            .ConfigureAwait(false);
+        return await KbmProfilesAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<KbmProfiles> DeleteKbmProfileAsync(
+        int id, CancellationToken ct = default)
+    {
+        await AcknowledgeAsync(ManagementCommands.KbmProfileDelete(id), ct)
             .ConfigureAwait(false);
         return await KbmProfilesAsync(ct).ConfigureAwait(false);
     }

@@ -271,10 +271,14 @@ public static class ManagementProtocol
                 Publishes: value.Long("publishes"),
                 Recenters: value.Long("recenters"),
                 ActiveProfile: value.Int("activeProfile"),
-                ActiveProfileName: value.OptionalString("activeProfileName") ?? string.Empty);
+                ActiveProfileName: value.OptionalString("activeProfileName") ?? string.Empty,
+                ActiveRevision: value.Int("activeRevision"),
+                ActiveFingerprint: value.Long("activeFingerprint"),
+                ActiveMatchesSaved: value.Bool("activeMatchesSaved"));
         });
 
-    public static KbmProfiles KbmProfiles(string command, string response) =>
+    public static ValueList<KbmProfileInfo> KbmProfileList(string command,
+                                                           string response) =>
         Decode(command, response, value =>
         {
             var hasList =
@@ -287,25 +291,70 @@ public static class ManagementProtocol
             {
                 var layout = KbmLayouts.FromWire(entry.String("layout"));
                 var name = entry.OptionalString("name");
-                // A profile the adapter cannot name, or names for a layout this
-                // build does not know, is skipped rather than shown as an
-                // unusable row the user cannot select or remove.
-                if (layout is null || string.IsNullOrWhiteSpace(name))
+                var id = entry.Int("id");
+                // A row this build cannot make sense of is skipped rather than
+                // shown as a profile the user could select and the adapter would
+                // refuse. An id colliding with the reserved Default is refused
+                // for the same reason.
+                if (layout is null || string.IsNullOrWhiteSpace(name) ||
+                    id <= KbmProfileIds.Default)
                 {
                     continue;
                 }
 
                 profiles.Add(new KbmProfileInfo(
-                    Id: entry.Int("id"),
+                    Id: id,
                     Layout: layout.Value,
                     Name: name!,
-                    Active: entry.Bool("active"),
-                    Builtin: entry.Bool("builtin"),
-                    Overrides: entry.Int("overrides")));
+                    Revision: entry.Int("revision"),
+                    Overrides: entry.Int("overrides"),
+                    Fingerprint: entry.Long("fingerprint")));
             }
 
-            return new KbmProfiles(new ValueList<KbmProfileInfo>(profiles),
-                                   value.Int("max"));
+            return new ValueList<KbmProfileInfo>(profiles);
+        });
+
+    public static ValueList<KbmActiveMapping> KbmActive(string command,
+                                                        string response) =>
+        Decode(command, response, value =>
+        {
+            var hasList =
+                value.TryGetProperty("active", out var entries) &&
+                entries.ValueKind == JsonValueKind.Array;
+            RequireShape(hasList, command);
+
+            var active = new List<KbmActiveMapping>();
+            foreach (var entry in entries.EnumerateArray())
+            {
+                var layout = KbmLayouts.FromWire(entry.String("layout"));
+                if (layout is null)
+                {
+                    continue;
+                }
+
+                active.Add(new KbmActiveMapping(
+                    Layout: layout.Value,
+                    SourceId: entry.Int("sourceId"),
+                    Revision: entry.Int("revision"),
+                    Fingerprint: entry.Long("fingerprint"),
+                    MatchesSaved: entry.Bool("matchesSaved")));
+            }
+
+            return new ValueList<KbmActiveMapping>(active);
+        });
+
+    /// <summary>
+    /// The id and revision a completed draft produced. Read back rather than
+    /// assumed: a mutation returning <c>ok</c> is not evidence the adapter
+    /// stored what was sent.
+    /// </summary>
+    public static (int Id, int Revision) KbmDraftResult(string command,
+                                                        string response) =>
+        Decode(command, response, value =>
+        {
+            RequireShape(value.TryGetProperty("id", out _) &&
+                         value.TryGetProperty("revision", out _), command);
+            return (value.Int("id"), value.Int("revision"));
         });
 
     public static KbmMapPage KbmMapPage(string command, string response) =>

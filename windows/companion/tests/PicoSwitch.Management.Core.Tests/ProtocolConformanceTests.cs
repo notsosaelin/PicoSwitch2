@@ -187,54 +187,101 @@ public sealed class ProtocolConformanceTests
     }
 
     [Fact]
-    public void KbmProfilesCarryTheirLayoutAndActiveSelection()
+    public void KbmProfilesCarryIdentityRevisionAndFingerprint()
     {
-        var profiles = ManagementProtocol.KbmProfiles(
+        var profiles = ManagementProtocol.KbmProfileList(
             "kbm profiles",
             """
             {"profiles":[
-              {"id":0,"layout":"kb","name":"Default","active":true,"builtin":true,"overrides":0},
-              {"id":2,"layout":"kb","name":"Splatoon","active":false,"builtin":false,"overrides":3},
-              {"id":3,"layout":"kbm","name":"Zelda","active":true,"builtin":false,"overrides":9}
-            ],"max":6}
+              {"id":2,"layout":"kb","name":"Splatoon","revision":3,"overrides":3,"fingerprint":123},
+              {"id":3,"layout":"kbm","name":"Zelda","revision":1,"overrides":9,"fingerprint":456}
+            ],"max":6,"more":false}
             """);
 
-        Assert.Equal(3, profiles.Profiles.Count);
-        Assert.Equal(6, profiles.Max);
-        Assert.False(profiles.Full);
-        Assert.Equal("Default", profiles.ActiveFor(KbmLayout.Keyboard)?.Name);
-        Assert.Equal("Zelda", profiles.ActiveFor(KbmLayout.KeyboardMouse)?.Name);
-        Assert.True(profiles.Profiles[0].Builtin);
-        Assert.False(profiles.Profiles[1].Builtin);
+        Assert.Equal(2, profiles.Count);
+        Assert.Equal(3, profiles[0].Revision);
+        Assert.Equal(123, profiles[0].Fingerprint);
+        // Default is NOT in the adapter's list: it is a template that consumes
+        // no slot, and the client synthesises it.
+        Assert.DoesNotContain(profiles, p => p.Builtin);
 
         // A row this build cannot make sense of is skipped, not shown as a
-        // selectable profile the adapter would refuse.
-        var partial = ManagementProtocol.KbmProfiles(
+        // selectable profile the adapter would refuse. An id colliding with the
+        // reserved Default is refused for the same reason.
+        var partial = ManagementProtocol.KbmProfileList(
             "kbm profiles",
             """
             {"profiles":[
-              {"id":0,"layout":"kb","name":"Default","active":true,"builtin":true,"overrides":0},
-              {"id":4,"layout":"future","name":"Nope","active":false,"builtin":false,"overrides":0},
-              {"id":5,"layout":"kb","name":"","active":false,"builtin":false,"overrides":0}
-            ],"max":6}
+              {"id":2,"layout":"kb","name":"Real","revision":1,"overrides":0,"fingerprint":1},
+              {"id":4,"layout":"future","name":"Nope","revision":1,"overrides":0,"fingerprint":2},
+              {"id":5,"layout":"kb","name":"","revision":1,"overrides":0,"fingerprint":3},
+              {"id":1,"layout":"kb","name":"Impostor","revision":1,"overrides":0,"fingerprint":4}
+            ],"max":6,"more":false}
             """);
-        Assert.Single(partial.Profiles);
+        Assert.Equal("Real", Assert.Single(partial).Name);
+    }
+
+    [Fact]
+    public void KbmActiveReportsWhatIsReallyRunning()
+    {
+        var active = ManagementProtocol.KbmActive(
+            "kbm active",
+            """
+            {"active":[
+              {"layout":"kb","sourceId":2,"revision":3,"fingerprint":123,"matchesSaved":false},
+              {"layout":"kbm","sourceId":1,"revision":0,"fingerprint":456,"matchesSaved":true}
+            ]}
+            """);
+
+        Assert.Equal(2, active.Count);
+        // matchesSaved=false is the "saved but not applied" case: the id still
+        // names the profile that produced the mapping, and the content no longer
+        // matches what that profile now holds.
+        Assert.False(active[0].MatchesSaved);
+        Assert.Equal(2, active[0].SourceId);
+        Assert.True(active[1].MatchesSaved);
+        Assert.Equal(KbmProfileIds.Default, active[1].SourceId);
     }
 
     [Fact]
     public void KbmCommandsKeepTheirLayoutSpelling()
     {
-        // `kb` and `kbm` now mean "that layout's ACTIVE profile" on the adapter.
-        // Keeping the spelling is what makes the profile system invisible to a
-        // user who does not want it, and keeps every older client working.
+        // `kb` and `kbm` name a LAYOUT and act on its REALIZED mapping, exactly
+        // as their existing clients rely on. Keeping the spelling is what makes
+        // the profile system invisible to a user who does not want it.
         Assert.Equal("kbm map kb 0", ManagementCommands.KbmMap(KbmLayout.Keyboard, 0));
         Assert.Equal("kbm reset kbm",
                      ManagementCommands.KbmReset(KbmLayout.KeyboardMouse));
-        Assert.Equal("kbm profile use kb 2",
-                     ManagementCommands.KbmProfileUse(KbmLayout.Keyboard, 2));
-        Assert.Equal("kbm profile new kbm Zelda",
-                     ManagementCommands.KbmProfileNew(KbmLayout.KeyboardMouse, "Zelda"));
+
+        // Apply names a profile; `default` is the built-in template.
+        Assert.Equal("kbm apply kb 2",
+                     ManagementCommands.KbmApply(KbmLayout.Keyboard, 2));
+        Assert.Equal("kbm apply kbm default",
+                     ManagementCommands.KbmApply(KbmLayout.KeyboardMouse,
+                                                 KbmProfileIds.Default));
+
+        Assert.Equal("kbm profile rename 3 Zelda",
+                     ManagementCommands.KbmProfileRename(3, "Zelda"));
+        Assert.Equal("kbm profile dup 3 Zelda Copy",
+                     ManagementCommands.KbmProfileDuplicate(3, "Zelda Copy"));
         Assert.Equal("kbm profile delete 3", ManagementCommands.KbmProfileDelete(3));
+        Assert.Equal("kbm pmap 3 0", ManagementCommands.KbmProfileMap(3, 0));
+
+        // The staged write. `new` creates; an id updates against its revision.
+        Assert.Equal("kbm draft begin kb new 0 My mapping",
+                     ManagementCommands.KbmDraftBegin(KbmLayout.Keyboard,
+                                                      KbmProfileIds.None, 0,
+                                                      "My mapping"));
+        Assert.Equal("kbm draft begin kb 2 3 Work",
+                     ManagementCommands.KbmDraftBegin(KbmLayout.Keyboard, 2, 3,
+                                                      "Work"));
+        Assert.Equal("kbm draft bind key:04 a",
+                     ManagementCommands.KbmDraftBind(
+                         new KbmSource(KbmSourceKind.Key, 4), KbmDestination.A));
+        Assert.Equal("kbm draft mouse sensitivityx 512",
+                     ManagementCommands.KbmDraftMouse(KbmMouseField.SensitivityX, 512));
+        Assert.Equal("kbm draft commit", ManagementCommands.KbmDraftCommit);
+        Assert.Equal("kbm draft abort", ManagementCommands.KbmDraftAbort);
     }
 
     [Fact]

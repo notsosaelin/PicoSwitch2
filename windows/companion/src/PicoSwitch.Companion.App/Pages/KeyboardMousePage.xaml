@@ -129,19 +129,54 @@
                                     <ComboBoxItem Content="Keyboard" />
                                     <ComboBoxItem Content="Keyboard and mouse" />
                                 </ComboBox>
-                                <!-- Selecting here changes what the ADAPTER
-                                     resolves, not merely what is being edited,
-                                     so the editor's target and the console's
-                                     behaviour cannot drift apart. -->
-                                <ComboBox
-                                    x:Name="ProfileSelector"
-                                    MinWidth="200"
-                                    Header="Profile"
-                                    Visibility="Collapsed"
-                                    SelectionChanged="OnActiveProfileChanged" />
-                                <Button x:Name="ResetProfile" Content="Reset profile" Click="OnResetProfile" />
+                                <Button x:Name="ResetProfile" Content="Reset mapping" Click="OnResetProfile" />
                             </StackPanel>
                         </Grid>
+
+                        <!-- Profiles.
+
+                             Selecting a profile OPENS it. It does not apply it:
+                             a list selection must never change what the console
+                             is doing. Save writes to the adapter's library;
+                             Set Active is what changes the console. Keeping
+                             those two apart is the point of the whole row. -->
+                        <Grid x:Name="ProfileRow" ColumnSpacing="8" Visibility="Collapsed">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <ComboBox
+                                Grid.Column="0"
+                                x:Name="ProfileSelector"
+                                MinWidth="220"
+                                Header="Profile"
+                                SelectionChanged="OnSelectedProfileChanged" />
+
+                            <StackPanel Grid.Column="1" VerticalAlignment="Bottom" Spacing="2">
+                                <TextBlock
+                                    x:Name="ProfileStatus"
+                                    Style="{StaticResource BodyStrongTextBlockStyle}" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="2" Orientation="Horizontal"
+                                        Spacing="8" VerticalAlignment="Bottom">
+                                <Button x:Name="SaveButton" Content="Save" Click="OnSaveProfile"
+                                        Style="{StaticResource AccentButtonStyle}" />
+                                <Button x:Name="DiscardButton" Content="Discard" Click="OnDiscardProfile" />
+                                <Button x:Name="ApplyButton" Content="Set Active" Click="OnApplyProfile" />
+                                <Button x:Name="NewButton" Content="New" Click="OnNewProfile" />
+                                <Button x:Name="RenameButton" Content="Rename" Click="OnRenameProfile" />
+                                <Button x:Name="DeleteButton" Content="Delete" Click="OnDeleteProfile" />
+                            </StackPanel>
+                        </Grid>
+
+                        <muxc:InfoBar
+                            x:Name="DraftBar"
+                            IsOpen="False"
+                            IsClosable="False"
+                            Severity="Informational" />
 
                         <muxc:InfoBar
                             x:Name="InactiveProfileBar"

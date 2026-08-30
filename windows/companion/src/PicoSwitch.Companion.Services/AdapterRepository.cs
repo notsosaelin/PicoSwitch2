@@ -653,19 +653,18 @@ public sealed class AdapterRepository(IManagementTransport transport)
     }
 
     /// <summary>
-    /// Activate a profile on the adapter and re-read everything that depends on
-    /// it.
+    /// APPLY. The only repository call that changes what the console is doing.
     ///
-    /// The mapping is re-read, not patched: switching profile changes every
-    /// binding at once, and a client that kept its old page would show the
-    /// previous profile's mapping under the new profile's name.
+    /// Everything is re-read afterwards rather than patched: applying replaces
+    /// every binding at once, and an acknowledgement is not evidence the adapter
+    /// realized what was asked. If the readback disagrees, the caller sees it.
     /// </summary>
-    public async Task<KeyboardMouseState> UseKbmProfileAsync(
+    public async Task<KeyboardMouseState> ApplyKbmProfileAsync(
         KbmLayout layout,
         int id,
         CancellationToken cancellationToken = default)
     {
-        var profiles = await client.UseKbmProfileAsync(layout, id, cancellationToken)
+        var profiles = await client.ApplyKbmProfileAsync(layout, id, cancellationToken)
             .ConfigureAwait(false);
         var status = await client.KbmStatusAsync(cancellationToken).ConfigureAwait(false);
         var mapping = await client.LoadKbmMappingAsync(layout, cancellationToken)
@@ -678,6 +677,96 @@ public sealed class AdapterRepository(IManagementTransport transport)
         });
         return keyboardMouse.Value;
     }
+
+    /// <summary>
+    /// SAVE. Writes the draft to the adapter's profile library in ONE staged
+    /// transaction and does NOT change what the console is running.
+    ///
+    /// Returns the draft rebased on what the adapter stored, so the editor
+    /// becomes clean against the new revision rather than assuming it.
+    /// </summary>
+    public async Task<KeyboardMouseDraft> SaveKbmProfileAsync(
+        KeyboardMouseDraft draft,
+        CancellationToken cancellationToken = default)
+    {
+        var (id, revision) = await client.SaveKbmProfileAsync(
+                draft.Layout,
+                // A draft on the built-in template becomes a NEW profile: the
+                // Default is a template and is never written into.
+                draft.IsBuiltin ? KbmProfileIds.None : draft.ProfileId,
+                draft.IsBuiltin ? 0 : draft.BaseRevision,
+                draft.Name,
+                draft.Bindings,
+                draft.Mouse,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        var profiles = await client.KbmProfilesAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var status = await client.KbmStatusAsync(cancellationToken)
+            .ConfigureAwait(false);
+        keyboardMouse.Set(keyboardMouse.Value with
+        {
+            Profiles = profiles,
+            Status = status,
+        });
+        // The state is published through keyboardMouse; the draft is what the
+        // caller cannot reconstruct, so it is what comes back.
+        return draft.Rebased(id, revision, draft.Name);
+    }
+
+    public async Task<KeyboardMouseState> RenameKbmProfileAsync(
+        int id, string name, CancellationToken cancellationToken = default)
+    {
+        var profiles = await client.RenameKbmProfileAsync(id, name, cancellationToken)
+            .ConfigureAwait(false);
+        keyboardMouse.Set(keyboardMouse.Value with { Profiles = profiles });
+        return keyboardMouse.Value;
+    }
+
+    public async Task<KeyboardMouseState> DuplicateKbmProfileAsync(
+        int id, string name, CancellationToken cancellationToken = default)
+    {
+        var profiles = await client.DuplicateKbmProfileAsync(id, name, cancellationToken)
+            .ConfigureAwait(false);
+        keyboardMouse.Set(keyboardMouse.Value with { Profiles = profiles });
+        return keyboardMouse.Value;
+    }
+
+    /// <summary>
+    /// Delete a profile. If it produced the realized mapping, the adapter falls
+    /// that layout back to Default, so the mapping is re-read too.
+    /// </summary>
+    public async Task<KeyboardMouseState> DeleteKbmProfileAsync(
+        int id, CancellationToken cancellationToken = default)
+    {
+        var profiles = await client.DeleteKbmProfileAsync(id, cancellationToken)
+            .ConfigureAwait(false);
+        var status = await client.KbmStatusAsync(cancellationToken).ConfigureAwait(false);
+        var mappings = new List<KbmMapping>();
+        foreach (var layout in KbmLayouts.All)
+        {
+            mappings.Add(await client.LoadKbmMappingAsync(layout, cancellationToken)
+                .ConfigureAwait(false));
+        }
+
+        keyboardMouse.Set(keyboardMouse.Value with
+        {
+            Profiles = profiles,
+            Status = status,
+            Mappings = new ValueList<KbmMapping>(mappings),
+        });
+        return keyboardMouse.Value;
+    }
+
+    /// <summary>The stored content of one profile, for opening it in the editor.</summary>
+    public Task<KbmMapping> LoadKbmProfileAsync(
+        KbmProfileInfo profile, CancellationToken cancellationToken = default) =>
+        profile.Builtin
+            // The built-in Default is not stored, so "its mapping" is the
+            // canonical one the adapter reports for an unmodified layout.
+            ? client.LoadKbmMappingAsync(profile.Layout, cancellationToken)
+            : client.LoadKbmProfileMappingAsync(profile, cancellationToken);
 
     public async Task<KbmMapping> ResetKbmLayoutAsync(
         KbmLayout profile,
