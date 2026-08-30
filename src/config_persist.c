@@ -41,16 +41,16 @@ _Static_assert(offsetof(config_record_t, kbm) >=
 _Static_assert(offsetof(config_record_t, kbm) ==
                    offsetof(config_record_v11_t, kbm),
                "v12 must keep v11's kbm offset");
-_Static_assert(offsetof(ns2_kbm_config_t, profiles) ==
+_Static_assert(offsetof(ns2_kbm_config_v13_t, profiles) ==
                    offsetof(ns2_kbm_config_v11_t, profiles),
                "v12 must keep v11's profile-table offset");
-_Static_assert(offsetof(ns2_kbm_config_t, mouse) ==
+_Static_assert(offsetof(ns2_kbm_config_v13_t, mouse) ==
                    offsetof(ns2_kbm_config_v11_t, mouse),
                "v12 must keep v11's mouse-block offset");
-_Static_assert(sizeof(((config_record_t *)0)->kbm.profiles) ==
-                   sizeof(((config_record_v11_t *)0)->kbm.profiles),
-               "v11's frozen layout borrows the live profile table; a resize "
-               "would redefine what stored v11 bytes mean");
+_Static_assert(sizeof(((ns2_kbm_config_v13_t *)0)->profiles) ==
+                   sizeof(((ns2_kbm_config_v11_t *)0)->profiles),
+               "v11 and v12/v13 share the override table; a resize would "
+               "redefine what stored bytes mean for both");
 // The frozen v11 mouse block is 8 bytes and must stay that way; the live one
 // grew to 10. Pinning both is what makes the field-by-field migration below
 // provably a migration rather than a reinterpretation.
@@ -67,9 +67,23 @@ _Static_assert(sizeof(ns2_kbm_mouse_config_t) == 10u,
 // precisely why this got a version bump instead of a spare-byte claim.
 _Static_assert(sizeof(config_record_t) >= sizeof(config_record_v11_t),
                "v12 must not shrink v11");
-_Static_assert(offsetof(config_record_t, kbm) + sizeof(ns2_kbm_config_t) <=
-                   sizeof(config_record_t),
+_Static_assert(offsetof(config_record_v12_t, kbm) +
+                       sizeof(ns2_kbm_config_v13_t) <=
+                   sizeof(config_record_v12_t),
                "the v12 KB/M block must fit inside the record it is stored in");
+
+// Schema 14 replaces the KB/M container: one override set per layout becomes a
+// table of NAMED PROFILE SLOTS, several per layout, with a persisted active
+// selection. The override table inside a slot is byte-identical to what v13
+// stored per layout, which is what makes the migration below a field-by-field
+// move rather than a reinterpretation.
+_Static_assert(sizeof(((ns2_kbm_profile_slot_t *)0)->overrides) ==
+                   sizeof(((ns2_kbm_config_v13_t *)0)->profiles[0]),
+               "v14 slots must carry v13's override table unchanged");
+_Static_assert(NS2_KBM_MAX_PROFILES >= NS2_KBM_LAYOUT_COUNT,
+               "every layout needs a reserved Default slot");
+_Static_assert(sizeof(config_record_t) > sizeof(config_record_v13_t),
+               "v14 appends to v13");
 
 // Schema 13 appends the management-companion table. Unlike v12 this IS a strict
 // size increase -- v12's record had no trailing room left -- so a stored v12
@@ -176,6 +190,23 @@ bool config_mgmt_companion_forget(config_mgmt_companion_t *table,
     return true;
 }
 
+// Lift a v12/v13 KB/M block into the v14 profile table.
+//
+// The two per-layout override sets become the two reserved Default profiles,
+// which are also the ones activated. So an upgraded adapter resolves exactly
+// the bindings it resolved before -- that equivalence is the migration's whole
+// job and is what its test asserts.
+static void migrate_kbm_from_v13(const ns2_kbm_config_v13_t *old,
+                                 ns2_kbm_config_t *out) {
+    ns2_kbm_config_defaults(out);
+    out->mode = old->mode;
+    out->mouse = old->mouse;
+    for (uint8_t i = 0; i < NS2_KBM_LAYOUT_COUNT; ++i) {
+        out->profiles[i].overrides = old->profiles[i];
+        out->active[i] = i;
+    }
+}
+
 config_persist_load_t config_persist_load(const void *stored, uint32_t stored_len,
                                           config_record_t *out) {
     if (!out) return CONFIG_PERSIST_DEFAULTED;
@@ -225,7 +256,11 @@ config_persist_load_t config_persist_load(const void *stored, uint32_t stored_le
         // the mouse settings, so a memcpy would land the old bytes on the new
         // layout and invent a setting out of the user's inversion flags.
         out->kbm.mode = v11.kbm.mode;
-        memcpy(out->kbm.profiles, v11.kbm.profiles, sizeof(out->kbm.profiles));
+        // v11's two per-layout override sets become the two Default profiles.
+        for (uint8_t i = 0; i < NS2_KBM_LAYOUT_COUNT; ++i) {
+            out->kbm.profiles[i].overrides = v11.kbm.profiles[i];
+            out->kbm.active[i] = i;
+        }
         out->kbm.mouse.sensitivity_x = v11.kbm.mouse.sensitivity_x;
         out->kbm.mouse.sensitivity_y = v11.kbm.mouse.sensitivity_y;
         out->kbm.mouse.recenter_ms = v11.kbm.mouse.recenter_ms;
@@ -250,14 +285,30 @@ config_persist_load_t config_persist_load(const void *stored, uint32_t stored_le
                sizeof(out->joycon2_right_accent));
         out->wake_valid = header.wake_valid;
         out->wake_identity = header.wake_identity;
-        // The KB/M block is byte-identical between v12 and v13, so this one may
-        // be copied whole -- the static asserts above are what license that.
-        out->kbm = v12.kbm;
+        migrate_kbm_from_v13(&v12.kbm, &out->kbm);
         // The companion table starts EMPTY on an upgraded adapter, and must.
         // Inventing membership from an existing bond would do exactly what this
         // field exists to stop: assert a role the adapter never observed. Each
         // companion re-registers itself on its next authenticated session.
         memset(out->mgmt_companions, 0, sizeof(out->mgmt_companions));
+        result = CONFIG_PERSIST_MIGRATED;
+    } else if (header.version == 13u) {
+        if (stored_len < sizeof(config_record_v13_t))
+            return CONFIG_PERSIST_DEFAULTED;
+        config_record_v13_t v13;
+        memcpy(&v13, stored, sizeof(v13));
+        out->body_color[0] = header.body_color[0];
+        out->body_color[1] = header.body_color[1];
+        out->body_color[2] = header.body_color[2];
+        memcpy(out->joycon2_left_accent, header.joycon2_left_accent,
+               sizeof(out->joycon2_left_accent));
+        memcpy(out->joycon2_right_accent, header.joycon2_right_accent,
+               sizeof(out->joycon2_right_accent));
+        out->wake_valid = header.wake_valid;
+        out->wake_identity = header.wake_identity;
+        memcpy(out->mgmt_companions, v13.mgmt_companions,
+               sizeof(out->mgmt_companions));
+        migrate_kbm_from_v13(&v13.kbm, &out->kbm);
         result = CONFIG_PERSIST_MIGRATED;
     } else {
         // An unknown (older or newer) schema. Falling back to defaults is the

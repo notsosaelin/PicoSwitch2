@@ -806,9 +806,8 @@ bool ns2_kbm_runtime_set_mode(ns2_kbm_mode_t mode) {
     return true;
 }
 
-bool ns2_kbm_runtime_set_binding(ns2_kbm_layout_t profile,
-                                 ns2_kbm_source_t source, uint8_t destination) {
-    if (profile >= NS2_KBM_LAYOUT_COUNT) return false;
+bool ns2_kbm_runtime_set_binding(uint8_t profile, ns2_kbm_source_t source,
+                                 uint8_t destination) {
     ns2_kbm_config_t candidate;
     uint32_t generation = 0;
     config_snapshot(&candidate, &generation);
@@ -820,9 +819,7 @@ bool ns2_kbm_runtime_set_binding(ns2_kbm_layout_t profile,
     return true;
 }
 
-bool ns2_kbm_runtime_clear_binding(ns2_kbm_layout_t profile,
-                                   ns2_kbm_source_t source) {
-    if (profile >= NS2_KBM_LAYOUT_COUNT) return false;
+bool ns2_kbm_runtime_clear_binding(uint8_t profile, ns2_kbm_source_t source) {
     ns2_kbm_config_t candidate;
     uint32_t generation = 0;
     config_snapshot(&candidate, &generation);
@@ -833,19 +830,75 @@ bool ns2_kbm_runtime_clear_binding(ns2_kbm_layout_t profile,
     return true;
 }
 
-void ns2_kbm_runtime_reset_profile(ns2_kbm_layout_t profile) {
-    if (profile >= NS2_KBM_LAYOUT_COUNT) return;
+void ns2_kbm_runtime_reset_profile(uint8_t profile) {
     config_write_begin();
     ns2_kbm_config_reset_profile(&s_config, profile);
     config_write_end();
+}
+
+uint8_t ns2_kbm_runtime_active_profile(ns2_kbm_layout_t layout) {
+    ns2_kbm_config_t snapshot;
+    uint32_t generation = 0;
+    config_snapshot(&snapshot, &generation);
+    return ns2_kbm_active_profile(&snapshot, layout);
+}
+
+// The profile lifecycle, all in the same shape: mutate a SNAPSHOT, and publish
+// it only if the model accepted the change. A rejected operation must not leave
+// the live configuration half-edited, and core 1 may be resolving against it.
+bool ns2_kbm_runtime_set_active_profile(ns2_kbm_layout_t layout,
+                                        uint8_t index) {
+    ns2_kbm_config_t candidate;
+    uint32_t generation = 0;
+    config_snapshot(&candidate, &generation);
+    if (!ns2_kbm_set_active_profile(&candidate, layout, index)) return false;
+    config_write_begin();
+    s_config = candidate;
+    config_write_end();
+    return true;
+}
+
+uint8_t ns2_kbm_runtime_profile_create(ns2_kbm_layout_t layout,
+                                       const char *name) {
+    ns2_kbm_config_t candidate;
+    uint32_t generation = 0;
+    config_snapshot(&candidate, &generation);
+    uint8_t index = ns2_kbm_profile_create(&candidate, layout, name);
+    if (index == NS2_KBM_PROFILE_NONE) return NS2_KBM_PROFILE_NONE;
+    config_write_begin();
+    s_config = candidate;
+    config_write_end();
+    return index;
+}
+
+bool ns2_kbm_runtime_profile_rename(uint8_t index, const char *name) {
+    ns2_kbm_config_t candidate;
+    uint32_t generation = 0;
+    config_snapshot(&candidate, &generation);
+    if (!ns2_kbm_profile_rename(&candidate, index, name)) return false;
+    config_write_begin();
+    s_config = candidate;
+    config_write_end();
+    return true;
+}
+
+bool ns2_kbm_runtime_profile_delete(uint8_t index) {
+    ns2_kbm_config_t candidate;
+    uint32_t generation = 0;
+    config_snapshot(&candidate, &generation);
+    if (!ns2_kbm_profile_delete(&candidate, index)) return false;
+    config_write_begin();
+    s_config = candidate;
+    config_write_end();
+    return true;
 }
 
 void ns2_kbm_runtime_reset_all(void) {
     // Mapping reset is mapping-only: the selected input mode is a separate
     // user choice and unrelated adapter settings are not touched at all.
     config_write_begin();
-    for (unsigned p = 0; p < NS2_KBM_LAYOUT_COUNT; ++p)
-        ns2_kbm_config_reset_profile(&s_config, (ns2_kbm_layout_t)p);
+    for (unsigned p = 0; p < NS2_KBM_MAX_PROFILES; ++p)
+        ns2_kbm_config_reset_profile(&s_config, (uint8_t)p);
     ns2_kbm_mouse_config_t defaults;
     ns2_kbm_config_t scratch;
     ns2_kbm_config_defaults(&scratch);
@@ -896,6 +949,12 @@ void ns2_kbm_runtime_status(ns2_kbm_runtime_status_t *out) {
     out->mouse_reports = s_roles.mouse_reports;
     out->rejected_mode = s_roles.rejected_mode;
     out->rejected_duplicate = s_roles.rejected_duplicate;
+    uint8_t profile = ns2_kbm_active_profile(&s_config,
+                                             ns2_kbm_mode_layout(mode));
+    out->active_profile = profile;
+    if (profile < NS2_KBM_MAX_PROFILES)
+        memcpy(out->active_profile_name, s_config.profiles[profile].name,
+               sizeof(out->active_profile_name));
     out->rejected_not_owner = s_rejected_not_owner;
     out->rejected_no_peer_key = s_rejected_no_peer_key;
     out->rejected_unclassified = s_rejected_unclassified;

@@ -48,7 +48,7 @@ static void test_defaults(void) {
     assert(record.version == CONFIG_PERSIST_VERSION);
     assert(record.body_color[0] == 0x23);
     assert(record.kbm.mode == NS2_KBM_MODE_AUTO);
-    assert(record.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD].count == 0);
+    assert(record.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count == 0);
     assert(record.kbm.mouse.sensitivity_x == NS2_KBM_MOUSE_SENS_DEFAULT);
     puts("  defaults");
 }
@@ -121,8 +121,8 @@ static void test_v10_migration(void) {
     // happened to follow the old record in flash.
     assert(record.version == CONFIG_PERSIST_VERSION);
     assert(record.kbm.mode == NS2_KBM_MODE_AUTO);
-    assert(record.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD].count == 0);
-    assert(record.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD_MOUSE].count == 0);
+    assert(record.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count == 0);
+    assert(record.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD_MOUSE].overrides.count == 0);
     assert(record.kbm.mouse.sensitivity_x == NS2_KBM_MOUSE_SENS_DEFAULT);
     assert(record.kbm.mouse.recenter_ms == NS2_KBM_MOUSE_RECENTER_DEFAULT_MS);
     assert(ns2_kbm_binding(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
@@ -187,9 +187,9 @@ static void test_v11_migration(void) {
            CONFIG_PERSIST_MIGRATED);
     assert(record.version == CONFIG_PERSIST_VERSION);
     // Deliberate tripwire: bumping the schema must bring whoever did it here to
-    // confirm every older layout still has a migration. v11 now upgrades two
-    // steps in one load, so this test covers 11 -> 13, not 11 -> 12.
-    assert(CONFIG_PERSIST_VERSION == 13u);
+    // confirm every older layout still has a migration. v11 upgrades three
+    // steps in one load, so this test covers 11 -> 14.
+    assert(CONFIG_PERSIST_VERSION == 14u);
 
     // Unrelated settings survive.
     assert(record.body_color[0] == 0x11 && record.body_color[1] == 0x22 &&
@@ -230,7 +230,7 @@ static void test_v11_migration(void) {
     // A truncated v11 record is refused rather than partially interpreted.
     assert(config_persist_load(sector, sizeof(config_record_v11_t) - 1u,
                                &record) == CONFIG_PERSIST_DEFAULTED);
-    puts("  schema 11 -> 13 migration");
+    puts("  schema 11 -> 14 migration");
 }
 
 // A v12 record round-trips the new setting, and an out-of-range stored value is
@@ -342,11 +342,11 @@ static void test_corrupt_mapping_fails_safe(void) {
     // And the mapping block is usable, with no arbitrary destinations.
     assert(record.kbm.mode < NS2_KBM_MODE_COUNT);
     for (unsigned p = 0; p < NS2_KBM_LAYOUT_COUNT; ++p) {
-        assert(record.kbm.profiles[p].count <= NS2_KBM_MAX_OVERRIDES);
-        for (uint8_t i = 0; i < record.kbm.profiles[p].count; ++i) {
-            assert(ns2_kbm_source_valid(record.kbm.profiles[p].entries[i].source));
+        assert(record.kbm.profiles[p].overrides.count <= NS2_KBM_MAX_OVERRIDES);
+        for (uint8_t i = 0; i < record.kbm.profiles[p].overrides.count; ++i) {
+            assert(ns2_kbm_source_valid(record.kbm.profiles[p].overrides.entries[i].source));
             assert(ns2_kbm_destination_valid(
-                record.kbm.profiles[p].entries[i].destination));
+                record.kbm.profiles[p].overrides.entries[i].destination));
         }
     }
     assert(record.kbm.mouse.sensitivity_x >= NS2_KBM_MOUSE_SENS_MIN &&
@@ -367,12 +367,13 @@ static void test_v12_migration(void) {
     old.joycon2_right_accent[2] = 0x73;
     old.wake_valid = 0x5Au;
     old.wake_identity.product_id = 0x2069u;
-    ns2_kbm_config_defaults(&old.kbm);
+    // The frozen v12/v13 block is not the live type any more, so it is filled
+    // directly rather than through the live defaults helper.
     old.kbm.mode = (uint8_t)NS2_KBM_MODE_KEYBOARD;
     old.kbm.mouse.sensitivity_x = 777u;
     old.kbm.mouse.anti_deadzone = 12u;
 
-    uint8_t sector[512];
+    uint8_t sector[2048];
     memset(sector, 0xFF, sizeof(sector));
     memcpy(sector, &old, sizeof(old));
 
@@ -399,7 +400,7 @@ static void test_v12_migration(void) {
     // A truncated v12 record is refused rather than partially interpreted.
     assert(config_persist_load(sector, sizeof(config_record_v12_t) - 1u,
                                &record) == CONFIG_PERSIST_DEFAULTED);
-    puts("  schema 12 -> 13 migration");
+    puts("  schema 12 -> 14 migration");
 }
 
 static void test_mgmt_companion_membership(void) {
@@ -454,7 +455,7 @@ static void test_mgmt_companions_round_trip(void) {
     assert(config_mgmt_companion_remember(record.mgmt_companions,
                                           CONFIG_MGMT_COMPANIONS_MAX, phone, 1u));
 
-    uint8_t sector[512];
+    uint8_t sector[2048];
     memset(sector, 0xFF, sizeof(sector));
     memcpy(sector, &record, sizeof(record));
 
@@ -467,6 +468,171 @@ static void test_mgmt_companions_round_trip(void) {
     puts("  management companions survive a reboot");
 }
 
+static void test_v13_migration_preserves_the_live_mapping(void) {
+    // The migration's whole job: an upgraded adapter must resolve EXACTLY the
+    // bindings it resolved before. v13's two per-layout override sets become
+    // the two Default profiles, and both are activated.
+    config_record_v13_t old;
+    memset(&old, 0, sizeof(old));
+    old.magic = CONFIG_PERSIST_MAGIC;
+    old.version = 13u;
+    old.body_color[0] = 0x61;
+    old.wake_valid = 0x5Au;
+    old.mgmt_companions[0].valid = 1u;
+    old.mgmt_companions[0].addr[0] = 0xC0;
+
+    old.kbm.mode = (uint8_t)NS2_KBM_MODE_KEYBOARD_MOUSE;
+    old.kbm.mouse.sensitivity_x = 999u;
+    old.kbm.mouse.anti_deadzone = 7u;
+    // A user who had customised both mappings.
+    old.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD].count = 1u;
+    old.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[0].source.kind =
+        NS2_KBM_SRC_KEY;
+    old.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[0].source.code = KEY_F;
+    old.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[0].destination = NS2_DST_X;
+    old.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD_MOUSE].count = 1u;
+    old.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD_MOUSE].entries[0].source.kind =
+        NS2_KBM_SRC_MOUSE;
+    old.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD_MOUSE].entries[0].source.code = 3u;
+    old.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD_MOUSE].entries[0].destination =
+        NS2_DST_B;
+
+    uint8_t sector[2048];
+    memset(sector, 0xFF, sizeof(sector));
+    memcpy(sector, &old, sizeof(old));
+
+    config_record_t record;
+    assert(config_persist_load(sector, sizeof(sector), &record) ==
+           CONFIG_PERSIST_MIGRATED);
+
+    // Unrelated settings survive.
+    assert(record.body_color[0] == 0x61);
+    assert(record.wake_valid == 0x5Au);
+    assert(record.mgmt_companions[0].valid);
+    assert(record.mgmt_companions[0].addr[0] == 0xC0);
+    assert(record.kbm.mode == (uint8_t)NS2_KBM_MODE_KEYBOARD_MOUSE);
+    assert(record.kbm.mouse.sensitivity_x == 999u);
+    assert(record.kbm.mouse.anti_deadzone == 7u);
+
+    // Two Default profiles exist, one per layout, and both are active.
+    assert(record.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD].used);
+    assert(record.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD].layout ==
+           NS2_KBM_LAYOUT_KEYBOARD);
+    assert(record.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD_MOUSE].layout ==
+           NS2_KBM_LAYOUT_KEYBOARD_MOUSE);
+    assert(strcmp(record.kbm.profiles[0].name, "Default") == 0);
+    assert(record.kbm.active[NS2_KBM_LAYOUT_KEYBOARD] ==
+           NS2_KBM_LAYOUT_KEYBOARD);
+    assert(record.kbm.active[NS2_KBM_LAYOUT_KEYBOARD_MOUSE] ==
+           NS2_KBM_LAYOUT_KEYBOARD_MOUSE);
+
+    // And the customised bindings resolve exactly as before.
+    ns2_kbm_source_t key_f = {NS2_KBM_SRC_KEY, KEY_F};
+    ns2_kbm_source_t middle = {NS2_KBM_SRC_MOUSE, 3u};
+    uint8_t kb = ns2_kbm_active_profile(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD);
+    uint8_t kbm =
+        ns2_kbm_active_profile(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD_MOUSE);
+    assert(ns2_kbm_binding(&record.kbm, kb, key_f) == NS2_DST_X);
+    assert(ns2_kbm_binding(&record.kbm, kbm, middle) == NS2_DST_B);
+
+    // Spare slots are empty and nothing else was invented.
+    for (unsigned i = NS2_KBM_LAYOUT_COUNT; i < NS2_KBM_MAX_PROFILES; ++i)
+        assert(!record.kbm.profiles[i].used);
+
+    assert(config_persist_load(sector, sizeof(config_record_v13_t) - 1u,
+                               &record) == CONFIG_PERSIST_DEFAULTED);
+    puts("  schema 13 -> 14 migration preserves the live mapping");
+}
+
+static void test_profile_lifecycle(void) {
+    config_record_t record;
+    config_persist_defaults(&record);
+    ns2_kbm_config_t *c = &record.kbm;
+
+    // Slot 0 and 1 are the reserved Defaults and are active from the start.
+    assert(ns2_kbm_profile_is_default(0) && ns2_kbm_profile_is_default(1));
+    assert(!ns2_kbm_profile_is_default(2));
+    assert(ns2_kbm_active_profile(c, NS2_KBM_LAYOUT_KEYBOARD) == 0u);
+
+    uint8_t splat = ns2_kbm_profile_create(c, NS2_KBM_LAYOUT_KEYBOARD, "Splatoon");
+    assert(splat != NS2_KBM_PROFILE_NONE && splat >= NS2_KBM_LAYOUT_COUNT);
+    assert(strcmp(c->profiles[splat].name, "Splatoon") == 0);
+    // A new profile IS its layout's canonical default until something changes.
+    assert(c->profiles[splat].overrides.count == 0u);
+
+    // A profile belongs to ONE layout: its source domain and defaults are
+    // layout-specific, so the other layout must refuse it.
+    assert(!ns2_kbm_set_active_profile(c, NS2_KBM_LAYOUT_KEYBOARD_MOUSE, splat));
+    assert(ns2_kbm_set_active_profile(c, NS2_KBM_LAYOUT_KEYBOARD, splat));
+    assert(ns2_kbm_active_profile(c, NS2_KBM_LAYOUT_KEYBOARD) == splat);
+
+    // Editing the active profile does not touch Default.
+    ns2_kbm_source_t key_f = {NS2_KBM_SRC_KEY, KEY_F};
+    assert(ns2_kbm_set_binding(c, splat, key_f, NS2_DST_ZR));
+    assert(ns2_kbm_binding(c, splat, key_f) == NS2_DST_ZR);
+    assert(ns2_kbm_binding(c, 0u, key_f) ==
+           ns2_kbm_default_binding(NS2_KBM_LAYOUT_KEYBOARD, key_f));
+
+    // The reserved Defaults may be edited and reset but never renamed or
+    // deleted -- that is what guarantees a fallback always exists.
+    assert(!ns2_kbm_profile_rename(c, 0u, "Nope"));
+    assert(!ns2_kbm_profile_delete(c, 0u));
+    assert(ns2_kbm_profile_rename(c, splat, "Splat 3"));
+    assert(strcmp(c->profiles[splat].name, "Splat 3") == 0);
+
+    // Deleting the ACTIVE profile falls back to that layout's Default.
+    assert(ns2_kbm_profile_delete(c, splat));
+    assert(ns2_kbm_active_profile(c, NS2_KBM_LAYOUT_KEYBOARD) == 0u);
+    assert(!c->profiles[splat].used);
+    // ...and the deleted slot keeps nothing: a reused slot must not inherit a
+    // stale name or override table.
+    assert(c->profiles[splat].name[0] == '\0');
+    assert(c->profiles[splat].overrides.count == 0u);
+
+    // Exhaustion is reported, never silently overwritten.
+    unsigned created = 0;
+    while (ns2_kbm_profile_create(c, NS2_KBM_LAYOUT_KEYBOARD, "x") !=
+           NS2_KBM_PROFILE_NONE)
+        created++;
+    assert(created == NS2_KBM_MAX_PROFILES - NS2_KBM_LAYOUT_COUNT);
+
+    // A name that sanitizes to nothing is refused rather than stored blank.
+    config_persist_defaults(&record);
+    assert(ns2_kbm_profile_create(c, NS2_KBM_LAYOUT_KEYBOARD, "\x01\x02") ==
+           NS2_KBM_PROFILE_NONE);
+    puts("  profile lifecycle");
+}
+
+static void test_sanitize_repairs_a_torn_profile_table(void) {
+    // The record programs eight pages and carries no CRC, so a torn write is
+    // the realistic corruption. Sanitize is what fails that closed.
+    config_record_t record;
+    config_persist_defaults(&record);
+
+    // A Default slot erased by a partial program.
+    memset(&record.kbm.profiles[0], 0, sizeof(record.kbm.profiles[0]));
+    // A profile claiming a layout that does not exist.
+    record.kbm.profiles[3].used = 1u;
+    record.kbm.profiles[3].layout = 9u;
+    // An active selection pointing at nothing.
+    record.kbm.active[NS2_KBM_LAYOUT_KEYBOARD_MOUSE] = 5u;
+
+    assert(!ns2_kbm_config_sanitize(&record.kbm));
+
+    // Both Defaults are back, on their own layouts, named.
+    assert(record.kbm.profiles[0].used &&
+           record.kbm.profiles[0].layout == NS2_KBM_LAYOUT_KEYBOARD);
+    assert(strcmp(record.kbm.profiles[0].name, "Default") == 0);
+    // The unreadable profile is dropped rather than resolved against the wrong
+    // canonical map.
+    assert(!record.kbm.profiles[3].used);
+    // Every layout has a valid active selection again.
+    assert(ns2_kbm_active_profile(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD) == 0u);
+    assert(ns2_kbm_active_profile(&record.kbm,
+                                  NS2_KBM_LAYOUT_KEYBOARD_MOUSE) == 1u);
+    puts("  sanitize repairs a torn profile table");
+}
+
 int main(void) {
     puts("config persistence:");
     test_defaults();
@@ -474,6 +640,9 @@ int main(void) {
     test_v10_migration();
     test_v11_migration();
     test_v12_migration();
+    test_v13_migration_preserves_the_live_mapping();
+    test_profile_lifecycle();
+    test_sanitize_repairs_a_torn_profile_table();
     test_mgmt_companion_membership();
     test_mgmt_companions_round_trip();
     test_anti_deadzone_persistence();

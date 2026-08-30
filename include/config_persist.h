@@ -22,7 +22,7 @@
 #include "ns2_kbm.h"  // ns2_kbm_config_t
 
 #define CONFIG_PERSIST_MAGIC 0x50535731u  // 'PSW1'
-#define CONFIG_PERSIST_VERSION 13u
+#define CONFIG_PERSIST_VERSION 14u
 
 // How many management companions an adapter remembers.
 //
@@ -74,7 +74,7 @@ typedef struct {
 typedef struct {
     uint8_t mode;
     uint8_t reserved[3];
-    ns2_kbm_profile_overrides_t profiles[NS2_KBM_LAYOUT_COUNT];
+    ns2_kbm_profile_overrides_t profiles[2];
     ns2_kbm_mouse_config_v11_t mouse;
 } ns2_kbm_config_v11_t;
 
@@ -92,7 +92,19 @@ typedef struct {
     ns2_kbm_config_v11_t kbm;
 } config_record_v11_t;
 
-// Schema 12 adds the mouse-to-stick anti-deadzone (inside the KB/M block).
+// Schemas 12 and 13 share one KB/M block: ONE override set per layout, indexed
+// by layout, with no profile table. Written out in full rather than borrowing
+// the live type, because schema 14 replaced that container with named profile
+// slots -- borrowing it now would silently redefine what stored v12 and v13
+// bytes mean. The override table itself is unchanged and is still shared, which
+// config_persist.c static-asserts.
+typedef struct {
+    uint8_t mode;
+    uint8_t reserved[3];
+    ns2_kbm_profile_overrides_t profiles[2];
+    ns2_kbm_mouse_config_t mouse;
+} ns2_kbm_config_v13_t;
+
 // Schema 12 (the KB/M mouse block's final 10-byte form). Frozen: it describes
 // bytes that already exist on real adapters. Never edit it.
 typedef struct {
@@ -103,8 +115,22 @@ typedef struct {
     uint8_t joycon2_right_accent[3];
     uint8_t wake_valid;
     config_wake_identity_t wake_identity;
-    ns2_kbm_config_t kbm;
+    ns2_kbm_config_v13_t kbm;
 } config_record_v12_t;
+
+// Schema 13 (the management-companion table, one override set per layout).
+// Frozen: it describes bytes that already exist on real adapters. Never edit it.
+typedef struct {
+    uint32_t magic;
+    uint8_t version;
+    uint8_t body_color[3];
+    uint8_t joycon2_left_accent[3];
+    uint8_t joycon2_right_accent[3];
+    uint8_t wake_valid;
+    config_wake_identity_t wake_identity;
+    ns2_kbm_config_v13_t kbm;
+    config_mgmt_companion_t mgmt_companions[CONFIG_MGMT_COMPANIONS_MAX];
+} config_record_v13_t;
 
 typedef struct {
     uint32_t magic;
