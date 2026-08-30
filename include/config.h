@@ -1,8 +1,9 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 // Persistent settings + the configuration-mode command protocol.
 
@@ -18,6 +19,23 @@ bool config_install_reset_performed(void);
 // Service the configuration-mode CDC serial link (read command lines, reply
 // JSON). Called from the USB core (core0) while in config mode.
 void config_cdc_task(void);
+
+// Run ONE management command and capture its reply into `out_buffer`.
+//
+// Returns the reply's TRUE length, even when longer than `capacity` — a
+// diagnostic that reported the truncated size would hide an oversized reply,
+// which is precisely what it exists to catch.
+//
+// Exists so the always-available UART console can reach the full management
+// surface. The UART dispatcher (src/ns2_uart_diag.c) knows only a few `kbm`
+// verbs; everything else lives in src/config.c behind BLE or the CDC Config
+// personality. That gap meant a wire-format defect in a management reply could
+// not be measured on the bench at all.
+//
+// core0 only, from the same task loop as config_cdc_task(): it borrows that
+// path's line buffer.
+size_t config_execute_captured(const char *command, char *out_buffer,
+                               size_t capacity);
 
 // Execute at most one pending wireless (BLE) management command on core0, using
 // the same parser/persistence as the CDC path. Self-gating: a no-op unless a

@@ -397,9 +397,15 @@ static char out[4096];
 typedef enum {
     CONFIG_REPLY_CDC = 0,
     CONFIG_REPLY_WIRELESS,
+    // A capture buffer supplied by the caller, used by the UART diagnostic
+    // passthrough. See config_execute_captured().
+    CONFIG_REPLY_CAPTURE,
 } config_reply_transport_t;
 
 static config_reply_transport_t reply_transport = CONFIG_REPLY_CDC;
+static char *capture_buffer;
+static size_t capture_capacity;
+static size_t capture_length;
 static uint32_t wireless_reply_session;
 
 static struct {
@@ -431,6 +437,19 @@ static struct {
 } wireless_pairing;
 
 static void reply(const char *s) {
+    if (reply_transport == CONFIG_REPLY_CAPTURE) {
+        // The TRUE length is recorded even when the copy is truncated: a
+        // diagnostic that reported the clipped size would hide an oversized
+        // reply, which is the exact class of bug this path exists to expose.
+        capture_length = strlen(s);
+        if (capture_buffer && capture_capacity) {
+            size_t copied = capture_length < capture_capacity - 1u
+                                ? capture_length : capture_capacity - 1u;
+            memcpy(capture_buffer, s, copied);
+            capture_buffer[copied] = '\0';
+        }
+        return;
+    }
     if (reply_transport == CONFIG_REPLY_WIRELESS) {
         if (!config_wireless_bridge_publish_response(
                 wireless_reply_session, s)) {
@@ -2291,6 +2310,42 @@ void config_wireless_task(void) {
 
     // BLE capture entries (see sw2_capture.h) are pulled explicitly via `sw2cap drain`, not
     // auto-streamed here — a client (the web UI) polls it like any other command.
+}
+
+// Run one management command and capture its reply, instead of writing it to a
+// transport.
+//
+// EXISTS FOR DIAGNOSIS. The UART console (src/ns2_uart_diag.c) has its own small
+// dispatcher that knows a handful of `kbm` verbs; the full management surface
+// lives here and is reachable only over BLE or the CDC Config personality. So
+// the one channel always available on the bench could not read the commands that
+// were failing, and a wire-format defect had to be reasoned about from source
+// and confirmed by a user with a companion app open.
+//
+// Returns the reply length. The reply is truncated into `out_buffer` rather than
+// refused, because a diagnostic that hides an oversized reply would conceal
+// exactly the class of bug this exists to find; callers report the true length.
+size_t config_execute_captured(const char *command, char *out_buffer,
+                               size_t capacity) {
+    if (!command || !out_buffer || capacity == 0) return 0;
+    // handle_line() writes through `line`, which the CDC path also owns. This
+    // runs on core0 from the same task loop, so there is no concurrent user.
+    size_t length = strlen(command);
+    if (length >= LINE_MAX) return 0;
+    memcpy(line, command, length + 1u);
+
+    config_reply_transport_t previous = reply_transport;
+    reply_transport = CONFIG_REPLY_CAPTURE;
+    capture_buffer = out_buffer;
+    capture_capacity = capacity;
+    capture_length = 0;
+    out_buffer[0] = '\0';
+    handle_line(line);
+    reply_transport = previous;
+    capture_buffer = NULL;
+    capture_capacity = 0;
+    line_len = 0;
+    return capture_length;
 }
 
 void config_cdc_task(void) {
