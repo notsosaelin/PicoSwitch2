@@ -551,24 +551,43 @@ typedef enum {
 // a Class-of-Device combo declaration -- may override the result.
 ns2_kbm_primary_t ns2_kbm_primary_from_caps(ns2_kbm_peer_caps_t caps);
 
-// Resolve a peer's role from its capabilities AND whatever self-declaration the
-// transport could supply.
+// Resolve a peer's PRIMARY role from its capabilities and whatever
+// self-declaration the transport could supply.
 //
-// `ns2_kbm_primary_from_caps()` decides on capabilities alone, and for a peer
-// with both it must keep answering MOUSE -- that is what stops a gaming mouse
-// with macro keys from consuming the keyboard role. This wraps it with the two
-// ways a device can positively declare that it supplies BOTH roles:
+// Three inputs, three different meanings, and conflating any two of them is how
+// this went wrong twice:
 //
-//   `declares_combo`   a Classic Class-of-Device "combo keyboard/pointing"
-//                      peripheral;
-//   `strong_keyboard`  a report descriptor that opens as a keyboard, carries a
-//                      standard modifier byte and has real key capacity
+//   `caps`             what the DESCRIPTOR declares the device can emit.
+//   `declares_combo`   the device stating it IS an integrated keyboard-with-
+//                      pointing-device: a Classic Class-of-Device combo
+//                      peripheral. One physical unit that genuinely supplies
+//                      both halves.
+//   `strong_keyboard`  the descriptor is unmistakably a keyboard's -- it opens
+//                      with a keyboard application collection, declares a
+//                      standard modifier byte, and has real key capacity
 //                      (bthid_keyboard_shape()).
 //
-// The second exists because BLE has no Class of Device, so without it a genuine
-// BLE keyboard that also declares a pointer collection loses the keyboard role.
-// Neither is "both capabilities are present": that is exactly the gaming mouse,
-// which opens as a mouse and therefore never sets `strong_keyboard`.
+// The rules, and what each protects:
+//
+//   COMBO requires `declares_combo`. It means ONE peer owns BOTH logical roles,
+//   which is only correct for a device that really is both -- a keyboard with an
+//   integrated trackpad. A keyboard that merely declares an auxiliary pointer
+//   collection is NOT that, and making it COMBO makes it squat the mouse role so
+//   a separately paired mouse is refused as a duplicate.
+//
+//   `strong_keyboard` makes a peer KEYBOARD-primary even when it also declares
+//   a pointer. This is the BLE case: BLE has no Class of Device, so without it
+//   capability precedence sends a real keyboard to MOUSE and its keys never
+//   reach the keyboard role. It grants the keyboard role and NOTHING ELSE; the
+//   pointer capability stays recorded as metadata and the mouse role stays free
+//   for a real mouse.
+//
+//   Otherwise capability precedence decides, pointer first -- which is what
+//   keeps a gaming mouse with macro keys out of the keyboard role.
+//
+// Separate keyboard and mouse peers are the NORMAL Keyboard + Mouse
+// composition, not a fallback: ns2_kbm_roles_t holds one slot each and they are
+// meant to be filled by two different peers.
 ns2_kbm_primary_t ns2_kbm_primary_from_evidence(ns2_kbm_peer_caps_t caps,
                                                 bool declares_combo,
                                                 bool strong_keyboard);

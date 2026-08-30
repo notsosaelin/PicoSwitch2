@@ -36,6 +36,16 @@ public sealed partial class KeyboardMousePage : Page
     private readonly AdapterConnectionService adapters = AppServices.Adapters;
 
     private KbmProfile profile = KbmProfile.Keyboard;
+
+    /// <summary>
+    /// Whether the user has chosen which profile to edit.
+    ///
+    /// Until they do, the page follows the adapter's ACTIVE profile. Defaulting
+    /// to Keyboard regardless meant a user could bind a key, see every operation
+    /// report success, and get nothing at the console -- because the adapter was
+    /// resolving the other profile the whole time.
+    /// </summary>
+    private bool profileChosenByUser;
     private DispatcherTimer? mouseCommit;
     private KbmMouseField? pendingMouseField;
     private int pendingMouseValue;
@@ -116,6 +126,7 @@ public sealed partial class KeyboardMousePage : Page
         }
 
         profile = (KbmProfile)ProfileBox.SelectedIndex;
+        profileChosenByUser = true;
         Render();
     }
 
@@ -234,7 +245,15 @@ public sealed partial class KeyboardMousePage : Page
     private void Render()
     {
         var connected = adapters.Connection.Value.Connected;
-        view = KeyboardMouse.Project(adapters.KeyboardMouse.Value, profile, connected);
+        var state = adapters.KeyboardMouse.Value;
+
+        // Follow the adapter until the user says otherwise.
+        if (!profileChosenByUser && state.Loaded)
+        {
+            profile = state.Status.Profile;
+        }
+
+        view = KeyboardMouse.Project(state, profile, connected);
 
         UnsupportedBar.IsOpen = !view.Visible;
         UnsupportedBar.Message = view.HiddenReason ?? string.Empty;
@@ -283,6 +302,9 @@ public sealed partial class KeyboardMousePage : Page
         MappingSummary.Text = view.Loaded
             ? $"{view.BoundCount} of {view.MappableCount} inputs mapped"
             : "Not read yet";
+
+        InactiveProfileBar.IsOpen = view.Loaded && view.EditingInactiveProfile;
+        InactiveProfileBar.Message = view.InactiveProfileWarning ?? string.Empty;
 
         InvertXBox.IsChecked = view.InvertX;
         InvertYBox.IsChecked = view.InvertY;

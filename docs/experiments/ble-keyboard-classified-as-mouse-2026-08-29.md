@@ -1,10 +1,12 @@
 # A BLE keyboard is classified as a mouse
 
-**Status:** FIXED in firmware and **confirmed on hardware**, 2026-08-29.
+**Status:** classification fixed; role corrected after the first attempt was
+wrong. Awaiting one hardware smoke test.
 
-The 8BitDo Retro keyboard now pairs and is reported as **keyboard and mouse
-connected** — the COMBO outcome. Before the fix the same device reported
-`keyboard=False mouse=True` and its keys never reached the keyboard role.
+The 8BitDo Retro is now **KEYBOARD-primary**: it holds the keyboard slot and
+leaves the mouse slot free. The first fix (`062e101`) made it COMBO, which
+changed the label to `keyboard=True mouse=True` while the keyboard still did not
+type, and made it squat the mouse slot. See "Correction" below.
 
 The discriminator is the report descriptor's OPENING application collection plus
 the shape of its keyboard half — see "The fix" below.
@@ -157,6 +159,82 @@ device.
 
 A firmware built from this change does carry `btid`, so a future capture will
 return the real bytes — useful confirmation, not a prerequisite.
+
+## Correction: COMBO was the wrong role (2026-08-29, after 062e101)
+
+`062e101` made the 8BitDo COMBO. On hardware that produced `keyboard=True
+mouse=True` — and **the keyboard still did not type**. The label changed; the
+product behaviour did not. The role decision was wrong, and this section records
+why, because the reasoning is the durable part.
+
+### The reconstructed role model
+
+Read from `ns2_kbm.c`, `ns2_kbm_runtime.c` and their tests:
+
+| | |
+|---|---|
+| `NS2_KBM_PRIMARY_KEYBOARD` | this peer IS a keyboard; it may hold the keyboard slot |
+| `NS2_KBM_PRIMARY_MOUSE` | this peer IS a mouse; it may hold the mouse slot |
+| `NS2_KBM_PRIMARY_COMBO` | this ONE peer is an integrated keyboard-with-pointing-device and may hold BOTH slots |
+
+`ns2_kbm_roles_t` holds exactly one keyboard slot and one mouse slot, and
+`group_id` exists specifically so **two different Bluetooth peers** appear to the
+arbiter as one logical source. Its own comment: *"what makes two Bluetooth peers
+one arbiter-visible logical owner without either of them pretending to be the
+other."*
+
+**So separate keyboard and mouse peers are the NORMAL Keyboard + Mouse
+composition, not a fallback.** COMBO is the special case — one physical unit that
+genuinely supplies both halves — and it was only ever granted from a Classic
+Class-of-Device combo peripheral, which is a device saying exactly that.
+
+The profile follows from the roles, and is **not user-settable**: there is no
+`kbm profile` command. `ns2_kbm_mode_profile()` derives it from the effective
+mode, which `ns2_kbm_effective_mode()` derives from which slots are filled.
+
+### What 062e101 got wrong
+
+It conflated three separate things:
+
+1. **descriptor capability** — the device declares keyboard and pointer
+   collections;
+2. **physical classification** — what kind of peripheral this primarily is;
+3. **logical role ownership** — which slots it should occupy.
+
+Having both collections does not make a device an integrated combo, and being an
+integrated combo is what earns both slots. The 8BitDo is a keyboard that also
+declares a pointer; granting it COMBO made it **squat the mouse slot**, so a
+separately paired mouse would be refused as `NS2_KBM_ADMIT_REJECT_DUPLICATE` —
+breaking the ordinary keyboard-plus-mouse configuration to fix a keyboard.
+
+### The corrected policy
+
+`ns2_kbm_primary_from_evidence()`:
+
+- `declares_combo` (Classic CoD only) + both capabilities → **COMBO**, unchanged;
+- `strong_keyboard` + keyboard capability → **KEYBOARD**, and nothing else. The
+  pointer capability stays recorded as metadata and claims no slot;
+- otherwise capability precedence, pointer first — which is what keeps a gaming
+  mouse with macro keys out of the keyboard slot.
+
+The 8BitDo is therefore KEYBOARD-primary: it holds the keyboard slot, its keys
+resolve, and the mouse slot stays free for a real mouse. Its own pointer reports
+are dropped at `admit_and_route()`, which is correct — it is a keyboard.
+
+### The second defect, which is probably why nothing typed
+
+The profile is derived, not chosen — but the Windows page let the user pick which
+profile to EDIT and defaulted to Keyboard regardless of which one the adapter was
+resolving. With the 8BitDo previously classified MOUSE, the effective mode was
+Keyboard+Mouse and the live profile was `kbm`; a user binding keys on the default
+page view was editing `kb`.
+
+Every management operation reports success in that situation — the binding is
+saved, survives a reload, and shows in the map — and the key does nothing at the
+console. Silence there is indistinguishable from a broken keyboard.
+
+The page now follows the adapter's active profile until the user deliberately
+changes it, and says plainly when the profile being edited is not the one in use.
 
 ## Hardware result, 2026-08-29
 

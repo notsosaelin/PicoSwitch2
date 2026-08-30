@@ -1452,10 +1452,94 @@ static void test_primary_from_evidence(void) {
     // A Classic combo peripheral declares itself. Unchanged behaviour.
     assert(ns2_kbm_primary_from_evidence(both, true, false) == CB);
 
-    // A BLE keyboard whose DESCRIPTOR says keyboard. The defect this fixes:
-    // BLE has no Class of Device, so before this the peer fell to precedence
-    // and lost the keyboard role.
-    assert(ns2_kbm_primary_from_evidence(both, false, true) == CB);
+    // A BLE keyboard whose DESCRIPTOR says keyboard takes the KEYBOARD role and
+    // NOTHING ELSE.
+    //
+    // Not COMBO: COMBO means one peer owns both slots, which is only right for a
+    // device that really is both. Granting it here made an ordinary keyboard
+    // squat the mouse role, so a separately paired mouse was refused as a
+    // duplicate -- and separate keyboard + mouse peers are the NORMAL
+    // Keyboard + Mouse composition, not a fallback.
+    assert(ns2_kbm_primary_from_evidence(both, false, true) == KB);
+
+    // The mouse slot stays free, which is the whole point.
+    {
+        ns2_kbm_roles_t roles;
+        ns2_kbm_roles_init(&roles);
+        ns2_kbm_peer_key_t kbd = {1u, {0, 0, 0, 0, 0, 0xA1u}, 1u, 4u, 1u};
+        ns2_kbm_peer_key_t mouse_peer = {1u, {0, 0, 0, 0, 0, 0xB2u}, 1u, 5u, 1u};
+
+        // The keyboard-with-pointer joins as the keyboard...
+        assert(ns2_kbm_roles_admit(&roles, policy(true, true),
+                                   ns2_kbm_primary_from_evidence(both, false, true),
+                                   both, &kbd) == NS2_KBM_ADMIT_KEYBOARD);
+        assert(roles.keyboard.valid && !roles.mouse.valid);
+
+        // ...and a real mouse still gets the mouse role. Under COMBO this was
+        // NS2_KBM_ADMIT_REJECT_DUPLICATE.
+        assert(ns2_kbm_roles_admit(&roles, policy(true, true), MS,
+                                   caps(false, true), &mouse_peer) ==
+               NS2_KBM_ADMIT_MOUSE);
+        assert(roles.keyboard.valid && roles.mouse.valid);
+        assert(roles.rejected_duplicate == 0u);
+    }
+
+    // Order must not matter: mouse first, then the keyboard-with-pointer.
+    {
+        ns2_kbm_roles_t roles;
+        ns2_kbm_roles_init(&roles);
+        ns2_kbm_peer_key_t kbd = {1u, {0, 0, 0, 0, 0, 0xA1u}, 1u, 4u, 1u};
+        ns2_kbm_peer_key_t mouse_peer = {1u, {0, 0, 0, 0, 0, 0xB2u}, 1u, 5u, 1u};
+
+        assert(ns2_kbm_roles_admit(&roles, policy(true, true), MS,
+                                   caps(false, true), &mouse_peer) ==
+               NS2_KBM_ADMIT_MOUSE);
+        assert(ns2_kbm_roles_admit(&roles, policy(true, true),
+                                   ns2_kbm_primary_from_evidence(both, false, true),
+                                   both, &kbd) == NS2_KBM_ADMIT_KEYBOARD);
+        assert(roles.keyboard.valid && roles.mouse.valid);
+        assert(roles.rejected_duplicate == 0u);
+    }
+
+    // A Classic combo peripheral still owns both, and a later mouse IS then a
+    // duplicate -- correct, because that one device really is both halves.
+    {
+        ns2_kbm_roles_t roles;
+        ns2_kbm_roles_init(&roles);
+        ns2_kbm_peer_key_t combo = {1u, {0, 0, 0, 0, 0, 0xC3u}, 1u, 6u, 1u};
+        ns2_kbm_peer_key_t mouse_peer = {1u, {0, 0, 0, 0, 0, 0xB2u}, 1u, 5u, 1u};
+
+        assert(ns2_kbm_roles_admit(&roles, policy(true, true),
+                                   ns2_kbm_primary_from_evidence(both, true, false),
+                                   both, &combo) == NS2_KBM_ADMIT_BOTH);
+        assert(ns2_kbm_roles_admit(&roles, policy(true, true), MS,
+                                   caps(false, true), &mouse_peer) ==
+               NS2_KBM_ADMIT_REJECT_DUPLICATE);
+    }
+
+    // Releasing the keyboard frees ONLY its slot; the mouse peer keeps its own.
+    {
+        ns2_kbm_roles_t roles;
+        ns2_kbm_roles_init(&roles);
+        ns2_kbm_peer_key_t kbd = {1u, {0, 0, 0, 0, 0, 0xA1u}, 1u, 4u, 1u};
+        ns2_kbm_peer_key_t mouse_peer = {1u, {0, 0, 0, 0, 0, 0xB2u}, 1u, 5u, 1u};
+        bool freed_kb = false, freed_ms = false;
+
+        (void)ns2_kbm_roles_admit(&roles, policy(true, true),
+                                  ns2_kbm_primary_from_evidence(both, false, true),
+                                  both, &kbd);
+        (void)ns2_kbm_roles_admit(&roles, policy(true, true), MS,
+                                  caps(false, true), &mouse_peer);
+        assert(ns2_kbm_roles_release(&roles, &kbd, &freed_kb, &freed_ms));
+        assert(freed_kb && !freed_ms);
+        assert(!roles.keyboard.valid && roles.mouse.valid);
+
+        // And it can come back to its own slot.
+        assert(ns2_kbm_roles_admit(&roles, policy(true, true),
+                                   ns2_kbm_primary_from_evidence(both, false, true),
+                                   both, &kbd) == NS2_KBM_ADMIT_KEYBOARD);
+        assert(roles.keyboard.valid && roles.mouse.valid);
+    }
 
     // Strong keyboard evidence is only ever a tie-breaker between two present
     // capabilities. It cannot invent a role the device does not have.

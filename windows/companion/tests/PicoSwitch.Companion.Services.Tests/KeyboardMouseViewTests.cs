@@ -249,6 +249,35 @@ public sealed class KeyboardMouseViewTests
     }
 
     [Fact]
+    public void EditingAProfileTheAdapterIsNotUsingIsCalledOut()
+    {
+        // The profile is NOT user-settable -- there is no `kbm profile` command.
+        // The adapter derives it from which roles are filled. So a user can bind
+        // a key in the other profile, watch every operation report success, and
+        // get nothing at the console. Silence there is indistinguishable from a
+        // broken keyboard, which is why this is stated rather than left implicit.
+        var state = State(new KbmStatus(Profile: KbmProfile.KeyboardMouse));
+
+        var editingOther = KeyboardMouse.Project(state, KbmProfile.Keyboard, true);
+        Assert.True(editingOther.EditingInactiveProfile);
+        Assert.Contains("keyboard and mouse profile", editingOther.InactiveProfileWarning);
+        Assert.Contains("will not affect the console", editingOther.InactiveProfileWarning);
+
+        var editingLive = KeyboardMouse.Project(state, KbmProfile.KeyboardMouse, true);
+        Assert.False(editingLive.EditingInactiveProfile);
+        Assert.Null(editingLive.InactiveProfileWarning);
+    }
+
+    [Fact]
+    public void TheActiveProfileComesFromTheAdapterNotFromTheEditor() =>
+        Assert.Equal(
+            KbmProfile.KeyboardMouse,
+            KeyboardMouse.Project(
+                State(new KbmStatus(Profile: KbmProfile.KeyboardMouse)),
+                KbmProfile.Keyboard,
+                true).ActiveProfile);
+
+    [Fact]
     public void TheKeyboardOnlyProfileDoesNotOfferMouseButtons()
     {
         // That profile is what the adapter uses when only a keyboard is attached,
