@@ -134,21 +134,42 @@ public static class KbmBankView
         var active = state.Profiles.ActiveFor(layout);
         var rows = new List<KbmLibraryRow>();
 
-        foreach (var profile in library.For(layout))
-        {
-            // Matched by CONTENT or by the name the resident copy carries.
-            // Content first: fingerprints are the only thing Windows and Android
-            // can compare, since their local ids are not shared.
-            var byContent = state.Profiles.Profiles.FirstOrDefault(
-                resident => resident.Layout == layout &&
-                            resident.Fingerprint == profile.Fingerprint);
-            var byName = state.Profiles.Profiles.FirstOrDefault(
-                resident => resident.Layout == layout &&
-                            string.Equals(resident.Name, profile.Name,
-                                          StringComparison.CurrentCultureIgnoreCase));
+        // A resident copy belongs to AT MOST ONE library row.
+        //
+        // Two local profiles can hold identical content — two untouched copies of
+        // Default do — and without this both would claim the same resident and
+        // each would be reported as "on adapter". Claiming consumes, and the
+        // strongest evidence wins: name AND content, then content, then name.
+        var unclaimed = state.Profiles.Profiles
+            .Where(resident => resident.Layout == layout)
+            .ToList();
 
-            var resident = byContent ?? byName;
-            if (resident is null)
+        var profiles = library.For(layout).ToList();
+        var matched = new Dictionary<string, KbmProfileInfo>(StringComparer.Ordinal);
+
+        foreach (var strength in Enumerable.Range(0, 3))
+        {
+            foreach (var profile in profiles.Where(p => !matched.ContainsKey(p.Id)))
+            {
+                var resident = unclaimed.FirstOrDefault(candidate => strength switch
+                {
+                    0 => candidate.Fingerprint == profile.Fingerprint &&
+                         Same(candidate.Name, profile.Name),
+                    1 => candidate.Fingerprint == profile.Fingerprint,
+                    _ => Same(candidate.Name, profile.Name),
+                });
+
+                if (resident is not null)
+                {
+                    matched[profile.Id] = resident;
+                    unclaimed.Remove(resident);
+                }
+            }
+        }
+
+        foreach (var profile in profiles)
+        {
+            if (!matched.TryGetValue(profile.Id, out var resident))
             {
                 rows.Add(new KbmLibraryRow(profile, KbmLocalState.LocalOnly, null));
                 continue;
@@ -170,6 +191,9 @@ public static class KbmBankView
 
         return rows;
     }
+
+    private static bool Same(string a, string b) =>
+        string.Equals(a, b, StringComparison.CurrentCultureIgnoreCase);
 
     /// <summary>
     /// The four semantic switch actions and whatever key is bound to each.

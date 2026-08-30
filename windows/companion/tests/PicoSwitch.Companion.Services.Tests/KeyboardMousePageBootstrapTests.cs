@@ -134,7 +134,10 @@ public sealed class KeyboardMousePageBootstrapTests
         var view = KeyboardMouse.Project(state, KbmLayout.Keyboard, connected: true,
                                          draft: null);
         Assert.False(view.ShowEditor);
-        Assert.False(view.ProfilesSupported);
+        // The adapter half is unavailable; the local library is unaffected, which
+        // is why ShowEditor is the thing checked rather than a "profiles
+        // supported" flag that used to gate the whole page.
+        Assert.False(view.AdapterAvailable);
         Assert.Equal("Firmware update required", view.NotReadyTitle);
     }
 

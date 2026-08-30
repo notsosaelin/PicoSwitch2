@@ -814,6 +814,28 @@ public sealed class AdapterRepository(IManagementTransport transport)
         return keyboardMouse.Value;
     }
 
+    /// <summary>
+    /// Remove a profile from a bank position. The local library is untouched.
+    /// </summary>
+    public async Task<KeyboardMouseState> RemoveKbmPositionAsync(
+        KbmLayout layout, int position,
+        CancellationToken cancellationToken = default)
+    {
+        var profiles = await client.RemoveKbmPositionAsync(layout, position,
+                                                           cancellationToken)
+            .ConfigureAwait(false);
+        // The realized mapping may have fallen back to Default, so it is re-read
+        // rather than assumed: a page still showing the removed mapping would be
+        // describing something the console is no longer running.
+        var mapping = await client.LoadKbmMappingAsync(layout, cancellationToken)
+            .ConfigureAwait(false);
+        keyboardMouse.Set(keyboardMouse.Value.With(mapping) with
+        {
+            Profiles = profiles,
+        });
+        return keyboardMouse.Value;
+    }
+
     /// <summary>Assign or clear one profile-switch key.</summary>
     public async Task<KeyboardMouseState> BindKbmSwitchAsync(
         KbmSource source, int? position,

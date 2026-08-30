@@ -1036,6 +1036,21 @@ bool ns2_kbm_runtime_set_boot_position(ns2_kbm_layout_t layout,
     return true;
 }
 
+bool ns2_kbm_runtime_position_clear(ns2_kbm_layout_t layout, uint8_t position) {
+    ns2_kbm_config_t candidate;
+    uint32_t generation = 0;
+    config_snapshot(&candidate, &generation);
+    if (!ns2_kbm_position_clear(&candidate, layout, position)) return false;
+    config_write_begin();
+    s_config = candidate;
+    config_write_end();
+    // The runtime position follows the same fallback the config just took, so a
+    // client reading it back never sees a selection that no longer exists.
+    if (layout < NS2_KBM_LAYOUT_COUNT && s_runtime_position[layout] == position)
+        s_runtime_position[layout] = (uint8_t)NS2_KBM_POSITION_DEFAULT;
+    return true;
+}
+
 bool ns2_kbm_runtime_switch_bind(ns2_kbm_source_t source, uint8_t position) {
     ns2_kbm_config_t candidate;
     uint32_t generation = 0;

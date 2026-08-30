@@ -36,6 +36,13 @@ public sealed partial class KeyboardMousePage : Page
 
     private readonly AdapterConnectionService adapters = AppServices.Adapters;
 
+    /// <summary>
+    /// The user's local profiles. Separate from <see cref="adapters"/> on
+    /// purpose: every library operation on this page goes here and reaches no
+    /// management session at all.
+    /// </summary>
+    private readonly KbmLibraryRepository library = AppServices.KbmLibrary;
+
     private KbmLayout profile = KbmLayout.Keyboard;
 
     /// <summary>
@@ -63,13 +70,28 @@ public sealed partial class KeyboardMousePage : Page
     /// control that still referenced them. See <see cref="KbmProfileSelection"/>
     /// for the crash this closes.
     /// </remarks>
-    private IReadOnlyList<KbmProfileInfo> renderedProfileRows = [];
+    private IReadOnlyList<KbmSelectableProfile> renderedProfileRows = [];
 
     /// <summary>
-    /// The selected profile's stable ID. Selection identity lives HERE, not in a
-    /// <see cref="ComboBoxItem"/> that every render replaced.
+    /// The selected LOCAL profile's id, or null for the built-in template.
     /// </summary>
-    private int selectedProfileId = KbmProfileIds.None;
+    /// <remarks>
+    /// Selection identity lives HERE, not in a <see cref="ComboBoxItem"/> that
+    /// every render replaced — that was the crash. It is a local library id, not
+    /// an adapter profile id: which profile the user is editing and which profile
+    /// the adapter has resident are separate facts.
+    /// </remarks>
+    private string? selectedLocalId;
+
+    /// <summary>
+    /// The picker's rows: the built-in template, then the user's library.
+    /// </summary>
+    private IReadOnlyList<KbmSelectableProfile> LibraryRows() =>
+    [
+        new KbmSelectableProfile(string.Empty, "Default (built-in)"),
+        .. library.Value.For(profile)
+                  .Select(local => new KbmSelectableProfile(local.Id, local.Name)),
+    ];
 
     /// <summary>
     /// Whether a <see cref="ContentDialog"/> is open. WinUI allows exactly one;
@@ -81,11 +103,16 @@ public sealed partial class KeyboardMousePage : Page
     /// <summary>
     /// The local, unsaved copy of the profile being edited.
     ///
-    /// Every edit on this page mutates THIS and nothing else. No management
-    /// command is sent until the user presses Save, which is what makes Save and
-    /// Discard mean anything and what stops a flash erase per keystroke.
+    /// Every edit on this page mutates THIS and nothing else, and Save writes it
+    /// to the LOCAL library. No management command is sent by any of it.
+    ///
+    /// Keyed on a local GUID rather than an adapter profile id, which is the
+    /// correction: while the editor held a KeyboardMouseDraft, "the profile I
+    /// have open" and "the profile resident on the adapter" were one object, so
+    /// creating a profile wrote to flash and Save could change what the console
+    /// runs. Getting content onto the adapter is now a separate assignment.
     /// </summary>
-    private KeyboardMouseDraft? draft;
+    private KbmLocalDraft? draft;
     private DispatcherTimer? mouseCommit;
     private KbmMouseField? pendingMouseField;
     private int pendingMouseValue;
@@ -183,12 +210,17 @@ public sealed partial class KeyboardMousePage : Page
         // torn out from under a control that still referenced them. WER recorded
         // the result as 0xc000027b in Microsoft.UI.Xaml.dll, ERROR_NOT_FOUND.
         //
-        // Now: identity is the profile ID (selectedProfileId), the rows are
-        // rebuilt only when what the control DISPLAYS actually differs, and the
-        // collection is never touched while the user has the popup open.
-        var plan = KbmProfileSelection.Plan(renderedProfileRows, view.Profiles,
-                                            view.SelectedProfile?.Id ?? KbmProfileIds.None);
-        selectedProfileId = plan.SelectedId;
+        // Now: identity is the LOCAL profile id, the rows are rebuilt only when
+        // what the control DISPLAYS actually differs, and the collection is never
+        // touched while the user has the popup open.
+        //
+        // The rows come from the LIBRARY, not from the adapter: this picker lists
+        // what the user owns, and the adapter's three positions are the separate
+        // card below.
+        var rows = LibraryRows();
+        var plan = KbmProfileSelection.Plan(renderedProfileRows, rows,
+                                            selectedLocalId ?? string.Empty);
+        selectedLocalId = plan.SelectedId.Length == 0 ? null : plan.SelectedId;
 
         if (plan.Rebuild && !ProfileSelector.IsDropDownOpen)
         {
@@ -200,9 +232,7 @@ public sealed partial class KeyboardMousePage : Page
                 {
                     ProfileSelector.Items.Add(new ComboBoxItem
                     {
-                        // Built-in Default is labelled as such so a user can tell
-                        // at a glance which row they cannot rename or delete.
-                        Content = row.Builtin ? $"{row.Name} (built-in)" : row.Name,
+                        Content = row.Label,
                         Tag = row.Id,
                     });
                 }
@@ -260,7 +290,7 @@ public sealed partial class KeyboardMousePage : Page
         await GuardAsync(async () =>
         {
             if (ProfileSelector.SelectedItem is not ComboBoxItem item ||
-                item.Tag is not int id)
+                item.Tag is not string id)
             {
                 return;
             }
@@ -270,7 +300,7 @@ public sealed partial class KeyboardMousePage : Page
             // while it was suspended.
             var action = KbmProfileSelection.Decide(
                 id,
-                draft?.ProfileId ?? KbmProfileIds.None,
+                draft?.ProfileId ?? string.Empty,
                 draft?.Dirty == true,
                 populatingProfiles);
 
@@ -288,26 +318,32 @@ public sealed partial class KeyboardMousePage : Page
                     return;
             }
 
-            await OpenProfileAsync(id);
+            selectedLocalId = id.Length == 0 ? null : id;
+            OpenProfile(id);
         });
 
-    /// <summary>Load one profile's stored mapping into a fresh local draft.</summary>
-    private async Task OpenProfileAsync(int id)
+    /// <summary>
+    /// Open a LOCAL profile in the editor. No adapter involved.
+    /// </summary>
+    /// <remarks>
+    /// This used to read the mapping from the adapter, which is what made
+    /// opening — and therefore editing — require a connection. A local profile
+    /// carries its own sparse overrides and the canonical table is embedded, so
+    /// the whole mapping is composable offline.
+    /// </remarks>
+    private void OpenProfile(string? id)
     {
-        var state = adapters.KeyboardMouse.Value;
-        var row = state.Profiles.For(profile).FirstOrDefault(p => p.Id == id);
-        if (row is null)
+        if (string.IsNullOrEmpty(id))
         {
+            draft = KbmLocalDraft.FromDefault(profile);
+            Render();
             return;
         }
 
-        var mapping = await SafeAsync(() => adapters.LoadKeyboardMouseProfileAsync(row));
-        if (mapping is null)
-        {
-            return;
-        }
-
-        draft = KeyboardMouseDraft.From(row, mapping.Bindings, state.Mouse);
+        var local = library.Value.Find(id);
+        draft = local is null
+            ? KbmLocalDraft.FromDefault(profile)
+            : KbmLocalDraft.From(local);
         Render();
     }
 
@@ -319,11 +355,14 @@ public sealed partial class KeyboardMousePage : Page
                 return;
             }
 
-            var editing = draft;
-            // Editing the built-in Default becomes a NEW profile: the template is
-            // never written into, which is what keeps it always available.
-            if (editing.IsBuiltin)
+            // LOCAL SAVE. Writes the app's library and sends NOTHING to the
+            // adapter -- not even when an older copy of this profile is resident
+            // there. The page reports that divergence; only an explicit Assign
+            // resolves it.
+            if (draft.IsBuiltin)
             {
+                // Default is a template, never written into: saving it creates a
+                // new library profile, which is what keeps it always available.
                 var name = await PromptAsync("Save as new profile", "Profile name",
                                              SuggestName("My mapping"));
                 if (string.IsNullOrWhiteSpace(name))
@@ -331,136 +370,60 @@ public sealed partial class KeyboardMousePage : Page
                     return;
                 }
 
-                editing = editing.WithName(name!);
+                var created = library.Create(profile, name!, draft.Overrides,
+                                             draft.Mouse);
+                draft = KbmLocalDraft.From(created);
+                selectedLocalId = created.Id;
             }
-
-            var saved = await SafeAsync(() => adapters.SaveKeyboardMouseProfileAsync(editing));
-            if (saved is null)
+            else
             {
-                return;
+                var saved = library.Save(draft.ProfileId, draft.Name,
+                                         draft.Overrides, draft.Mouse);
+                draft = draft.Rebased(saved);
             }
 
-            draft = saved;
             Render();
         });
 
     private void OnDiscardProfile(object sender, RoutedEventArgs e)
     {
-        // Local only. This is the point of the draft model: there is nothing on
-        // the adapter to undo.
+        // Local only, and there is nothing anywhere to undo: the draft never
+        // left this process.
         draft = draft?.Discard();
         Render();
     }
 
+    /// <summary>
+    /// New, Duplicate, Rename and Delete are LOCAL LIBRARY operations.
+    /// </summary>
+    /// <remarks>
+    /// None of them requires a connection and none of them writes to an adapter.
+    /// New used to call the staged management transaction — creating a profile
+    /// erased flash and assigned it to the resident working set in one step —
+    /// and Duplicate called `kbm profile dup`. That coupling is the defect this
+    /// removes: the library is the user's, the adapter's three positions per
+    /// layout are a working set, and copying between them is an explicit act.
+    /// </remarks>
     private async void OnNewProfile(object sender, RoutedEventArgs e) =>
         await GuardAsync(async () =>
-    {
-        var source = draft?.ProfileId ?? KbmProfileIds.Default;
-        var name = await PromptAsync(
-            "New profile",
-            source == KbmProfileIds.Default
-                ? "Starts from the built-in Default mapping."
-                : "Starts as a copy of the profile you are viewing.",
-            SuggestName(source == KbmProfileIds.Default ? "My mapping" : "Copy"));
-        if (string.IsNullOrWhiteSpace(name))
         {
-            return;
-        }
-
-        if (source == KbmProfileIds.Default)
-        {
-            // A profile from Default is an empty draft saved under a new name;
-            // no adapter round trip is needed to compose it.
-            var state = adapters.KeyboardMouse.Value;
-            var template = state.Profiles.For(profile).First(p => p.Builtin);
-            var mapping = await SafeAsync(
-                () => adapters.LoadKeyboardMouseProfileAsync(template));
-            if (mapping is null)
+            var name = await PromptAsync(
+                "New profile",
+                "Starts from the built-in Default mapping. It stays in your " +
+                "library until you assign it to the adapter.",
+                SuggestName("My mapping"));
+            if (string.IsNullOrWhiteSpace(name))
             {
                 return;
             }
 
-            var fresh = KeyboardMouseDraft
-                .From(template, mapping.Bindings, state.Mouse)
-                .WithName(name!);
-            var created = await SafeAsync(() => adapters.SaveKeyboardMouseProfileAsync(fresh));
-            if (created is null)
-            {
-                return;
-            }
-
-            draft = created;
-        }
-        else
-        {
-            var after = await SafeAsync(
-                () => adapters.DuplicateKeyboardMouseProfileAsync(source, name!));
-            if (after is null)
-            {
-                return;
-            }
-        }
-
-        Render();
-    });
-
-    private async void OnRenameProfile(object sender, RoutedEventArgs e) =>
-        await GuardAsync(async () =>
-    {
-        if (draft is null || draft.IsBuiltin)
-        {
-            return;
-        }
-
-        var name = await PromptAsync("Rename profile", "Profile name", draft.Name);
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return;
-        }
-
-        var after = await SafeAsync(
-            () => adapters.RenameKeyboardMouseProfileAsync(draft.ProfileId, name!));
-        if (after is not null)
-        {
-            draft = draft.WithName(name!).Rebased(draft.ProfileId, draft.BaseRevision,
-                                                  name!);
-        }
-
-        Render();
-    });
-
-    private async void OnDeleteProfile(object sender, RoutedEventArgs e) =>
-        await GuardAsync(async () =>
-    {
-        if (draft is null || draft.IsBuiltin)
-        {
-            return;
-        }
-
-        var active = adapters.KeyboardMouse.Value.Profiles.ActiveFor(profile);
-        var applied = active?.SourceId == draft.ProfileId;
-        if (!await ConfirmAsync(
-                $"Delete '{draft.Name}'?",
-                applied
-                    ? "This profile is what the console is using. Deleting it " +
-                      "switches this layout back to the built-in Default mapping."
-                    : "This profile is removed from the adapter. The mapping the " +
-                      "console is using does not change.",
-                "Delete"))
-        {
-            return;
-        }
-
-        var after = await SafeAsync(
-            () => adapters.DeleteKeyboardMouseProfileAsync(draft.ProfileId));
-        if (after is not null)
-        {
-            draft = null;
-            await OpenProfileAsync(KbmProfileIds.Default);
-        }
-
-        Render();
-    });
+            var fresh = KbmLocalDraft.FromDefault(profile);
+            var created = library.Create(profile, name!, fresh.Overrides,
+                                         fresh.Mouse);
+            selectedLocalId = created.Id;
+            draft = KbmLocalDraft.From(created);
+            Render();
+        });
 
     private async void OnDuplicateProfile(object sender, RoutedEventArgs e) =>
         await GuardAsync(async () =>
@@ -477,12 +440,69 @@ public sealed partial class KeyboardMousePage : Page
                 return;
             }
 
-            // LOCAL. A duplicate is a new library profile and touches no adapter
-            // state at all, which is why it does not go through the repository's
-            // management path.
-            await SafeAsync(() => adapters.DuplicateKeyboardMouseProfileAsync(
-                draft.ProfileId, name!));
+            // The draft's CURRENT content, so duplicating an edited profile
+            // copies what the user is looking at rather than what was saved.
+            var created = library.Create(profile, name!, draft.Overrides,
+                                         draft.Mouse);
+            selectedLocalId = created.Id;
+            draft = KbmLocalDraft.From(created);
             Render();
+        });
+
+    private async void OnRenameProfile(object sender, RoutedEventArgs e) =>
+        await GuardAsync(async () =>
+        {
+            if (draft is null || draft.IsBuiltin)
+            {
+                return;
+            }
+
+            var name = await PromptAsync("Rename profile", "Profile name", draft.Name);
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return;
+            }
+
+            // Identity and content are untouched, so a resident copy that agreed
+            // before still agrees.
+            var renamed = library.Rename(draft.ProfileId, name!);
+            if (renamed is not null)
+            {
+                draft = draft.WithName(name!).Rebased(renamed);
+            }
+
+            Render();
+        });
+
+    private async void OnDeleteProfile(object sender, RoutedEventArgs e) =>
+        await GuardAsync(async () =>
+        {
+            if (draft is null || draft.IsBuiltin)
+            {
+                return;
+            }
+
+            // A resident copy is a SEPARATE snapshot the adapter owns and may be
+            // running. Deleting the library profile must not remove it, and the
+            // user is told so rather than left to discover it.
+            var resident = adapters.KeyboardMouse.Value.Profiles.Profiles
+                .FirstOrDefault(row => row.Layout == profile &&
+                                       row.Fingerprint == draft.Fingerprint);
+            if (!await ConfirmAsync(
+                    $"Delete '{draft.Name}' from your library?",
+                    resident is null
+                        ? "This removes it from this app. Nothing on the adapter changes."
+                        : $"This removes it from this app. The copy on the adapter " +
+                          $"({KbmPositions.Label(resident.Position)}) stays, and the " +
+                          "console keeps working as it does now.",
+                    "Delete"))
+            {
+                return;
+            }
+
+            library.Delete(draft.ProfileId);
+            selectedLocalId = null;
+            OpenProfile(null);
         });
 
     /// <summary>
@@ -546,10 +566,13 @@ public sealed partial class KeyboardMousePage : Page
             var chosen = bank[list.SelectedIndex];
             var local = new KbmLocalProfile
             {
-                Id = string.Empty,
+                Id = draft.ProfileId,
                 Layout = profile,
                 Name = draft.Name,
-                Bindings = draft.Bindings,
+                // The SPARSE overrides, which is exactly what the adapter stores.
+                // Sending the effective mapping would upload the canonical table
+                // as if the user had chosen every one of its bindings.
+                Bindings = draft.Overrides,
                 Mouse = draft.Mouse,
             };
 
@@ -561,6 +584,33 @@ public sealed partial class KeyboardMousePage : Page
                 InfoBarSeverity.Success);
             Render();
         });
+
+    /// <summary>
+    /// Empty one bank position on the adapter. The library keeps its copy.
+    /// </summary>
+    /// <remarks>
+    /// The two stores are independent by design, so this is worth saying out
+    /// loud in the confirmation: a user who expects Remove to delete their
+    /// profile, or Delete to free an adapter position, will be surprised
+    /// otherwise.
+    /// </remarks>
+    private async Task RemoveFromAdapterAsync(KbmBankSlot slot)
+    {
+        var consequence = slot.IsRuntime || slot.IsBoot
+            ? " This layout falls back to the built-in Default."
+            : string.Empty;
+
+        if (!await ConfirmAsync(
+                $"Remove '{slot.ResidentLabel}' from {slot.PositionLabel}?",
+                $"The adapter's copy is removed.{consequence} Your library keeps " +
+                "this profile.",
+                "Remove"))
+        {
+            return;
+        }
+
+        await SafeAsync(() => adapters.RemoveKbmPositionAsync(profile, slot.Position));
+    }
 
     /// <summary>
     /// Bind a physical key to one semantic switch action.
@@ -604,10 +654,17 @@ public sealed partial class KeyboardMousePage : Page
         await SafeAsync(() => adapters.BindKbmSwitchAsync(source, position));
     }
 
-    /// <summary>A name that is not already taken in this layout.</summary>
+    /// <summary>
+    /// A name that is not already taken in the LOCAL library for this layout.
+    /// </summary>
+    /// <remarks>
+    /// The library, not the adapter's residents: a suggestion drawn from the
+    /// adapter would collide with the user's own profiles and would need a
+    /// connection to make.
+    /// </remarks>
     private string SuggestName(string basis)
     {
-        var taken = adapters.KeyboardMouse.Value.Profiles
+        var taken = library.Value
             .For(profile)
             .Select(p => p.Name)
             .ToHashSet(StringComparer.CurrentCultureIgnoreCase);
@@ -834,8 +891,14 @@ public sealed partial class KeyboardMousePage : Page
         // to fall through to, deliberately: the profile workflow is the product,
         // and a mapping grid without it is the fallback that made a failed read
         // look like an unfinished app.
+        // OFFLINE IS NOT A FAILURE. The library and the mapping editor need no
+        // adapter and stay fully usable; only the adapter-owned half is disabled,
+        // and it is disabled rather than hidden so the user can see what
+        // connecting would bring back. A read that actually FAILED is a
+        // different thing and still replaces the page.
         var ready = view.ShowEditor;
-        NotReadyCard.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
+        NotReadyCard.Visibility = view.ShowNotReady ? Visibility.Visible
+                                                    : Visibility.Collapsed;
         NotReadyTitle.Text = view.NotReadyTitle;
         NotReadyDetail.Text = view.NotReadyDetail;
         NotReadyRetry.IsEnabled = view.Availability.Enabled &&
@@ -908,10 +971,12 @@ public sealed partial class KeyboardMousePage : Page
         InactiveProfileBar.IsOpen = view.Loaded && view.EditingInactiveProfile;
         InactiveProfileBar.Message = view.InactiveProfileWarning ?? string.Empty;
 
-        BuildKeyboard(view, enabled);
-        BuildMouseButtons(view, enabled);
-        BuildBank(view, interactive);
-        BuildSwitchKeys(interactive);
+        // The mapping grid follows the LOCAL draft and is editable offline; the
+        // bank and switch keys are adapter-owned and are not.
+        BuildKeyboard(view, true);
+        BuildMouseButtons(view, true);
+        BuildBank(view, view.AdapterAvailable && !adapters.KeyboardMouseBusy.Value);
+        BuildSwitchKeys(view.AdapterAvailable && !adapters.KeyboardMouseBusy.Value);
         BuildSliders(view, enabled);
         BuildMouseToggles(view, enabled);
 
@@ -1117,6 +1182,7 @@ public sealed partial class KeyboardMousePage : Page
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             var position = new TextBlock
             {
@@ -1200,15 +1266,35 @@ public sealed partial class KeyboardMousePage : Page
             Grid.SetColumn(boot, 3);
             row.Children.Add(boot);
 
+            // REMOVE. Only for a real position holding something -- Default is
+            // built in and cannot be emptied.
+            if (slot.Position != KbmPositions.Default)
+            {
+                var remove = new Button
+                {
+                    Content = "Remove",
+                    MinWidth = 80,
+                    Height = 32,
+                    IsEnabled = enabled && !slot.Empty,
+                };
+                remove.Click += async (_, _) => await GuardAsync(
+                    () => RemoveFromAdapterAsync(slot));
+                Grid.SetColumn(remove, 4);
+                row.Children.Add(remove);
+            }
+
             BankHost.Children.Add(row);
         }
 
         var used = bank.Count(slot => !slot.Empty && slot.Position != KbmPositions.Default);
-        BankSummary.Text =
+        BankSummary.Text = current.AdapterUnavailableReason ??
             $"{used} of {KbmLimits.PositionsPerLayout} positions used for " +
             $"{(profile == KbmLayout.Keyboard ? "keyboard" : "keyboard and mouse")}. " +
             "These work with no app connected.";
-        AssignButton.IsEnabled = enabled && draft is not null;
+
+        // Assign needs BOTH a live adapter and something to send. A draft on the
+        // built-in template has nothing of the user's in it yet.
+        AssignButton.IsEnabled = enabled && draft is not null && !draft.IsBuiltin;
     }
 
     /// <summary>

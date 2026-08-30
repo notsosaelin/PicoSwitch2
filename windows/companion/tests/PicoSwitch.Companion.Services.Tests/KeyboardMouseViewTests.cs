@@ -577,11 +577,19 @@ public sealed class KeyboardMouseViewTests
             ]),
             Max: 6);
 
-    private static KeyboardMouseDraft Draft(KbmProfiles library, int id = 2,
-                                            KbmLayout layout = KbmLayout.Keyboard)
+    // A LOCAL draft. The editor no longer holds an adapter profile: "the profile
+    // I have open" and "the profile resident on the adapter" are separate facts,
+    // and conflating them is what made creating a profile write to flash.
+    private static KbmLocalDraft Draft(KbmProfiles library, int id = 2,
+                                       KbmLayout layout = KbmLayout.Keyboard)
     {
         var row = library.For(layout).First(p => p.Id == id);
-        return KeyboardMouseDraft.From(row, [], new KbmMouseConfig());
+        return KbmLocalDraft.From(new KbmLocalProfile
+        {
+            Id = $"local-{id}",
+            Layout = layout,
+            Name = row.Name,
+        });
     }
 
     [Fact]
@@ -663,88 +671,61 @@ public sealed class KeyboardMouseViewTests
     }
 
     [Fact]
-    public void SavedButNotAppliedIsItsOwnVisibleState()
+    public void TheDraftStateIsALOCALQuestionOnly()
     {
-        // The state the whole feature exists to express. The profile is the one
-        // that produced the realized mapping, and its saved content has moved on
-        // since — so the console is still running the old behaviour.
-        var library = Library(activeMatchesSaved: false);
-        var state = State() with { Profiles = library };
-        var draft = Draft(library);
-
-        var view = KeyboardMouse.Project(state, KbmLayout.Keyboard, true, draft);
-
-        Assert.Equal(KbmDraftState.SavedNotApplied, view.DraftState);
-        Assert.True(view.SavedNotApplied);
-        Assert.True(view.CanApply);
-        Assert.False(view.CanSave);
-        Assert.Contains("not applied", view.StatusText, StringComparison.OrdinalIgnoreCase);
-        Assert.NotNull(view.StatusDetail);
-    }
-
-    [Fact]
-    public void ActiveRequiresBothTheIdAndTheContentToMatch()
-    {
-        // An id match alone is what would let the UI claim "Active" for a
-        // profile that was saved and never applied.
-        var applied = State() with { Profiles = Library(activeMatchesSaved: true) };
-        Assert.Equal(KbmDraftState.Active,
-                     KeyboardMouse.Project(applied, KbmLayout.Keyboard, true,
-                                           Draft(Library())).DraftState);
-
-        // A different profile produced the realized mapping.
-        var other = State() with { Profiles = Library(activeSourceId: 9) };
-        Assert.Equal(KbmDraftState.SavedNotApplied,
-                     KeyboardMouse.Project(other, KbmLayout.Keyboard, true,
-                                           Draft(Library())).DraftState);
-    }
-
-    [Fact]
-    public void AnotherCompanionsSaveShowsAsAConflict()
-    {
-        // The draft was based on revision 3; the adapter now reports 5. Saving
-        // over that would discard whatever the other companion stored.
+        // Clean or Dirty, and nothing else. Whether the adapter's copy agrees,
+        // whether it is running, and whether another companion changed it are
+        // relationships between the LIBRARY and the ADAPTER -- they belong to
+        // KbmLocalState on the bank view, which can express them independently.
+        //
+        // Folding them into one draft state is what made "saved" and "applied"
+        // indistinguishable, and it required a connection to answer a question
+        // about a local edit.
         var library = Library();
-        var draft = Draft(library);
-        var moved = library with
-        {
-            Profiles = new ValueList<KbmProfileInfo>(
-            [
-                library.Profiles[0] with { Revision = 5 },
-                library.Profiles[1],
-            ]),
-        };
+        var clean = KeyboardMouse.Project(State() with { Profiles = library },
+                                          KbmLayout.Keyboard, true, Draft(library));
+        Assert.Equal(KbmDraftState.Clean, clean.DraftState);
+        Assert.False(clean.Dirty);
 
-        var view = KeyboardMouse.Project(State() with { Profiles = moved },
-                                         KbmLayout.Keyboard, true, draft);
-        Assert.Equal(KbmDraftState.Conflict, view.DraftState);
-        Assert.True(view.Conflicted);
-        Assert.Contains("another device", view.StatusDetail!,
-                        StringComparison.OrdinalIgnoreCase);
+        var edited = Draft(library).With(new KbmSource(KbmSourceKind.Key, 0x04),
+                                         KbmDestination.Capture);
+        var dirty = KeyboardMouse.Project(State() with { Profiles = library },
+                                          KbmLayout.Keyboard, true, edited);
+        Assert.Equal(KbmDraftState.Dirty, dirty.DraftState);
+        Assert.True(dirty.Dirty);
+        Assert.True(dirty.CanSave);
     }
 
     [Fact]
-    public void DisconnectedNeverClaimsActive()
+    public void ADraftIsEditableAndSavableWithNoAdapterConnected()
     {
-        // A cached "Active" is exactly the lie this model exists to prevent.
-        var library = Library(activeMatchesSaved: true);
+        // The library belongs to the user, not to a device. Being offline must
+        // not disable editing or Save -- only the adapter-owned half.
+        var library = Library();
+        var edited = Draft(library).With(new KbmSource(KbmSourceKind.Key, 0x04),
+                                         KbmDestination.Capture);
+
         var view = KeyboardMouse.Project(State() with { Profiles = library },
                                          KbmLayout.Keyboard, connected: false,
-                                         Draft(library));
+                                         edited);
 
-        Assert.Equal(KbmDraftState.Disconnected, view.DraftState);
-        Assert.False(view.CanApply);
-        Assert.False(view.CanSave);
+        Assert.True(view.ShowEditor);
+        Assert.True(view.CanSave);
+        Assert.True(view.Dirty);
+        // The adapter half is unavailable, and says so rather than vanishing.
+        Assert.False(view.AdapterAvailable);
+        Assert.NotNull(view.AdapterUnavailableReason);
     }
 
     [Fact]
     public void TheBuiltInDefaultCannotBeRenamedOrDeletedButCanSeedAProfile()
     {
-        var library = Library();
-        var view = KeyboardMouse.Project(State() with { Profiles = library },
+        // The built-in template is not a library profile: it has no local id.
+        var view = KeyboardMouse.Project(State() with { Profiles = Library() },
                                          KbmLayout.Keyboard, true,
-                                         Draft(library, KbmProfileIds.Default));
+                                         KbmLocalDraft.FromDefault(KbmLayout.Keyboard));
 
+        Assert.True(view.EditingBuiltin);
         Assert.False(view.CanRename);
         Assert.False(view.CanDelete);
         // Save on the built-in template means "make this a profile of mine",

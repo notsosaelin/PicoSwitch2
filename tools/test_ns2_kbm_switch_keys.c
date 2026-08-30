@@ -457,6 +457,63 @@ static void test_updating_a_resident_profile_does_not_mutate_the_runtime(void) {
           "and the divergence clears");
 }
 
+// REMOVE FROM ADAPTER. The user-facing action, addressed by position.
+static void test_removing_a_position_falls_back_safely(void) {
+    printf("removing a position leaves no dangling runtime or boot selection\n");
+    fixture_t f;
+    build(&f);
+    bind_the_four_keys(&f);
+
+    // Position 2 is both running and the startup choice -- the worst case for a
+    // removal, because two separate references have to be cleaned up.
+    bool changed = false;
+    assert(ns2_kbm_set_boot_position(&f.config, NS2_KBM_LAYOUT_KEYBOARD, 2u,
+                                     &changed));
+    assert(press(&f, NS2_KBM_LAYOUT_KEYBOARD, KEY_F3) == f.kb[2]);
+    CHECK(realized_binding(&f.config, NS2_KBM_LAYOUT_KEYBOARD, KEY_A) == NS2_DST_B,
+          "Zelda is running before the removal");
+
+    CHECK(ns2_kbm_position_clear(&f.config, NS2_KBM_LAYOUT_KEYBOARD, 2u),
+          "the position should clear");
+
+    CHECK(ns2_kbm_profile_at(&f.config, NS2_KBM_LAYOUT_KEYBOARD, 2u) == NULL,
+          "the position is empty afterwards");
+    // Both references fall back to Default rather than dangling.
+    CHECK(f.config.active[NS2_KBM_LAYOUT_KEYBOARD].source_id ==
+              NS2_KBM_PROFILE_ID_DEFAULT,
+          "the running mapping falls back to Default");
+    CHECK(f.config.boot_position[NS2_KBM_LAYOUT_KEYBOARD] ==
+              NS2_KBM_POSITION_DEFAULT,
+          "the startup choice falls back to Default");
+    CHECK(realized_binding(&f.config, NS2_KBM_LAYOUT_KEYBOARD, KEY_A) ==
+              ns2_kbm_default_binding(NS2_KBM_LAYOUT_KEYBOARD, key(KEY_A)),
+          "and the console is running the Default mapping");
+
+    // The OTHER layout is untouched, and the other positions of this one remain.
+    CHECK(ns2_kbm_profile_at(&f.config, NS2_KBM_LAYOUT_KEYBOARD, 1u) != NULL,
+          "Profile 1 survives");
+    CHECK(ns2_kbm_profile_at(&f.config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE, 2u) != NULL,
+          "the other layout's Profile 2 survives");
+
+    // The switch key that pointed at it stays bound: the ACTION is still valid,
+    // the position is simply empty, and pressing it is safely refused.
+    CHECK(ns2_kbm_switch_action(&f.config, key(KEY_F3)) == 2u,
+          "the switch key keeps its action");
+    CHECK(press(&f, NS2_KBM_LAYOUT_KEYBOARD, KEY_F3) == NS2_KBM_PROFILE_ID_NONE,
+          "and pressing it now does nothing");
+
+    // Clearing an already-empty position succeeds: the caller asked for it to
+    // hold nothing, and it does.
+    CHECK(ns2_kbm_position_clear(&f.config, NS2_KBM_LAYOUT_KEYBOARD, 2u),
+          "clearing an empty position is not an error");
+    CHECK(!ns2_kbm_position_clear(&f.config, NS2_KBM_LAYOUT_KEYBOARD, 9u),
+          "an out-of-range position is refused");
+
+    // And the freed position can be assigned again.
+    CHECK(ns2_kbm_free_position(&f.config, NS2_KBM_LAYOUT_KEYBOARD) == 2u,
+          "the freed position is offered next");
+}
+
 int main(void) {
     printf("== ns2_kbm switch keys ==\n");
     test_the_same_keys_select_the_layout_appropriate_profile();
@@ -471,6 +528,7 @@ int main(void) {
     test_positions_are_bounded_per_layout();
     test_boot_and_runtime_are_separate();
     test_updating_a_resident_profile_does_not_mutate_the_runtime();
+    test_removing_a_position_falls_back_safely();
     printf("%s: %d checks, %d failures\n", failures ? "FAIL" : "PASS", checks,
            failures);
     return failures ? 1 : 0;

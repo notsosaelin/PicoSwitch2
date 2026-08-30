@@ -18,6 +18,7 @@ public static class AppServices
     private static readonly Lock Gate = new();
 
     private static AdapterConnectionService? adapters;
+    private static KbmLibraryRepository? kbmLibrary;
     private static DiagnosticLog? diagnostics;
     private static DispatcherQueue? dispatcher;
     private static WindowsDocumentStore? documents;
@@ -46,6 +47,27 @@ public static class AppServices
             lock (Gate)
             {
                 return documents ??= new WindowsDocumentStore();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The user's local KB/M profile library.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately NOT reached through <see cref="Adapters"/>: the library
+    /// belongs to the user, not to a device, and it must be usable with nothing
+    /// paired. Hanging it off the connection service is precisely how creating a
+    /// profile came to require an adapter.
+    /// </remarks>
+    public static KbmLibraryRepository KbmLibrary
+    {
+        get
+        {
+            lock (Gate)
+            {
+                return kbmLibrary ??=
+                    new KbmLibraryRepository(new KbmProfileLibraryStore(Documents));
             }
         }
     }

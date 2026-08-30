@@ -602,6 +602,15 @@ bool ns2_kbm_profile_rename(ns2_kbm_config_t *config, uint8_t profile_id,
                             const char *name);
 bool ns2_kbm_profile_delete(ns2_kbm_config_t *config, uint8_t profile_id);
 
+// Empty one POSITION of a layout's bank -- the user-facing "remove from adapter".
+//
+// Addressed by position rather than id because that is what the user chose. Any
+// runtime or boot reference to it falls back to Default, so no dangling
+// selection survives. Clearing an already-empty position succeeds: the caller
+// asked for it to hold nothing, and it does.
+bool ns2_kbm_position_clear(ns2_kbm_config_t *config, ns2_kbm_layout_t layout,
+                            uint8_t position);
+
 // Is `name` already taken by another profile of this layout? Names are unique
 // within a layout so a user can identify a profile by what they called it; the
 // same name in the other layout is fine and common ("Default" is both).

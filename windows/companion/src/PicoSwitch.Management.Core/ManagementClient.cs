@@ -443,6 +443,25 @@ public sealed class ManagementClient(
                                Max: max);
     }
 
+    /// <summary>
+    /// REMOVE a profile from one of the adapter's bank positions.
+    /// </summary>
+    /// <remarks>
+    /// The resident copy only. A local library profile of the same content is a
+    /// separate store and survives — the two are deliberately independent, and
+    /// this is one half of that.
+    ///
+    /// If the position was running or was the startup choice, the adapter falls
+    /// that layout back to Default, so no dangling selection is left behind.
+    /// </remarks>
+    public async Task<KbmProfiles> RemoveKbmPositionAsync(
+        KbmLayout layout, int position, CancellationToken ct = default)
+    {
+        await AcknowledgeAsync(ManagementCommands.KbmRemove(layout, position), ct)
+            .ConfigureAwait(false);
+        return await KbmProfilesAsync(ct).ConfigureAwait(false);
+    }
+
     /// <summary>The profile-switch key assignments.</summary>
     public Task<ValueList<KbmSwitchBinding>> KbmSwitchesAsync(
         CancellationToken ct = default) =>
