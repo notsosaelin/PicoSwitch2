@@ -345,3 +345,111 @@ Three of its exits still increment no counter: no peer key, classification
 pending, and no keyboard role. `kbm status` already reports `keyboardReports`,
 `rejectedMode`, `rejectedDuplicate` and `rejectedNotOwner`, so those four are
 readable today over the existing command surface without any new firmware.
+
+## The admission path, read from source (2026-08-29)
+
+A new control changes the shape of this investigation: an **ASUS ROG Falchion RX
+Low Profile** keyboard was paired to the same adapter in the same debugging
+cycle and **works** — its keys reach the gamepad mapping. So the keyboard →
+gamepad feature is functional on this adapter, and the downstream publication
+path is no longer a plausible common cause. The failure is specific to something
+in the 8BitDo's runtime path.
+
+### The branch structure
+
+`admit_and_route()` (`src/bt_hid/ns2_kbm_runtime.c:539`), in order:
+
+| # | Predicate | On failure | Counter |
+|---|---|---|---|
+| 1 | `peer_key_for_connection()` — is `bthid_get_device(conn_index)` non-NULL? | return false | **none** |
+| 2 | `primary == NONE` and `primary_authority_pending()` — a BLE peer on the keyboard driver with no classification yet | return false | **none** |
+| 3 | `ns2_kbm_roles_admit()` → `REJECT_MODE` | return false | `rejectedMode` |
+| 3 | `ns2_kbm_roles_admit()` → `REJECT_DUPLICATE` | return false | `rejectedDuplicate` |
+| 4 | `from_keyboard && !keyboard_role` — admitted, but not to the keyboard slot | return false | **none** |
+| 5 | `ns2_active_input_submit_group()` — does the composite own the console? | return false | `rejectedNotOwner` |
+
+Only on reaching the end does `ns2_kbm_runtime_submit_keyboard()` continue to
+`s_roles.keyboard_reports++`, state update, resolve and `publish_locked()`.
+
+### The counter names do not mean what they look like
+
+**`keyboardReports` counts ACCEPTED reports, not arriving ones.** It is
+incremented at `ns2_kbm_runtime.c:629`, *after* `admit_and_route()` has already
+returned true. This matters for reading a test result: a report refused at any
+branch above never touches it, and a report dropped at branch 1, 2 or 4 touches
+nothing at all.
+
+`publishes` is the only counter that says the output side ran.
+
+`rollover` is incremented in the keyboard *driver*, before admission — but only
+on a rollover decode, so it cannot serve as a general arrival counter.
+
+There is therefore **no counter that proves a report arrived**. That is the gap.
+
+### The three silent exits
+
+**1 — no peer key.** `peer_key_for_connection()` fails only when
+`bthid_get_device(event->dev_addr)` returns NULL. The report is dispatched from
+that same device's driver callback, so the device is live by construction.
+*Implausible.*
+
+**2 — classification pending.** `primary_authority_pending()` is
+`device->is_ble && device->driver == &bthid_keyboard_driver`. A BLE keyboard-driver
+peer whose `primary_lookup()` misses is dropped here, silently, on every report.
+The lookup is keyed on **`(conn_index, connection_generation)`**, and
+`ns2_kbm_runtime_note_classification()` records it with the generation current
+when the *descriptor* arrived, while the report carries the generation current at
+*report* time (`bthid_keyboard.c:173`). A generation change between the two, or a
+reconnect that does not re-read the descriptor, orphans the classification.
+*Plausible, and it is a BLE-only branch — a Classic peer can never reach it.*
+
+**4 — no keyboard role.** Reached when admission succeeded but returned
+`ADMIT_MOUSE`: the peer was admitted to the mouse slot only. Requires
+`primary == MOUSE`, which contradicts the current strong-keyboard classification.
+*Implausible for the current build.*
+
+### What a stale generation would actually look like
+
+Worth stating, because it is the intuitive guess and it is wrong:
+`peer_equal()` (`ns2_kbm.c:1087`) compares `connection_generation` first, so a
+role held under an older generation makes `already_keyboard` false while
+`roles->keyboard.valid` stays true — `keyboard_free` is false, and admission
+returns `REJECT_DUPLICATE`. A stale *role* is therefore **visible** as
+`rejectedDuplicate`. A stale *classification* is the silent one.
+
+Note also that `kbm status`'s `keyboard=true` reads `s_roles.keyboard.valid`,
+which is a different state object from the per-generation classification the
+report path looks up. The two can disagree, which is exactly why the status line
+alone cannot settle this.
+
+### What can be compared between the ROG and the 8BitDo
+
+Available from `kbm status` alone, without re-pairing either: mode, profile,
+which slots are held, `keyboardConn`/`mouseConn`, `group`, `source`, and every
+counter. `group` and `source` were always in the reply and had never been read by
+either companion; the Windows app now shows them.
+
+Not available from any current diagnostic: transport actually used (BLE vs
+Classic), bound driver, HID generation, resolved-identity/RPA path, and the
+per-generation classification record — none of which `kbm status` reports. The
+`is_ble` fact is the single most valuable missing one, because branch 2 is
+BLE-only. **The ROG working does not by itself prove it took a different branch;
+it may simply have connected over Classic.** That is not manufactured evidence
+either way — it is unknown from the current surface.
+
+### Interpreting the one keypress test
+
+| Result | Meaning |
+|---|---|
+| `keyboardReports` +1, `publishes` +1 | accepted and published; the failure is downstream of KB/M and this document's premise is wrong |
+| `keyboardReports` +1, `publishes` unchanged | admitted, dropped in state/resolve/publish |
+| `rejectedMode` +1 | branch 3: role policy or offered-role mismatch |
+| `rejectedDuplicate` +1 | branch 3: the slot is held under a different peer key — a stale generation |
+| `rejectedNotOwner` +1 | branch 5: the composite does not own the console. `source=0` corroborates |
+| **nothing changes** | branch 1, 2 or 4 — or the report never reached `admit_and_route()` at all. These are indistinguishable with the counters that exist |
+
+Only the last row needs new firmware, and it is the outcome the source analysis
+makes most likely. Three bounded counters at branches 1, 2 and 4 would separate
+it; an arrival counter at the driver would separate "reached admission" from
+"never arrived". That instrumentation has deliberately **not** been added yet, to
+avoid a flash that the existing counters may make unnecessary.

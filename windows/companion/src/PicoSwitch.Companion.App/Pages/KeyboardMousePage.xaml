@@ -81,6 +81,25 @@
                             <Button x:Name="RefreshButton" Content="Reload" Click="OnRefresh" VerticalAlignment="Bottom" />
                         </StackPanel>
 
+                        <!-- Ingress counters. Collapsed by default: this is
+                             diagnostic detail, not something the ordinary user
+                             needs, but a keyboard producing nothing at the
+                             console is invisible without it. Selectable so it
+                             can be pasted into a report verbatim. -->
+                        <muxc:Expander
+                            x:Name="CountersExpander"
+                            HorizontalAlignment="Stretch"
+                            Header="Runtime counters"
+                            IsExpanded="False"
+                            Visibility="Collapsed">
+                            <TextBlock
+                                x:Name="CountersText"
+                                FontFamily="Consolas"
+                                IsTextSelectionEnabled="True"
+                                Style="{StaticResource CaptionTextBlockStyle}"
+                                TextWrapping="Wrap" />
+                        </muxc:Expander>
+
                         <TextBlock
                             x:Name="DisabledReason"
                             Style="{StaticResource CaptionTextBlockStyle}"

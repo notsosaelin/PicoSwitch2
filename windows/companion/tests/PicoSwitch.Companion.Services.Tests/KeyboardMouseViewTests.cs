@@ -355,6 +355,47 @@ public sealed class KeyboardMouseViewTests
         Assert.Equal("A, mapped to A, changed", view.Keys.Single(c => c.Cap.Usage == 0x04).AccessibleName);
         Assert.Equal("B, not mapped", view.Keys.Single(c => c.Cap.Usage == 0x05).AccessibleName);
     }
+
+    [Fact]
+    public void RuntimeCountersReportTheWholeIngressPath()
+    {
+        // Every number a keypress test needs, on three lines, in the order a
+        // report travels: who holds the role, what got through, what did not.
+        var view = KeyboardMouse.Project(
+            State(status: new KbmStatus(
+                Mode: KbmMode.Keyboard,
+                Profile: KbmProfile.Keyboard,
+                KeyboardConnected: true,
+                KeyboardConn: 5,
+                GroupId: 2,
+                SourceId: 7,
+                KeyboardReports: 17,
+                Publishes: 42,
+                RejectedNotOwner: 3)),
+            KbmProfile.Keyboard,
+            connected: true);
+
+        var counters = view.Counters;
+        Assert.NotNull(counters);
+        Assert.Equal(
+            "mode=keyboard profile=kb keyboard=yes (conn 5) mouse=no group=2 source=7",
+            counters!.Roles);
+        Assert.Equal("accepted(keyboard=17 mouse=0) published=42 rollover=0", counters.Accepted);
+        Assert.Equal("rejected(mode=0 duplicate=0 notOwner=3) roleLosses=0", counters.Rejected);
+    }
+
+    [Fact]
+    public void CountersAreAbsentUntilSomethingHasBeenRead()
+    {
+        // Zeroes that were never read look exactly like zeroes that were, and
+        // "no reports arrived" is the conclusion this display exists to support.
+        var view = KeyboardMouse.Project(
+            State(profile: KbmProfile.Keyboard) with { Loaded = false },
+            KbmProfile.Keyboard,
+            connected: true);
+
+        Assert.Null(view.Counters);
+    }
 }
 
 

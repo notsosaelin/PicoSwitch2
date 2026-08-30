@@ -697,6 +697,16 @@ public sealed record KbmStatus(
     bool NativeMouseOutput = false,
     int KeyboardConn = 0,
     int MouseConn = 0,
+
+    // The composite's identity as the arbiter sees it. Both are already on the
+    // wire; neither was read until the runtime counters needed them.
+    //
+    // GroupId is what makes a separately paired keyboard and mouse ONE logical
+    // owner. SourceId is the handle the adapter resolved for the console slot --
+    // zero means the composite does not currently own the console, which is the
+    // state RejectedNotOwner counts arriving reports against.
+    long GroupId = 0,
+    long SourceId = 0,
     long KeyboardReports = 0,
     long MouseReports = 0,
     long RejectedMode = 0,

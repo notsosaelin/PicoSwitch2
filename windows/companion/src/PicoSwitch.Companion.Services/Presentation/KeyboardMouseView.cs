@@ -51,6 +51,37 @@ public sealed record MouseSlider(
     bool Available,
     string? Detail = null);
 
+/// <summary>
+/// The adapter's KB/M ingress counters, as three readable lines.
+///
+/// These exist because a keyboard that produces nothing at the console is
+/// otherwise indistinguishable from a keyboard that is not sending anything at
+/// all. Every one of these numbers was already in the <c>kbm status</c> reply
+/// and already parsed; none of it was ever shown.
+///
+/// Read the counter NAMES literally, because two of them do not mean what they
+/// look like:
+///
+/// - <c>KeyboardReports</c> and <c>MouseReports</c> count ACCEPTED reports, not
+///   arriving ones. The firmware increments them only after admission succeeds
+///   (<c>ns2_kbm_runtime_submit_keyboard()</c> does it after
+///   <c>admit_and_route()</c> has already returned true). So a report that is
+///   refused increments a rejection counter and NOT this one, and a report
+///   dropped by one of admission's silent exits increments nothing whatsoever.
+/// - <c>Publishes</c> counts states pushed toward the console. It is the only
+///   number here that says the output side ran.
+///
+/// <c>SourceId</c> is zero while the composite does not own the console slot,
+/// which is the condition <c>RejectedNotOwner</c> counts against.
+/// </summary>
+public sealed record KbmRuntimeCounters(
+    string Roles,
+    string Accepted,
+    string Rejected)
+{
+    public string Text => string.Join(Environment.NewLine, Roles, Accepted, Rejected);
+}
+
 public sealed record KeyboardMouseView
 {
     public required SectionAvailability Availability { get; init; }
@@ -141,6 +172,11 @@ public sealed record KeyboardMouseView
 
     /// <summary>True once status has been read; an empty map before that is not "no bindings".</summary>
     public required bool Loaded { get; init; }
+
+    /// <summary>
+    /// Runtime ingress counters. Null until something has been read.
+    /// </summary>
+    public KbmRuntimeCounters? Counters { get; init; }
 
     /// <summary>Bound inputs, counting only what this profile actually shows.</summary>
     public int BoundCount =>
@@ -256,7 +292,32 @@ public static class KeyboardMouse
             InvertX = state.Mouse.InvertX,
             InvertY = state.Mouse.InvertY,
             Loaded = state.Loaded,
+            Counters = state.Loaded ? Counters(state.Status) : null,
         };
+    }
+
+    /// <summary>
+    /// Format the ingress counters for reading, in the order a report travels:
+    /// who holds which role, what was accepted and published, what was refused.
+    ///
+    /// Deliberately plain text rather than a table. It is meant to be read at a
+    /// glance and pasted into a bug report, and the useful measurement is a
+    /// DIFFERENCE -- read it, press one key, read it again.
+    /// </summary>
+    internal static KbmRuntimeCounters Counters(KbmStatus status)
+    {
+        var keyboard = status.KeyboardConnected ? $"yes (conn {status.KeyboardConn})" : "no";
+        var mouse = status.MouseConnected ? $"yes (conn {status.MouseConn})" : "no";
+
+        return new KbmRuntimeCounters(
+            $"mode={KbmModes.Wire(status.Mode)} profile={KbmProfiles.Wire(status.Profile)} " +
+            $"keyboard={keyboard} mouse={mouse} group={status.GroupId} source={status.SourceId}",
+
+            $"accepted(keyboard={status.KeyboardReports} mouse={status.MouseReports}) " +
+            $"published={status.Publishes} rollover={status.Rollover}",
+
+            $"rejected(mode={status.RejectedMode} duplicate={status.RejectedDuplicate} " +
+            $"notOwner={status.RejectedNotOwner}) roleLosses={status.RoleLosses}");
     }
 
     private static KeyBindingCell Cell(KeyCap cap, IReadOnlyDictionary<int, KbmBinding> bound) =>
