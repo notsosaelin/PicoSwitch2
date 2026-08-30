@@ -18,6 +18,12 @@
 #include <stdio.h>
 #include <string.h>
 
+// The smallest buffer any real caller hands this formatter is
+// ns2_uart_diag.c's 2048-byte trace_format_response; config.c's is 4096. The
+// tests use the smaller of the two, so a reply that outgrows the firmware's own
+// buffer fails here rather than silently truncating on hardware.
+#define KBM_STATUS_TEST_BUFFER 2048
+
 #include "ns2_kbm_status.h"
 
 static void test_exact_output(void) {
@@ -44,6 +50,9 @@ static void test_exact_output(void) {
     status.undecoded_reports = 24u;
     status.active_profile = 2u;
     memcpy(status.active_profile_name, "Splatoon", 9u);
+    status.active_revision = 4u;
+    status.active_fingerprint = 3735928559u;
+    status.active_matches_source = 1u;
     status.rollover_reports = 3u;
     status.role_losses = 4u;
     status.config_generation = 5u;
@@ -51,7 +60,7 @@ static void test_exact_output(void) {
     status.publishes = 7u;
     status.stick_recenters = 8u;
 
-    char out[512];
+    char out[KBM_STATUS_TEST_BUFFER];
     int written = ns2_kbm_status_format(&status, out, sizeof(out));
 
     static const char expected[] =
@@ -77,6 +86,9 @@ static void test_exact_output(void) {
         "\"undecodedReports\":24,"
         "\"activeProfile\":2,"
         "\"activeProfileName\":\"Splatoon\","
+        "\"activeRevision\":4,"
+        "\"activeFingerprint\":3735928559,"
+        "\"activeMatchesSaved\":true,"
         "\"rollover\":3,"
         "\"roleLosses\":4,"
         "\"mapGeneration\":5,"
@@ -86,8 +98,11 @@ static void test_exact_output(void) {
         "}";
 
     if (strcmp(out, expected) != 0) {
-        printf("FAIL: formatter output drifted\n  expected: %s\n  actual:   %s\n",
-               expected, out);
+        // stderr, not stdout: assert() aborts, and an abort discards a buffered
+        // stdout -- which left this test reporting only a line number.
+        fprintf(stderr,
+                "FAIL: formatter output drifted\n  expected: %s\n  actual:   %s\n",
+                expected, out);
         assert(0);
     }
     assert(written == (int)strlen(expected));
@@ -125,7 +140,7 @@ static void test_every_field_is_distinct(void) {
     status.publishes = 24u;
     status.stick_recenters = 25u;
 
-    char out[512];
+    char out[KBM_STATUS_TEST_BUFFER];
     (void)ns2_kbm_status_format(&status, out, sizeof(out));
 
     static const char *const pairs[] = {
@@ -162,7 +177,7 @@ static void test_bounds_and_null_safety(void) {
     assert(written > (int)sizeof(tiny));
     assert(tiny[sizeof(tiny) - 1u] == '\0');
 
-    char out[512];
+    char out[KBM_STATUS_TEST_BUFFER];
     out[0] = 'x';
     assert(ns2_kbm_status_format(NULL, out, sizeof(out)) == 0);
     assert(out[0] == '\0');
@@ -176,7 +191,7 @@ static void test_bounds_and_null_safety(void) {
 static void test_zeroed_status_is_sane(void) {
     ns2_kbm_runtime_status_t status;
     memset(&status, 0, sizeof(status));
-    char out[512];
+    char out[KBM_STATUS_TEST_BUFFER];
     (void)ns2_kbm_status_format(&status, out, sizeof(out));
     assert(strstr(out, "\"mode\":\"controller\""));
     assert(strstr(out, "\"override\":\"controller\""));
@@ -193,10 +208,12 @@ static void test_zeroed_status_is_sane(void) {
 // text both of them hand over, so the accepted field set and the accept/reject
 // boundary cannot drift between the two surfaces or shift under a refactor.
 
+// Mouse settings became profile-owned, so "the default mouse settings" is what
+// the built-in Default template carries.
 static ns2_kbm_mouse_config_t default_mouse(void) {
-    ns2_kbm_config_t config;
-    ns2_kbm_config_defaults(&config);
-    return config.mouse;
+    ns2_kbm_content_t content;
+    ns2_kbm_template_default(NS2_KBM_LAYOUT_KEYBOARD, &content);
+    return content.mouse;
 }
 
 static void test_mouse_format_exact_output(void) {
@@ -207,7 +224,7 @@ static void test_mouse_format_exact_output(void) {
     mouse.invert_x = 0u;
     mouse.invert_y = 1u;
 
-    char out[512];
+    char out[KBM_STATUS_TEST_BUFFER];
     int written = ns2_kbm_mouse_format(&mouse, out, sizeof(out));
 
     // The advertised limits travel with the values: a client must not carry its
@@ -320,51 +337,46 @@ static void test_mouse_command_rejects(void) {
 // that is representable but out of range must therefore pass the parser and be
 // caught by sanitize, so both surfaces report it the same way.
 static void test_range_enforcement_stays_with_sanitize(void) {
-    ns2_kbm_config_t config;
-    ns2_kbm_config_defaults(&config);
+    ns2_kbm_mouse_config_t mouse;
 
-    ns2_kbm_mouse_config_t mouse = config.mouse;
+    mouse = default_mouse();
     assert(ns2_kbm_mouse_command_apply(&mouse, "sensitivity 4"));  // below min
-    config.mouse = mouse;
-    assert(!ns2_kbm_config_sanitize(&config));
+    assert(!ns2_kbm_mouse_sanitize(&mouse));
 
-    ns2_kbm_config_defaults(&config);
-    mouse = config.mouse;
+    mouse = default_mouse();
     assert(ns2_kbm_mouse_command_apply(&mouse, "recenter 9000"));  // above max
-    config.mouse = mouse;
-    assert(!ns2_kbm_config_sanitize(&config));
+    assert(!ns2_kbm_mouse_sanitize(&mouse));
 
     // Anti-deadzone: representable but above the cap. The parser takes it, and
     // sanitize turns it OFF rather than clamping it -- an unusable value must
     // restore the validated linear response, not some compensation the user
     // never chose. The command therefore reports failure either way.
-    ns2_kbm_config_defaults(&config);
-    mouse = config.mouse;
+    mouse = default_mouse();
     assert(ns2_kbm_mouse_command_apply(&mouse, "antideadzone 51"));
-    config.mouse = mouse;
-    assert(!ns2_kbm_config_sanitize(&config));
-    assert(config.mouse.anti_deadzone == 0u);
+    assert(!ns2_kbm_mouse_sanitize(&mouse));
+    assert(mouse.anti_deadzone == 0u);
 
-    ns2_kbm_config_defaults(&config);
-    mouse = config.mouse;
+    mouse = default_mouse();
     assert(ns2_kbm_mouse_command_apply(&mouse, "antideadzone 200"));
-    config.mouse = mouse;
-    assert(!ns2_kbm_config_sanitize(&config));
-    assert(config.mouse.anti_deadzone == 0u);
+    assert(!ns2_kbm_mouse_sanitize(&mouse));
+    assert(mouse.anti_deadzone == 0u);
 
     // And values inside the range pass both.
-    ns2_kbm_config_defaults(&config);
-    mouse = config.mouse;
+    mouse = default_mouse();
     assert(ns2_kbm_mouse_command_apply(&mouse, "sensitivity 1536"));
     assert(ns2_kbm_mouse_command_apply(&mouse, "antideadzone 15"));
-    config.mouse = mouse;
-    assert(ns2_kbm_config_sanitize(&config));
-    assert(config.mouse.sensitivity_x == 1536u);
-    assert(config.mouse.anti_deadzone == 15u);
+    assert(ns2_kbm_mouse_sanitize(&mouse));
+    assert(mouse.sensitivity_x == 1536u);
+    assert(mouse.anti_deadzone == 15u);
     assert(ns2_kbm_mouse_command_apply(&mouse, "antideadzone 50"));
-    config.mouse = mouse;
-    assert(ns2_kbm_config_sanitize(&config));
-    assert(config.mouse.anti_deadzone == NS2_KBM_MOUSE_ADZ_MAX);
+    assert(ns2_kbm_mouse_sanitize(&mouse));
+    assert(mouse.anti_deadzone == NS2_KBM_MOUSE_ADZ_MAX);
+
+    // A whole-config sanitize agrees, because it uses the same clamp.
+    ns2_kbm_config_t config;
+    ns2_kbm_config_defaults(&config);
+    config.active[NS2_KBM_LAYOUT_KEYBOARD].content.mouse.sensitivity_x = 4u;
+    assert(!ns2_kbm_config_sanitize(&config));
     puts("  range enforcement stays with sanitize");
 }
 

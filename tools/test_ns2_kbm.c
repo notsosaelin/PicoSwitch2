@@ -12,6 +12,47 @@
 #include "ns2_kbm.h"
 #include "switch_pro.h"
 
+// ---------------------------------------------------------------------------
+// Pre-profile API shims
+// ---------------------------------------------------------------------------
+// These tests were written against the model as it was before the profile
+// library, where one mapping was addressed as (config, layout). Under the
+// profile model that same mapping is the layout's REALIZED content -- which is
+// exactly what these tests are about, since every one of them asserts on what
+// the adapter would actually resolve.
+//
+// Shimmed rather than rewritten at ~200 call sites: what changed is where a
+// mapping lives, not any of the merge, duplicate-binding, neutralization or
+// mouse-translation contracts below, and rewriting them all would obscure that
+// in the diff. A function-like macro is not re-expanded inside its own
+// replacement list, so each of these resolves to one ordinary call.
+#define KBM_LAYOUT_CONTENT(cfg, layout) (&(cfg)->active[(layout)].content)
+
+#define ns2_kbm_binding(cfg, layout, src) \
+    ns2_kbm_binding(KBM_LAYOUT_CONTENT(cfg, layout), (layout), (src))
+#define ns2_kbm_set_binding(cfg, layout, src, dst) \
+    ns2_kbm_set_binding(KBM_LAYOUT_CONTENT(cfg, layout), (layout), (src), (dst))
+#define ns2_kbm_clear_binding(cfg, layout, src) \
+    ns2_kbm_clear_binding(KBM_LAYOUT_CONTENT(cfg, layout), (layout), (src))
+#define ns2_kbm_effective_bindings(cfg, layout, out, cap) \
+    ns2_kbm_effective_bindings(KBM_LAYOUT_CONTENT(cfg, layout), (layout), \
+                               (out), (cap))
+
+// The mouse block became profile-owned, so "the config's mouse settings" is now
+// the realized settings of ONE layout. Keyboard + Mouse is the only correct
+// target: a mouse role exists only in that layout, so it is the only one whose
+// settings ns2_kbm_resolve() ever reads, and every mouse test below resolves in
+// NS2_KBM_MODE_KEYBOARD_MOUSE. Pointing this at the Keyboard layout compiles
+// and silently tests nothing.
+#define KBM_TEST_MOUSE(cfg) \
+    ((cfg).active[NS2_KBM_LAYOUT_KEYBOARD_MOUSE].content.mouse)
+
+// Reset one layout's realized mapping to its canonical default.
+static void kbm_test_reset_layout(ns2_kbm_config_t *config,
+                                  ns2_kbm_layout_t layout) {
+    (void)ns2_kbm_apply(config, layout, NS2_KBM_PROFILE_ID_DEFAULT, NULL);
+}
+
 #define KEY_W 0x1Au
 #define KEY_A 0x04u
 #define KEY_S 0x16u
@@ -161,8 +202,8 @@ static void test_canonical_defaults(void) {
     ns2_kbm_config_defaults(&config);
     // Auto by default: an ordinary HID device must work without a mode command.
     assert(config.mode == NS2_KBM_MODE_AUTO);
-    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count == 0);
-    assert(config.mouse.sensitivity_x == NS2_KBM_MOUSE_SENS_DEFAULT);
+    assert(config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.count == 0);
+    assert(KBM_TEST_MOUSE(config).sensitivity_x == NS2_KBM_MOUSE_SENS_DEFAULT);
 
     // Keyboard profile: WASD walk, IJKL aim, the documented face layout.
     assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_W)) ==
@@ -330,10 +371,10 @@ static void test_overrides_and_profile_independence(void) {
            NS2_DST_B);
 
     // Requesting exactly the default stores no override.
-    uint8_t before = config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count;
+    uint8_t before = config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.count;
     assert(ns2_kbm_set_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_E),
                                NS2_DST_X));
-    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count == before);
+    assert(config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.count == before);
 
     // A new binding for a source with no canonical default shows up in the
     // effective listing, so a UI never has to guess it exists.
@@ -356,13 +397,13 @@ static void test_overrides_and_profile_independence(void) {
     }
     assert(found_tab && found_f_override);
 
-    // Resetting one profile leaves the other untouched.
-    ns2_kbm_config_reset_profile(&config, NS2_KBM_LAYOUT_KEYBOARD);
+    // Resetting one layout leaves the other untouched.
+    kbm_test_reset_layout(&config, NS2_KBM_LAYOUT_KEYBOARD);
     assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            NS2_DST_A);
     assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                            mouse_button(1)) == NS2_DST_A);
-    ns2_kbm_config_reset_profile(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE);
+    kbm_test_reset_layout(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE);
     assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                            mouse_button(1)) == NS2_DST_ZR);
 
@@ -387,7 +428,8 @@ static void test_overrides_and_profile_independence(void) {
             break;
     }
     assert(added == NS2_KBM_MAX_OVERRIDES);
-    assert(full.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count == NS2_KBM_MAX_OVERRIDES);
+    assert(full.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.count ==
+           NS2_KBM_MAX_OVERRIDES);
     puts("  overrides and profile independence");
 }
 
@@ -423,11 +465,11 @@ static void test_duplicate_destinations(void) {
     ns2_kbm_state_init(&state);
     const uint8_t key_three[] = {KEY_3};
     press_keys(&state, key_three, 1);
-    ns2_kbm_state_mouse_report(&state, 1u << 0, 0, 0, 0, &config.mouse, 0);
+    ns2_kbm_state_mouse_report(&state, 1u << 0, 0, 0, 0, &KBM_TEST_MOUSE(config), 0);
     ns2_kbm_resolve(&state, &config, NS2_KBM_MODE_KEYBOARD_MOUSE, false, &out);
     assert(out.buttons[0] & SWITCH_MASK_ZR);
     // Mouse button up, key still held.
-    ns2_kbm_state_mouse_report(&state, 0, 0, 0, 0, &config.mouse, 10);
+    ns2_kbm_state_mouse_report(&state, 0, 0, 0, 0, &KBM_TEST_MOUSE(config), 10);
     ns2_kbm_resolve(&state, &config, NS2_KBM_MODE_KEYBOARD_MOUSE, false, &out);
     assert(out.buttons[0] & SWITCH_MASK_ZR);
     // Key up too.
@@ -525,9 +567,9 @@ static void sim_run(mouse_sim_t *sim, int dx, int dy, unsigned period_ms,
         sim->now_ms = start + step;
         if (period_ms && (step % period_ms) == 0u)
             ns2_kbm_state_mouse_report(&sim->state, 0, (int16_t)dx, (int16_t)dy,
-                                       0, &sim->config.mouse, sim->now_ms);
+                                       0, &KBM_TEST_MOUSE(sim->config), sim->now_ms);
         if ((step % SIM_TICK_MS) == 0u)
-            ns2_kbm_state_service(&sim->state, &sim->config.mouse, sim->now_ms);
+            ns2_kbm_state_service(&sim->state, &KBM_TEST_MOUSE(sim->config), sim->now_ms);
         if (!stats || step < settle_ms) continue;
         if (sim->state.stick_x < stats->min_x) stats->min_x = sim->state.stick_x;
         if (sim->state.stick_x > stats->max_x) stats->max_x = sim->state.stick_x;
@@ -609,7 +651,7 @@ static void test_mouse_low_speed_has_no_threshold(void) {
     // computed delta * 16 / 256 == 0 for every report of fewer than 16 counts,
     // so the minimum sensitivity was not merely insensitive, it was deaf.
     sim_init(&sim);
-    sim.config.mouse.sensitivity_x = NS2_KBM_MOUSE_SENS_MIN;
+    KBM_TEST_MOUSE(sim.config).sensitivity_x = NS2_KBM_MOUSE_SENS_MIN;
     stats_init(&stats);
     sim_run(&sim, 4, 0, 8u, 400u, 200u, &stats);
     assert(stats.min_x > 0);
@@ -673,7 +715,7 @@ static void test_mouse_gesture_continuity(void) {
     sim_init(&sim);
     sim_run(&sim, 30, 0, 8u, 200u, 0u, NULL);
     int32_t before = sim.state.stick_x;
-    ns2_kbm_state_mouse_report(&sim.state, 0, 0, 0, 0, &sim.config.mouse,
+    ns2_kbm_state_mouse_report(&sim.state, 0, 0, 0, 0, &KBM_TEST_MOUSE(sim.config),
                                ++sim.now_ms);
     assert(sim.state.stick_x > before / 2);
 
@@ -684,7 +726,7 @@ static void test_mouse_gesture_continuity(void) {
     for (unsigned i = 0; i < 4u; ++i) {
         sim.now_ms += NS2_KBM_MOUSE_IDLE_MS / 2u;
         ns2_kbm_state_mouse_report(&sim.state, 1u << 0, 0, 0, 0,
-                                   &sim.config.mouse, sim.now_ms);
+                                   &KBM_TEST_MOUSE(sim.config), sim.now_ms);
     }
     assert(sim.state.stick_x == 0 && sim.state.motion_x == 0);
     puts("  mouse gesture continuity");
@@ -748,10 +790,10 @@ static void test_mouse_speed_scaling_and_axes(void) {
     // estimate is held in scaled counts sized against the interval in force
     // when it was stored, and the largest one is 200x the smallest.
     sim_init(&sim);
-    sim.config.mouse.recenter_ms = NS2_KBM_MOUSE_RECENTER_MIN_MS;
+    KBM_TEST_MOUSE(sim.config).recenter_ms = NS2_KBM_MOUSE_RECENTER_MIN_MS;
     sim_run(&sim, 4000, 4000, 4u, 200u, 0u, NULL);
     assert(sim.state.stick_x == KBM_STICK_FULL_SCALE);
-    sim.config.mouse.recenter_ms = NS2_KBM_MOUSE_RECENTER_MAX_MS;
+    KBM_TEST_MOUSE(sim.config).recenter_ms = NS2_KBM_MOUSE_RECENTER_MAX_MS;
     stats_init(&stats);
     sim_run(&sim, 4000, 4000, 4u, 200u, 0u, &stats);
     assert(stats.max_x == KBM_STICK_FULL_SCALE);
@@ -1074,7 +1116,7 @@ static void test_anti_deadzone_through_resolve(void) {
                     &out);
     uint16_t linear = out.right_x;
 
-    sim.config.mouse.anti_deadzone = 15u;
+    KBM_TEST_MOUSE(sim.config).anti_deadzone = 15u;
     ns2_kbm_resolve(&sim.state, &sim.config, NS2_KBM_MODE_KEYBOARD_MOUSE, false,
                     &out);
     uint16_t compensated = out.right_x;
@@ -1087,7 +1129,7 @@ static void test_anti_deadzone_through_resolve(void) {
     // Stationary mouse: exact centre at every value, even mid-gesture state.
     for (unsigned percent = 0; percent <= NS2_KBM_MOUSE_ADZ_MAX; percent += 5) {
         sim_init(&sim);
-        sim.config.mouse.anti_deadzone = (uint8_t)percent;
+        KBM_TEST_MOUSE(sim.config).anti_deadzone = (uint8_t)percent;
         sim_run(&sim, 30, 30, 8u, 200u, 0u, NULL);
         sim_run(&sim, 0, 0, 0u, NS2_KBM_MOUSE_IDLE_MS + SIM_TICK_MS, 0u, NULL);
         ns2_kbm_resolve(&sim.state, &sim.config, NS2_KBM_MODE_KEYBOARD_MOUSE,
@@ -1098,14 +1140,14 @@ static void test_anti_deadzone_through_resolve(void) {
 
     // A fresh state with no mouse activity at all publishes exact centre.
     sim_init(&sim);
-    sim.config.mouse.anti_deadzone = NS2_KBM_MOUSE_ADZ_MAX;
+    KBM_TEST_MOUSE(sim.config).anti_deadzone = NS2_KBM_MOUSE_ADZ_MAX;
     ns2_kbm_resolve(&sim.state, &sim.config, NS2_KBM_MODE_KEYBOARD_MOUSE, false,
                     &out);
     assert(out.right_x == SWITCH_STICK_MID && out.right_y == SWITCH_STICK_MID);
 
     // Native Joy-Con pointer output never sees it: deltas verbatim, stick centred.
     sim_init(&sim);
-    sim.config.mouse.anti_deadzone = NS2_KBM_MOUSE_ADZ_MAX;
+    KBM_TEST_MOUSE(sim.config).anti_deadzone = NS2_KBM_MOUSE_ADZ_MAX;
     sim_run(&sim, 3, -2, 8u, 200u, 0u, NULL);
     ns2_kbm_resolve(&sim.state, &sim.config, NS2_KBM_MODE_KEYBOARD_MOUSE, true,
                     &out);
@@ -1115,7 +1157,7 @@ static void test_anti_deadzone_through_resolve(void) {
 
     // A held digital right-stick binding still wins outright.
     sim_init(&sim);
-    sim.config.mouse.anti_deadzone = 20u;
+    KBM_TEST_MOUSE(sim.config).anti_deadzone = 20u;
     assert(ns2_kbm_set_binding(&sim.config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                                key(KEY_I), NS2_DST_RSTICK_UP));
     sim_run(&sim, 30, 0, 8u, 200u, 0u, NULL);
@@ -1140,7 +1182,7 @@ static void test_anti_deadzone_release_tail(void) {
         mouse_sim_t sim;
         ns2_kbm_output_t out;
         sim_init(&sim);
-        sim.config.mouse.anti_deadzone = values[v];
+        KBM_TEST_MOUSE(sim.config).anti_deadzone = values[v];
         sim_run(&sim, 20, 0, 8u, 200u, 0u, NULL);
 
         int32_t floor_units = KBM_STICK_FULL_SCALE * values[v] / 100;
@@ -1151,7 +1193,7 @@ static void test_anti_deadzone_release_tail(void) {
         for (unsigned ms = 1; ms <= NS2_KBM_MOUSE_IDLE_MS + SIM_TICK_MS; ++ms) {
             sim.now_ms++;
             if ((sim.now_ms % SIM_TICK_MS) == 0u)
-                ns2_kbm_state_service(&sim.state, &sim.config.mouse, sim.now_ms);
+                ns2_kbm_state_service(&sim.state, &KBM_TEST_MOUSE(sim.config), sim.now_ms);
             ns2_kbm_resolve(&sim.state, &sim.config,
                             NS2_KBM_MODE_KEYBOARD_MOUSE, false, &out);
             int32_t deflection = (int32_t)out.right_x - SWITCH_STICK_MID;
@@ -1180,7 +1222,7 @@ static void test_mouse_translation(void) {
     ns2_kbm_output_t out;
 
     // Non-native output: movement becomes right-stick deflection.
-    ns2_kbm_state_mouse_report(&state, 0, 100, 0, 0, &config.mouse, 0);
+    ns2_kbm_state_mouse_report(&state, 0, 100, 0, 0, &KBM_TEST_MOUSE(config), 0);
     ns2_kbm_resolve(&state, &config, NS2_KBM_MODE_KEYBOARD_MOUSE, false, &out);
     assert(out.right_x > SWITCH_STICK_MID);
     assert(out.right_y == SWITCH_STICK_MID);
@@ -1189,66 +1231,66 @@ static void test_mouse_translation(void) {
 
     // Mouse down is stick down (a lower 12-bit value).
     ns2_kbm_state_init(&state);
-    ns2_kbm_state_mouse_report(&state, 0, 0, 100, 0, &config.mouse, 0);
+    ns2_kbm_state_mouse_report(&state, 0, 0, 100, 0, &KBM_TEST_MOUSE(config), 0);
     ns2_kbm_resolve(&state, &config, NS2_KBM_MODE_KEYBOARD_MOUSE, false, &out);
     assert(out.right_y < SWITCH_STICK_MID);
 
     // Inversion.
     ns2_kbm_state_init(&state);
-    config.mouse.invert_y = 1;
-    ns2_kbm_state_mouse_report(&state, 0, 0, 100, 0, &config.mouse, 0);
+    KBM_TEST_MOUSE(config).invert_y = 1;
+    ns2_kbm_state_mouse_report(&state, 0, 0, 100, 0, &KBM_TEST_MOUSE(config), 0);
     ns2_kbm_resolve(&state, &config, NS2_KBM_MODE_KEYBOARD_MOUSE, false, &out);
     assert(out.right_y > SWITCH_STICK_MID);
-    config.mouse.invert_y = 0;
+    KBM_TEST_MOUSE(config).invert_y = 0;
 
     // Sensitivity scales the same movement.
     ns2_kbm_state_init(&state);
-    config.mouse.sensitivity_x = NS2_KBM_MOUSE_SENS_DEFAULT;
-    ns2_kbm_state_mouse_report(&state, 0, 20, 0, 0, &config.mouse, 0);
+    KBM_TEST_MOUSE(config).sensitivity_x = NS2_KBM_MOUSE_SENS_DEFAULT;
+    ns2_kbm_state_mouse_report(&state, 0, 20, 0, 0, &KBM_TEST_MOUSE(config), 0);
     int32_t slow = state.stick_x;
     assert(slow > 0);
     ns2_kbm_state_init(&state);
-    config.mouse.sensitivity_x = (uint16_t)(NS2_KBM_MOUSE_SENS_DEFAULT * 2u);
-    ns2_kbm_state_mouse_report(&state, 0, 20, 0, 0, &config.mouse, 0);
+    KBM_TEST_MOUSE(config).sensitivity_x = (uint16_t)(NS2_KBM_MOUSE_SENS_DEFAULT * 2u);
+    ns2_kbm_state_mouse_report(&state, 0, 20, 0, 0, &KBM_TEST_MOUSE(config), 0);
     assert(state.stick_x == slow * 2);
-    config.mouse.sensitivity_x = NS2_KBM_MOUSE_SENS_DEFAULT;
+    KBM_TEST_MOUSE(config).sensitivity_x = NS2_KBM_MOUSE_SENS_DEFAULT;
 
     // The velocity reference interval scales it the same way, in the same
     // direction the old constant-rate `recenter_ms` did: a larger value holds
     // more deflection for the same movement.
     ns2_kbm_state_init(&state);
-    config.mouse.recenter_ms =
+    KBM_TEST_MOUSE(config).recenter_ms =
         (uint16_t)(NS2_KBM_MOUSE_RECENTER_DEFAULT_MS * 2u);
-    ns2_kbm_state_mouse_report(&state, 0, 20, 0, 0, &config.mouse, 0);
+    ns2_kbm_state_mouse_report(&state, 0, 20, 0, 0, &KBM_TEST_MOUSE(config), 0);
     assert(state.stick_x == slow * 2);
-    config.mouse.recenter_ms = NS2_KBM_MOUSE_RECENTER_DEFAULT_MS;
+    KBM_TEST_MOUSE(config).recenter_ms = NS2_KBM_MOUSE_RECENTER_DEFAULT_MS;
 
     // High-DPI bursts clamp instead of accumulating without bound.
     ns2_kbm_state_init(&state);
     for (unsigned i = 0; i < 100; ++i)
-        ns2_kbm_state_mouse_report(&state, 0, 30000, 0, 0, &config.mouse, 0);
+        ns2_kbm_state_mouse_report(&state, 0, 30000, 0, 0, &KBM_TEST_MOUSE(config), 0);
     assert(state.stick_x == KBM_STICK_FULL_SCALE);
     ns2_kbm_resolve(&state, &config, NS2_KBM_MODE_KEYBOARD_MOUSE, false, &out);
     assert(out.right_x == SWITCH_STICK_MAX);
 
     // And it always comes back to neutral with no further motion.
     for (uint32_t t = 1; t <= 400u; ++t)
-        ns2_kbm_state_service(&state, &config.mouse, t);
+        ns2_kbm_state_service(&state, &KBM_TEST_MOUSE(config), t);
     ns2_kbm_resolve(&state, &config, NS2_KBM_MODE_KEYBOARD_MOUSE, false, &out);
     assert(state.stick_x == 0);
     assert(out.right_x == SWITCH_STICK_MID);
 
     // A single long gap recenters completely rather than partially.
     ns2_kbm_state_init(&state);
-    ns2_kbm_state_mouse_report(&state, 0, 500, 500, 0, &config.mouse, 0);
-    ns2_kbm_state_service(&state, &config.mouse, 100000u);
+    ns2_kbm_state_mouse_report(&state, 0, 500, 500, 0, &KBM_TEST_MOUSE(config), 0);
+    ns2_kbm_state_service(&state, &KBM_TEST_MOUSE(config), 100000u);
     assert(state.stick_x == 0 && state.stick_y == 0);
     assert(!ns2_kbm_state_mouse_motion_pending(&state));
 
     // Native mouse output takes the relative deltas untouched and leaves the
     // right stick alone.
     ns2_kbm_state_init(&state);
-    ns2_kbm_state_mouse_report(&state, 0, 42, -7, 3, &config.mouse, 0);
+    ns2_kbm_state_mouse_report(&state, 0, 42, -7, 3, &KBM_TEST_MOUSE(config), 0);
     ns2_kbm_resolve(&state, &config, NS2_KBM_MODE_KEYBOARD_MOUSE, true, &out);
     assert(out.has_mouse == 1);
     assert(out.mouse_delta_x == 42 && out.mouse_delta_y == -7);
@@ -1271,7 +1313,7 @@ static void test_state_ownership(void) {
     // Keyboard and mouse contributions merge; neither erases the other.
     const uint8_t walk[] = {KEY_W};
     press_keys(&state, walk, 1);
-    ns2_kbm_state_mouse_report(&state, 1u << 1, 0, 0, 0, &config.mouse, 0);
+    ns2_kbm_state_mouse_report(&state, 1u << 1, 0, 0, 0, &KBM_TEST_MOUSE(config), 0);
     ns2_kbm_resolve(&state, &config, NS2_KBM_MODE_KEYBOARD_MOUSE, false, &out);
     assert(out.left_y == SWITCH_STICK_MAX);            // keyboard-owned
     assert(out.buttons[2] & SWITCH_MASK_ZL);            // mouse-owned
@@ -1284,14 +1326,14 @@ static void test_state_ownership(void) {
     assert(out.buttons[0] & SWITCH_MASK_B);
 
     // A mouse report does not clear held keys.
-    ns2_kbm_state_mouse_report(&state, 0, 0, 0, 0, &config.mouse, 5);
+    ns2_kbm_state_mouse_report(&state, 0, 0, 0, 0, &KBM_TEST_MOUSE(config), 5);
     ns2_kbm_resolve(&state, &config, NS2_KBM_MODE_KEYBOARD_MOUSE, false, &out);
     assert(out.left_y == SWITCH_STICK_MAX);
     assert(out.buttons[0] & SWITCH_MASK_B);
     assert((out.buttons[2] & SWITCH_MASK_ZL) == 0);
 
     // Mouse loss clears mouse-owned state only, including the translated stick.
-    ns2_kbm_state_mouse_report(&state, 1u << 0, 400, 0, 0, &config.mouse, 10);
+    ns2_kbm_state_mouse_report(&state, 1u << 0, 400, 0, 0, &KBM_TEST_MOUSE(config), 10);
     ns2_kbm_state_clear_mouse(&state);
     ns2_kbm_resolve(&state, &config, NS2_KBM_MODE_KEYBOARD_MOUSE, false, &out);
     assert(out.right_x == SWITCH_STICK_MID);
@@ -1309,7 +1351,7 @@ static void test_state_ownership(void) {
     // Keyboard loss clears keyboard-owned state only.
     ns2_kbm_state_init(&state);
     press_keys(&state, walk_and_jump, 2);
-    ns2_kbm_state_mouse_report(&state, 1u << 1, 0, 0, 0, &config.mouse, 0);
+    ns2_kbm_state_mouse_report(&state, 1u << 1, 0, 0, 0, &KBM_TEST_MOUSE(config), 0);
     ns2_kbm_state_clear_keyboard(&state);
     ns2_kbm_resolve(&state, &config, NS2_KBM_MODE_KEYBOARD_MOUSE, false, &out);
     assert(out.left_y == SWITCH_STICK_MID);
@@ -1328,7 +1370,7 @@ static void test_state_ownership(void) {
     assert(out.buttons[0] == 0 && out.left_y == SWITCH_STICK_MID);
 
     // Keyboard mode ignores a mouse that is somehow still marked present.
-    ns2_kbm_state_mouse_report(&state, 1u << 0, 0, 0, 0, &config.mouse, 0);
+    ns2_kbm_state_mouse_report(&state, 1u << 0, 0, 0, 0, &KBM_TEST_MOUSE(config), 0);
     ns2_kbm_resolve(&state, &config, NS2_KBM_MODE_KEYBOARD, false, &out);
     assert((out.buttons[0] & SWITCH_MASK_ZR) == 0);
     puts("  state ownership");
@@ -1348,22 +1390,22 @@ static void test_config_validation(void) {
     // An impossible override count discards the whole table rather than
     // reinterpreting whatever bytes survive.
     ns2_kbm_config_defaults(&config);
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count = 200u;
+    config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.count = 200u;
     assert(!ns2_kbm_config_sanitize(&config));
-    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count == 0);
+    assert(config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.count == 0);
 
     // Individual bad entries are dropped, good ones survive.
     ns2_kbm_config_defaults(&config);
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count = 3;
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[0].source = key(KEY_F);
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[0].destination = NS2_DST_X;
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[1].source.kind = 99u;
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[1].source.code = 5u;
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[1].destination = NS2_DST_A;
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[2].source = key(KEY_E);
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[2].destination = 250u;
+    config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.count = 3;
+    config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.entries[0].source = key(KEY_F);
+    config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.entries[0].destination = NS2_DST_X;
+    config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.entries[1].source.kind = 99u;
+    config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.entries[1].source.code = 5u;
+    config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.entries[1].destination = NS2_DST_A;
+    config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.entries[2].source = key(KEY_E);
+    config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.entries[2].destination = 250u;
     assert(!ns2_kbm_config_sanitize(&config));
-    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count == 1);
+    assert(config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.count == 1);
     assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            NS2_DST_X);
     assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_E)) ==
@@ -1371,25 +1413,25 @@ static void test_config_validation(void) {
 
     // Duplicate sources collapse to the first.
     ns2_kbm_config_defaults(&config);
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count = 2;
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[0].source = key(KEY_F);
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[0].destination = NS2_DST_X;
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[1].source = key(KEY_F);
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[1].destination = NS2_DST_Y;
+    config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.count = 2;
+    config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.entries[0].source = key(KEY_F);
+    config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.entries[0].destination = NS2_DST_X;
+    config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.entries[1].source = key(KEY_F);
+    config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.entries[1].destination = NS2_DST_Y;
     assert(!ns2_kbm_config_sanitize(&config));
-    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count == 1);
+    assert(config.active[NS2_KBM_LAYOUT_KEYBOARD].content.overrides.count == 1);
     assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            NS2_DST_X);
 
     // Out-of-range mouse settings fall back to their canonical values.
     ns2_kbm_config_defaults(&config);
-    config.mouse.sensitivity_x = 0;
-    config.mouse.recenter_ms = 60000u;
-    config.mouse.invert_x = 7u;
+    KBM_TEST_MOUSE(config).sensitivity_x = 0;
+    KBM_TEST_MOUSE(config).recenter_ms = 60000u;
+    KBM_TEST_MOUSE(config).invert_x = 7u;
     assert(!ns2_kbm_config_sanitize(&config));
-    assert(config.mouse.sensitivity_x == NS2_KBM_MOUSE_SENS_DEFAULT);
-    assert(config.mouse.recenter_ms == NS2_KBM_MOUSE_RECENTER_DEFAULT_MS);
-    assert(config.mouse.invert_x == 0);
+    assert(KBM_TEST_MOUSE(config).sensitivity_x == NS2_KBM_MOUSE_SENS_DEFAULT);
+    assert(KBM_TEST_MOUSE(config).recenter_ms == NS2_KBM_MOUSE_RECENTER_DEFAULT_MS);
+    assert(KBM_TEST_MOUSE(config).invert_x == 0);
 
     // Fully random bytes must produce a usable configuration, not a crash and
     // not arbitrary controller destinations.
@@ -1398,13 +1440,24 @@ static void test_config_validation(void) {
     memcpy(&config, noise, sizeof(config));
     (void)ns2_kbm_config_sanitize(&config);
     assert(config.mode < NS2_KBM_MODE_COUNT);
+    // Both realized mappings, and every stored profile, must survive arbitrary
+    // bytes as something usable.
     for (unsigned p = 0; p < NS2_KBM_LAYOUT_COUNT; ++p) {
-        assert(config.profiles[p].overrides.count <= NS2_KBM_MAX_OVERRIDES);
-        for (uint8_t i = 0; i < config.profiles[p].overrides.count; ++i) {
-            assert(ns2_kbm_source_valid(config.profiles[p].overrides.entries[i].source));
-            assert(ns2_kbm_destination_valid(
-                config.profiles[p].overrides.entries[i].destination));
+        const ns2_kbm_profile_overrides_t *ov =
+            &config.active[p].content.overrides;
+        assert(ov->count <= NS2_KBM_MAX_OVERRIDES);
+        for (uint8_t i = 0; i < ov->count; ++i) {
+            assert(ns2_kbm_source_valid(ov->entries[i].source));
+            assert(ns2_kbm_destination_valid(ov->entries[i].destination));
         }
+    }
+    for (unsigned p = 0; p < NS2_KBM_MAX_PROFILES; ++p) {
+        if (!config.profiles[p].used) continue;
+        assert(config.profiles[p].layout < NS2_KBM_LAYOUT_COUNT);
+        assert(config.profiles[p].profile_id >= NS2_KBM_PROFILE_ID_FIRST);
+        assert(config.profiles[p].revision != 0u);
+        assert(config.profiles[p].content.overrides.count <=
+               NS2_KBM_MAX_OVERRIDES);
     }
     ns2_kbm_state_t state;
     ns2_kbm_state_init(&state);
@@ -1413,7 +1466,7 @@ static void test_config_validation(void) {
     memset(bitmap, 0xFF, sizeof(bitmap));
     ns2_kbm_state_set_keys(&state, bitmap);
     ns2_kbm_state_mouse_report(&state, 0xFFFFu, 32767, -32768, 127,
-                               &config.mouse, 0);
+                               &KBM_TEST_MOUSE(config), 0);
     ns2_kbm_resolve(&state, &config, NS2_KBM_MODE_KEYBOARD_MOUSE, false, &out);
     assert(out.left_x <= SWITCH_STICK_MAX && out.right_y <= SWITCH_STICK_MAX);
     puts("  configuration validation");

@@ -23,6 +23,21 @@
 #include "bt/bthid/devices/generic/bthid_keyboard_report.h"
 #include "ns2_kbm.h"
 
+// This test edits and reads "the mapping a layout resolves against", which under
+// the profile model is that layout's REALIZED content -- the same thing
+// ns2_kbm_resolve() reads. Shimmed rather than rewritten at every call site
+// because what changed is where a mapping lives, not any stage of the pipeline
+// below. A function-like macro is not re-expanded inside its own replacement
+// list, so each of these is one ordinary call.
+#define KBM_LAYOUT_CONTENT(cfg, layout) (&(cfg)->active[(layout)].content)
+
+#define ns2_kbm_binding(cfg, layout, src) \
+    ns2_kbm_binding(KBM_LAYOUT_CONTENT(cfg, layout), (layout), (src))
+#define ns2_kbm_set_binding(cfg, layout, src, dst) \
+    ns2_kbm_set_binding(KBM_LAYOUT_CONTENT(cfg, layout), (layout), (src), (dst))
+#define ns2_kbm_clear_binding(cfg, layout, src) \
+    ns2_kbm_clear_binding(KBM_LAYOUT_CONTENT(cfg, layout), (layout), (src))
+
 // Usage 0x05 is the letter B -- the exact binding used in the failing hardware
 // test (`kbm bind kb key:05 -> b`).
 #define USAGE_B 0x05u
