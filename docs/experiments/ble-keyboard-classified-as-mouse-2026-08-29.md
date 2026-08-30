@@ -286,3 +286,62 @@ explain the timeout: **Reload was not gated on the KB/M busy flag**, so five
 impatient clicks queued five complete re-reads — around twenty extra exchanges
 against an adapter that was already slow. The flag existed; the buttons were
 simply not wired to it.
+
+
+## The HOGP report-ID theory, and why it is WRONG (2026-08-29)
+
+After the role fix the keyboard still produced nothing, and the next theory was
+that the BLE transport discards the HOGP Report ID: HID-over-GATT carries the ID
+in the Report Reference descriptor (0x2908) rather than in the notification
+payload, so a transport that only prepends `0xA1` would hand the shared decoder
+`[0xA1][payload]` where Classic gives `[0xA1][report_id][payload]`.
+
+**Disproven from source before implementing it, and implementing it would have
+broken every BLE HID device.**
+
+BTstack's `hids_host` already inserts the Report ID.
+`hids_host_setup_report_event_with_report_id()` writes it at the start of the
+report payload, which is why `gattservice_subevent_hid_report_get_report()`
+returns `&event[9]` — pointing at the ID — with `report_len = value_len + 1`.
+`route_ble_hid_report()` then prepends only the `0xA1` transaction header, and
+`bt_on_hid_report_with_generation()` strips exactly that one byte. A driver
+receives `[report_id][payload]` on BLE, identical to Classic.
+
+Prepending the ID again would have shifted every BLE report by one byte.
+`test_ble_transport_shape_matches_classic` now pins this so the idea cannot come
+back, and it checks the shift on the MODIFIER byte rather than on a key: a boot
+report is six interchangeable key slots, so a one-byte shift merely moves the key
+into the next slot and it still decodes. That is exactly why this class of bug is
+hard to see from behaviour.
+
+## Why the printf diagnostic produced nothing
+
+```cmake
+pico_enable_stdio_usb(PicoSwitchWGA 0)
+pico_enable_stdio_uart(PicoSwitchWGA 0)
+```
+
+**Both stdio backends are disabled**, so every `printf` in this firmware is
+compiled in and discarded. The UART command console is a separate path
+(`uart_putc_raw` in `ns2_uart_diag.c`), which is why `btstate` replies arrive
+while nothing unsolicited ever does.
+
+The `[KBM_TRACE]` instrumentation added for this investigation could never have
+emitted a line, and has been removed. Any earlier note in this record suggesting
+`[BTHID...]` lines are observable over the UART command connection is wrong for
+the same reason.
+
+## What is still unexplained
+
+The keyboard produces no console input, and the following are all now proven
+correct: descriptor classification, primary role, slot ownership, active profile,
+binding persistence, the binding namespace, report-ID handling on both
+transports, decode, mapping lookup and resolve. `test_kbm_keyboard_pipeline`
+exercises that whole chain from report bytes to a pressed button.
+
+What remains untested by any host test is the runtime admission path
+(`admit_and_route()` in `ns2_kbm_runtime.c`), which needs the Bluetooth stack.
+Three of its exits still increment no counter: no peer key, classification
+pending, and no keyboard role. `kbm status` already reports `keyboardReports`,
+`rejectedMode`, `rejectedDuplicate` and `rejectedNotOwner`, so those four are
+readable today over the existing command surface without any new firmware.

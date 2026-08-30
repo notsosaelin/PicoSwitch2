@@ -301,8 +301,73 @@ static void test_rollover_does_not_release_everything(void) {
     printf("  rollover is reported, not decoded as an empty key set\n");
 }
 
+// THE BLE TRANSPORT SHAPE.
+//
+// Pins what the BLE path actually delivers, because a plausible-sounding and
+// WRONG theory about it nearly got implemented: that HOGP notifications carry
+// no Report ID and the transport must prepend one.
+//
+// BTstack's hids_host already inserts it. hids_host_setup_report_event_with_report_id()
+// writes the id at the start of the report payload, which is why
+// gattservice_subevent_hid_report_get_report() points at &event[9] with
+// report_len = value_len + 1. route_ble_hid_report() then prepends only the
+// 0xA1 transaction header, and bt_on_hid_report_with_generation() strips exactly
+// that one byte. A driver therefore receives [report_id][payload] on BLE,
+// identical to Classic.
+//
+// Prepending the ID again would shift every BLE report by one byte and break
+// every BLE HID device. This test exists so that idea dies here, not on
+// hardware.
+static void test_ble_transport_shape_matches_classic(void) {
+    bthid_keyboard_report_map_t map;
+    uint8_t usages[BTHID_KEYBOARD_USAGE_BYTES];
+
+    assert(bthid_keyboard_parse_descriptor(DESC_KEYBOARD_WITH_POINTER,
+                                           sizeof(DESC_KEYBOARD_WITH_POINTER),
+                                           &map));
+    assert(map.using_report_ids);
+    assert(map.report_id == 1u);
+
+    // What a driver sees once the transaction header is stripped: the report id
+    // followed by the report data. The same on both transports.
+    uint8_t as_driver_sees_it[9];
+    memset(as_driver_sees_it, 0, sizeof(as_driver_sees_it));
+    as_driver_sees_it[0] = 1u;
+    as_driver_sees_it[3] = USAGE_B;
+
+    assert(bthid_keyboard_decode_report(&map, as_driver_sees_it,
+                                        sizeof(as_driver_sees_it), usages) ==
+           BTHID_KEYBOARD_DECODE_OK);
+    assert(usages[USAGE_B >> 3] & (1u << (USAGE_B & 7u)));
+
+    // The double-prepend the disproven theory would have produced, checked on
+    // the MODIFIER byte.
+    //
+    // Not on a key: a boot report is six interchangeable key slots, so shifting
+    // by one byte merely moves the key into the next slot and it still decodes.
+    // That is precisely why this class of bug is hard to see from behaviour --
+    // it can look almost right. The modifier field has exactly one position, so
+    // a shift turns LeftShift into whatever the previous byte held.
+    uint8_t shifted[9];
+    memset(shifted, 0, sizeof(shifted));
+    shifted[0] = 1u;
+    shifted[1] = 0x02u;  // LeftShift, usage 0xE1
+    assert(bthid_keyboard_decode_report(&map, shifted, sizeof(shifted), usages) ==
+           BTHID_KEYBOARD_DECODE_OK);
+    assert(usages[0xE1u >> 3] & (1u << (0xE1u & 7u)));
+
+    uint8_t doubled[10];
+    doubled[0] = 1u;
+    memcpy(doubled + 1, shifted, sizeof(shifted));
+    (void)bthid_keyboard_decode_report(&map, doubled, sizeof(doubled), usages);
+    assert(!(usages[0xE1u >> 3] & (1u << (0xE1u & 7u))));
+
+    printf("  BLE delivers the same [report_id][payload] shape as Classic\n");
+}
+
 int main(void) {
     printf("kbm_keyboard_pipeline:\n");
+    test_ble_transport_shape_matches_classic();
     test_keypress_becomes_a_button();
     test_unbound_key_does_nothing();
     test_composite_report_id_routing();

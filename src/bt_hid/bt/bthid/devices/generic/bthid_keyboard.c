@@ -166,48 +166,6 @@ static uint32_t normalize_pointer_buttons(uint16_t buttons) {
     return out;
 }
 
-// The first held usage in a decoded bitmap, or -1 when nothing is down.
-static int first_held_usage(const uint8_t *usages) {
-    for (unsigned byte = 0; byte < BTHID_KEYBOARD_USAGE_BYTES; ++byte) {
-        if (!usages[byte]) continue;
-        for (unsigned bit = 0; bit < 8u; ++bit)
-            if (usages[byte] & (1u << bit)) return (int)(byte * 8u + bit);
-    }
-    return -1;
-}
-
-/*
- * One line per CHANGE in what the keyboard is reporting.
- *
- * Edge-triggered on purpose. A held key repeats at the connection interval, and
- * a per-report line would bury the transition that matters and change the timing
- * of the path being measured. A press and a release are one line each; holding a
- * key is silent.
- *
- * This exists because the ingress had three failure paths that incremented no
- * counter at all, so `kbm status` could show keyboardReports == 0 with nothing
- * to say why. It answers the first two questions in that chain -- did a report
- * arrive, and did it decode -- and ns2_kbm_runtime answers the rest.
- */
-static void trace_keyboard_edge(const bthid_keyboard_data_t *kb, uint16_t len,
-                                bthid_keyboard_decode_t decoded) {
-    static uint8_t last[BTHID_KEYBOARD_USAGE_BYTES];
-    static bool have_last;
-    static uint8_t last_decoded = 0xFFu;
-
-    bool same_keys = have_last && memcmp(last, kb->usages, sizeof(last)) == 0;
-    if (same_keys && last_decoded == (uint8_t)decoded) return;
-    memcpy(last, kb->usages, sizeof(last));
-    have_last = true;
-    last_decoded = (uint8_t)decoded;
-
-    printf("[KBM_TRACE] report len=%u id=%u map=%d decode=%s usage=%d\n",
-           len, kb->map.report_id, kb->has_report_map ? 1 : 0,
-           decoded == BTHID_KEYBOARD_DECODE_OK ? "ok"
-           : decoded == BTHID_KEYBOARD_DECODE_ROLLOVER ? "rollover" : "fail",
-           first_held_usage(kb->usages));
-}
-
 static void keyboard_process_report(bthid_device_t *device, const uint8_t *data,
                                     uint16_t len) {
     bthid_keyboard_data_t *kb = device ? device->driver_data : NULL;
@@ -219,8 +177,6 @@ static void keyboard_process_report(bthid_device_t *device, const uint8_t *data,
         decoded = bthid_keyboard_decode_report(&kb->map, data, len, kb->usages);
     if (decoded == BTHID_KEYBOARD_DECODE_FAIL && !kb->has_report_map)
         decoded = bthid_keyboard_decode_boot(data, len, kb->usages);
-
-    trace_keyboard_edge(kb, len, decoded);
 
     if (decoded == BTHID_KEYBOARD_DECODE_ROLLOVER) {
         // The keyboard cannot say which keys are down. Retaining the previous
