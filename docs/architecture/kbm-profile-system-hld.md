@@ -198,20 +198,45 @@ existing limitation of the single-bank, non-CRC record.
 
 | Command | Purpose |
 |---|---|
-| `kbm profiles` | The library. Paginated defensively with a suffix reserve. |
+| `kbm profiles [page]` | The library, 3 rows per page against the wire budget |
 | `kbm active` | Both realized mappings, with `matchesSaved` |
 | `kbm apply <kb\|kbm> <id\|default>` | **The only command that changes console behaviour** |
 | `kbm pmap <id> [page]` | One STORED profile's mapping |
 | `kbm profile rename\|dup\|delete` | Library metadata |
 | `kbm draft …` | The staged save above |
-| `kbm status` | Gains `activeProfile`, `activeRevision`, `activeFingerprint`, `activeMatchesSaved` |
+| `kbm status` | Product state only. Gains `activeProfile`, `activeProfileName`, `activeRevision`, `activeFingerprint`, `activeMatchesSaved` |
+| `kbm counters` | The 15 ingress counters, split out of `kbm status` |
+
+### The 512-byte wire budget
+
+`CONFIG_WIRELESS_RESPONSE_CAPACITY` is **512 bytes**. A longer reply is not
+truncated — the bridge substitutes `{"error":"response_too_large","code":413}`
+and the caller loses the *whole* read, so one oversized reply takes down every
+value the page needed, not just the field that overflowed.
+
+This was not theoretical. Adding the active-mapping identity to `kbm status`
+pushed it to **729 bytes worst case** (559 measured live), which made the entire
+Keyboard & Mouse page fail to load on hardware. Hence:
+
+- **Product state and counters are two commands.** 318 B and 414 B worst case.
+  A client merges them; an adapter that answers `unknown command` to
+  `kbm counters` degrades to zeroed counters rather than failing the read.
+- **Every list reply pages against `NS2_KBM_REPLY_MAX_BYTES`, never against its
+  local `char out[]`.** The UART console's buffer is 4096; budgeting against it
+  is precisely the mistake that produced the overflow. `more` is computed from
+  what was actually emitted, so a wire-truncated page still paginates instead of
+  silently dropping rows.
+- `tools/test_ns2_kbm_status.c` saturates every field and asserts both replies
+  stay under the wire limit. The earlier version of that test asserted against
+  2048 (a firmware-local buffer), which is why it passed while the adapter was
+  broken.
 
 Error strings are stable and specific: `profile storage full or name in use`,
 `profile not found`, `profile not found for that layout`, `stale revision`,
 `no draft`, `incomplete transaction`, `invalid settings`, `mapping storage full`.
 
 All new verbs are `kbm …`, already covered by the BLE allowlist's `kbm ` prefix
-and gated behind the existing trusted management session. Parity: **60 companion
+and gated behind the existing trusted management session. Parity: **62 companion
 commands, all dispatched and all reachable over BLE.**
 
 ### Legacy compatibility

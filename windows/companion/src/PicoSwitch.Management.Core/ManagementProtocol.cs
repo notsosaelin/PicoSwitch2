@@ -277,8 +277,32 @@ public static class ManagementProtocol
                 ActiveMatchesSaved: value.Bool("activeMatchesSaved"));
         });
 
-    public static ValueList<KbmProfileInfo> KbmProfileList(string command,
-                                                           string response) =>
+    public static KbmCounters KbmCounters(string command, string response) =>
+        Decode(command, response, value => new Management.KbmCounters(
+            KeyboardReports: value.Long("keyboardReports"),
+            MouseReports: value.Long("mouseReports"),
+            RejectedMode: value.Long("rejectedMode"),
+            RejectedDuplicate: value.Long("rejectedDuplicate"),
+            RejectedNotOwner: value.Long("rejectedNotOwner"),
+            RejectedNoPeerKey: value.Long("rejectedNoPeerKey"),
+            RejectedUnclassified: value.Long("rejectedUnclassified"),
+            RejectedNoRole: value.Long("rejectedNoRole"),
+            UndecodedReports: value.Long("undecodedReports"),
+            Rollover: value.Long("rollover"),
+            RoleLosses: value.Long("roleLosses"),
+            MapGeneration: value.Long("mapGeneration"),
+            Publishes: value.Long("publishes"),
+            Recenters: value.Long("recenters")));
+
+    /// <summary>One page of the profile library.</summary>
+    public sealed record KbmProfilePage(
+        ValueList<KbmProfileInfo> Profiles,
+        int Page,
+        int Total,
+        int Max,
+        bool More);
+
+    public static KbmProfilePage KbmProfileList(string command, string response) =>
         Decode(command, response, value =>
         {
             var hasList =
@@ -311,7 +335,12 @@ public static class ManagementProtocol
                     Fingerprint: entry.Long("fingerprint")));
             }
 
-            return new ValueList<KbmProfileInfo>(profiles);
+            return new KbmProfilePage(
+                new ValueList<KbmProfileInfo>(profiles),
+                Page: value.Int("page"),
+                Total: value.Int("total"),
+                Max: value.Int("max"),
+                More: value.Bool("more"));
         });
 
     public static ValueList<KbmActiveMapping> KbmActive(string command,

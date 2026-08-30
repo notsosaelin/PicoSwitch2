@@ -33,7 +33,8 @@ public sealed class ManagementWorkflowTests
     {
         var channel = new ScriptedChannel(
             ("kbm mode keyboard", """{"ok":true,"mode":"keyboard"}"""),
-            ("kbm status", KbmStatusReply("keyboard", "keyboard", "kb")));
+            ("kbm status", KbmStatusReply("keyboard", "keyboard", "kb")),
+            ("kbm counters", KbmCountersReply()));
 
         var status = await new ManagementClient(channel).SetKbmModeAsync(KbmMode.Keyboard);
         Assert.Equal(KbmMode.Keyboard, status.Mode);
@@ -130,6 +131,7 @@ public sealed class ManagementWorkflowTests
             ("bonds list", """{"v":2,"total":0,"bonds":[],"next":null}"""),
             ("input sources", """{"active":0,"pending":0,"explicit":false,"fresh":false,"transitions":0,"sources":[],"more":false}"""),
             ("kbm status", KbmStatusReply("kbmouse", "auto", "kbm")),
+            ("kbm counters", KbmCountersReply()),
             ("kbm mouse", KbmMouseReply()));
 
         var refresh = await new ManagementClient(channel).RefreshAllAsync();
@@ -177,11 +179,17 @@ public sealed class ManagementWorkflowTests
             () => new ManagementClient(silent).ReenumerateUsbAsync());
     }
 
+    // Product state and counters are two replies because ONE reply carrying both
+    // is 729 bytes worst case and the wireless slot is 512
+    // (CONFIG_WIRELESS_RESPONSE_CAPACITY). A single oversized reply is refused
+    // whole with `response_too_large`, which took the entire Keyboard & Mouse
+    // page down rather than degrading -- see ns2_kbm_status.c.
     internal static string KbmStatusReply(string mode, string modeOverride, string profile) =>
         "{\"mode\":\"" + mode + "\",\"override\":\"" + modeOverride + "\",\"profile\":\"" + profile +
-        "\",\"keyboard\":true,\"mouse\":false,\"nativeMouse\":false,\"keyboardConn\":1,\"mouseConn\":0," +
-        "\"keyboardReports\":0,\"mouseReports\":0,\"rejectedMode\":0,\"rejectedDuplicate\":0," +
-        "\"rejectedNotOwner\":0,\"rollover\":0,\"roleLosses\":0,\"mapGeneration\":0,\"publishes\":0,\"recenters\":0}";
+        "\",\"keyboard\":true,\"mouse\":false,\"nativeMouse\":false,\"keyboardConn\":1,\"mouseConn\":0}";
+
+    internal static string KbmCountersReply() =>
+        """{"keyboardReports":0,"mouseReports":0,"rejectedMode":0,"rejectedDuplicate":0,"rejectedNotOwner":0,"rejectedNoPeerKey":0,"rejectedUnclassified":0,"rejectedNoRole":0,"undecodedReports":0,"rollover":0,"roleLosses":0,"mapGeneration":0,"neutralizations":0,"publishes":0,"recenters":0}""";
 
     internal static string KbmMouseReply() =>
         """{"sensitivityX":512,"sensitivityY":512,"recenterMs":12,"invertX":false,"invertY":false,"antiDeadzone":0,"sensitivityMin":16,"sensitivityMax":8192,"recenterMinMs":1,"recenterMaxMs":100,"antiDeadzoneMax":50}""";

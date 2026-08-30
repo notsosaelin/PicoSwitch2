@@ -189,36 +189,42 @@ public sealed class ProtocolConformanceTests
     [Fact]
     public void KbmProfilesCarryIdentityRevisionAndFingerprint()
     {
-        var profiles = ManagementProtocol.KbmProfileList(
-            "kbm profiles",
+        var page = ManagementProtocol.KbmProfileList(
+            "kbm profiles 0",
             """
-            {"profiles":[
+            {"page":0,"total":5,"max":6,"profiles":[
               {"id":2,"layout":"kb","name":"Splatoon","revision":3,"overrides":3,"fingerprint":123},
               {"id":3,"layout":"kbm","name":"Zelda","revision":1,"overrides":9,"fingerprint":456}
-            ],"max":6,"more":false}
+            ],"more":true}
             """);
 
-        Assert.Equal(2, profiles.Count);
-        Assert.Equal(3, profiles[0].Revision);
-        Assert.Equal(123, profiles[0].Fingerprint);
+        Assert.Equal(2, page.Profiles.Count);
+        Assert.Equal(3, page.Profiles[0].Revision);
+        Assert.Equal(123, page.Profiles[0].Fingerprint);
+        // The library is paged because the wireless reply slot is 512 bytes;
+        // `total` is the library size, not the page size, so a client knows to
+        // keep reading rather than silently showing two of five profiles.
+        Assert.Equal(5, page.Total);
+        Assert.Equal(6, page.Max);
+        Assert.True(page.More);
         // Default is NOT in the adapter's list: it is a template that consumes
         // no slot, and the client synthesises it.
-        Assert.DoesNotContain(profiles, p => p.Builtin);
+        Assert.DoesNotContain(page.Profiles, p => p.Builtin);
 
         // A row this build cannot make sense of is skipped, not shown as a
         // selectable profile the adapter would refuse. An id colliding with the
         // reserved Default is refused for the same reason.
         var partial = ManagementProtocol.KbmProfileList(
-            "kbm profiles",
+            "kbm profiles 0",
             """
-            {"profiles":[
+            {"page":0,"total":4,"max":6,"profiles":[
               {"id":2,"layout":"kb","name":"Real","revision":1,"overrides":0,"fingerprint":1},
               {"id":4,"layout":"future","name":"Nope","revision":1,"overrides":0,"fingerprint":2},
               {"id":5,"layout":"kb","name":"","revision":1,"overrides":0,"fingerprint":3},
               {"id":1,"layout":"kb","name":"Impostor","revision":1,"overrides":0,"fingerprint":4}
-            ],"max":6,"more":false}
+            ],"more":false}
             """);
-        Assert.Equal("Real", Assert.Single(partial).Name);
+        Assert.Equal("Real", Assert.Single(partial.Profiles).Name);
     }
 
     [Fact]
@@ -293,8 +299,9 @@ public sealed class ProtocolConformanceTests
         // slot" -- the two are not the same, and only the second one makes a
         // keypress reach the game.
         //
-        // The shared protocol fixture predates them, so this uses a literal
-        // reply; absence must stay tolerated, which the second case pins.
+        // This uses a literal reply because the second case needs an adapter that
+        // OMITS them, which the current fixture -- carrying the real shipped
+        // shape -- deliberately does not.
         var status = ManagementProtocol.KbmStatus(
             "kbm status",
             """
@@ -319,11 +326,22 @@ public sealed class ProtocolConformanceTests
         // An older adapter that omits them still parses; zero is also the real
         // value the firmware reports for "no composite" and "not owning".
         var older = ManagementProtocol.KbmStatus(
-            Vector("kbmStatus").Command, Vector("kbmStatus").Reply);
+            "kbm status",
+            """{"mode":"keyboard","override":"auto","profile":"kb","keyboard":true,"mouse":false,"nativeMouse":false,"keyboardConn":1,"mouseConn":0}""");
         Assert.Equal(0, older.GroupId);
         Assert.Equal(0, older.SourceId);
         Assert.Equal(0, older.RejectedNoPeerKey);
         Assert.Equal(0, older.UndecodedReports);
+
+        // The counters are their own reply and their own vector. Distinct values
+        // per field are what catch a shifted argument list in the firmware
+        // formatter, which still emits valid JSON.
+        var counters = ManagementProtocol.KbmCounters(
+            Vector("kbmCounters").Command, Vector("kbmCounters").Reply);
+        Assert.Equal(10, counters.KeyboardReports);
+        Assert.Equal(4, counters.RejectedNoPeerKey);
+        Assert.Equal(7, counters.UndecodedReports);
+        Assert.Equal(13, counters.Recenters);
     }
 
     [Fact]

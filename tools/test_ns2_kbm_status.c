@@ -18,10 +18,16 @@
 #include <stdio.h>
 #include <string.h>
 
-// The smallest buffer any real caller hands this formatter is
-// ns2_uart_diag.c's 2048-byte trace_format_response; config.c's is 4096. The
-// tests use the smaller of the two, so a reply that outgrows the firmware's own
-// buffer fails here rather than silently truncating on hardware.
+// The binding constraint is the WIRE, not the local buffer.
+//
+// A reply travels over the wireless bridge's 512-byte response slot
+// (CONFIG_WIRELESS_RESPONSE_CAPACITY). Exceed it and the bridge substitutes
+// `response_too_large`, which fails the client's whole Keyboard & Mouse read.
+//
+// This was originally sized at 2048 -- ns2_uart_diag.c's buffer -- and every
+// test passed while the combined status reply grew to 729 bytes at worst case.
+// It fit in practice only while the counters were small, so it shipped and then
+// failed on an adapter that had actually been used. Size the tests to the wire.
 #define KBM_STATUS_TEST_BUFFER 2048
 
 #include "ns2_kbm_status.h"
@@ -75,26 +81,11 @@ static void test_exact_output(void) {
         "\"mouseConn\":7,"
         "\"group\":3,"
         "\"source\":9,"
-        "\"keyboardReports\":58,"
-        "\"mouseReports\":0,"
-        "\"rejectedMode\":1,"
-        "\"rejectedDuplicate\":1547,"
-        "\"rejectedNotOwner\":2,"
-        "\"rejectedNoPeerKey\":21,"
-        "\"rejectedUnclassified\":22,"
-        "\"rejectedNoRole\":23,"
-        "\"undecodedReports\":24,"
         "\"activeProfile\":2,"
         "\"activeProfileName\":\"Splatoon\","
         "\"activeRevision\":4,"
         "\"activeFingerprint\":3735928559,"
-        "\"activeMatchesSaved\":true,"
-        "\"rollover\":3,"
-        "\"roleLosses\":4,"
-        "\"mapGeneration\":5,"
-        "\"neutralizations\":6,"
-        "\"publishes\":7,"
-        "\"recenters\":8"
+        "\"activeMatchesSaved\":true"
         "}";
 
     if (strcmp(out, expected) != 0) {
@@ -106,6 +97,34 @@ static void test_exact_output(void) {
         assert(0);
     }
     assert(written == (int)strlen(expected));
+
+    // The counters are their own reply now, and pinned the same way.
+    static const char expected_counters[] =
+        "{"
+        "\"keyboardReports\":58,"
+        "\"mouseReports\":0,"
+        "\"rejectedMode\":1,"
+        "\"rejectedDuplicate\":1547,"
+        "\"rejectedNotOwner\":2,"
+        "\"rejectedNoPeerKey\":21,"
+        "\"rejectedUnclassified\":22,"
+        "\"rejectedNoRole\":23,"
+        "\"undecodedReports\":24,"
+        "\"rollover\":3,"
+        "\"roleLosses\":4,"
+        "\"mapGeneration\":5,"
+        "\"neutralizations\":6,"
+        "\"publishes\":7,"
+        "\"recenters\":8"
+        "}";
+    written = ns2_kbm_counters_format(&status, out, sizeof(out));
+    if (strcmp(out, expected_counters) != 0) {
+        fprintf(stderr,
+                "FAIL: counters output drifted\n  expected: %s\n  actual:   %s\n",
+                expected_counters, out);
+        assert(0);
+    }
+    assert(written == (int)strlen(expected_counters));
     puts("  exact field order and types");
 }
 
@@ -143,11 +162,23 @@ static void test_every_field_is_distinct(void) {
     char out[KBM_STATUS_TEST_BUFFER];
     (void)ns2_kbm_status_format(&status, out, sizeof(out));
 
-    static const char *const pairs[] = {
+    static const char *const status_pairs[] = {
         "\"mode\":\"keyboard\"",   "\"override\":\"controller\"",
         "\"profile\":\"kb\"",      "\"keyboardConn\":11",
         "\"mouseConn\":12",        "\"group\":13",
-        "\"source\":14",           "\"keyboardReports\":15",
+        "\"source\":14",
+        "\"activeProfile\":30",     "\"activeProfileName\":\"Zelda\"",
+    };
+    for (unsigned i = 0; i < sizeof(status_pairs) / sizeof(status_pairs[0]); ++i) {
+        if (!strstr(out, status_pairs[i])) {
+            fprintf(stderr, "FAIL: missing %s in %s\n", status_pairs[i], out);
+            assert(0);
+        }
+    }
+
+    (void)ns2_kbm_counters_format(&status, out, sizeof(out));
+    static const char *const counter_pairs[] = {
+        "\"keyboardReports\":15",
         "\"mouseReports\":16",     "\"rejectedMode\":17",
         "\"rejectedDuplicate\":18","\"rejectedNotOwner\":19",
         "\"rollover\":20",         "\"roleLosses\":21",
@@ -155,11 +186,10 @@ static void test_every_field_is_distinct(void) {
         "\"publishes\":24",        "\"recenters\":25",
         "\"rejectedNoPeerKey\":26", "\"rejectedUnclassified\":27",
         "\"rejectedNoRole\":28",    "\"undecodedReports\":29",
-        "\"activeProfile\":30",     "\"activeProfileName\":\"Zelda\"",
     };
-    for (unsigned i = 0; i < sizeof(pairs) / sizeof(pairs[0]); ++i) {
-        if (!strstr(out, pairs[i])) {
-            printf("FAIL: missing %s in %s\n", pairs[i], out);
+    for (unsigned i = 0; i < sizeof(counter_pairs) / sizeof(counter_pairs[0]); ++i) {
+        if (!strstr(out, counter_pairs[i])) {
+            fprintf(stderr, "FAIL: missing %s in %s\n", counter_pairs[i], out);
             assert(0);
         }
     }
@@ -380,8 +410,74 @@ static void test_range_enforcement_stays_with_sanitize(void) {
     puts("  range enforcement stays with sanitize");
 }
 
+// Every reply must fit the wire slot at its WORST case, not its typical one.
+//
+// This is the test that was missing. The combined status reply reached 729 bytes
+// with wide counters and a full-length profile name, the bridge refused it, and
+// the client got `response_too_large` on an adapter that had simply been used
+// for a while. Saturating every field is the only honest way to check a bound.
+static void test_replies_fit_the_wire_slot(void) {
+    ns2_kbm_runtime_status_t status;
+    memset(&status, 0, sizeof(status));
+
+    // Saturate: widest counters, longest names, largest identifiers.
+    status.mode = (uint8_t)NS2_KBM_MODE_KEYBOARD_MOUSE;
+    status.mode_override = (uint8_t)NS2_KBM_MODE_AUTO;
+    status.profile = (uint8_t)NS2_KBM_LAYOUT_KEYBOARD_MOUSE;
+    status.keyboard_conn = 255u;
+    status.mouse_conn = 255u;
+    status.group_id = 0xFFFFFFFFu;
+    status.source_id = 0xFFFFFFFFu;
+    status.keyboard_reports = 0xFFFFFFFFu;
+    status.mouse_reports = 0xFFFFFFFFu;
+    status.rejected_mode = 0xFFFFFFFFu;
+    status.rejected_duplicate = 0xFFFFFFFFu;
+    status.rejected_not_owner = 0xFFFFFFFFu;
+    status.rejected_no_peer_key = 0xFFFFFFFFu;
+    status.rejected_unclassified = 0xFFFFFFFFu;
+    status.rejected_no_role = 0xFFFFFFFFu;
+    status.undecoded_reports = 0xFFFFFFFFu;
+    status.rollover_reports = 0xFFFFFFFFu;
+    status.role_losses = 0xFFFFFFFFu;
+    status.config_generation = 0xFFFFFFFFu;
+    status.remap_neutralizations = 0xFFFFFFFFu;
+    status.publishes = 0xFFFFFFFFu;
+    status.stick_recenters = 0xFFFFFFFFu;
+    status.active_profile = 254u;
+    status.active_revision = 65535u;
+    status.active_fingerprint = 0xFFFFFFFFu;
+    status.active_matches_source = 1u;
+    // The longest name the adapter can store, which the migration itself uses.
+    memcpy(status.active_profile_name, "Current KB + Mouse", 19u);
+
+    char out[KBM_STATUS_TEST_BUFFER];
+    int written = ns2_kbm_status_format(&status, out, sizeof(out));
+    printf("  kbm status worst case: %d of %u bytes\n", written,
+           (unsigned)NS2_KBM_REPLY_MAX_BYTES);
+    assert(written > 0 && (unsigned)written < NS2_KBM_REPLY_MAX_BYTES);
+
+    written = ns2_kbm_counters_format(&status, out, sizeof(out));
+    printf("  kbm counters worst case: %d of %u bytes\n", written,
+           (unsigned)NS2_KBM_REPLY_MAX_BYTES);
+    assert(written > 0 && (unsigned)written < NS2_KBM_REPLY_MAX_BYTES);
+
+    // The mouse reply travels the same slot.
+    ns2_kbm_mouse_config_t mouse;
+    memset(&mouse, 0, sizeof(mouse));
+    mouse.sensitivity_x = 65535u;
+    mouse.sensitivity_y = 65535u;
+    mouse.recenter_ms = 65535u;
+    mouse.invert_x = 1u;
+    mouse.invert_y = 1u;
+    mouse.anti_deadzone = 255u;
+    written = ns2_kbm_mouse_format(&mouse, out, sizeof(out));
+    assert(written > 0 && (unsigned)written < NS2_KBM_REPLY_MAX_BYTES);
+    puts("  every reply fits the 512-byte wire slot at worst case");
+}
+
 int main(void) {
     puts("ns2_kbm status formatter:");
+    test_replies_fit_the_wire_slot();
     test_exact_output();
     test_every_field_is_distinct();
     test_bounds_and_null_safety();

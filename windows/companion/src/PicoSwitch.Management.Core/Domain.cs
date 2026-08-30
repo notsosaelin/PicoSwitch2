@@ -689,6 +689,30 @@ public static class KbmLayouts
 }
 
 /// <summary>
+/// The KB/M ingress counters.
+///
+/// A separate reply from <see cref="KbmStatus"/> because the two together
+/// outgrew the 512-byte wireless response slot, which made the adapter answer
+/// <c>response_too_large</c> and fail the whole page read. The client merges
+/// them back so nothing above the transport has to know.
+/// </summary>
+public sealed record KbmCounters(
+    long KeyboardReports = 0,
+    long MouseReports = 0,
+    long RejectedMode = 0,
+    long RejectedDuplicate = 0,
+    long RejectedNotOwner = 0,
+    long RejectedNoPeerKey = 0,
+    long RejectedUnclassified = 0,
+    long RejectedNoRole = 0,
+    long UndecodedReports = 0,
+    long Rollover = 0,
+    long RoleLosses = 0,
+    long MapGeneration = 0,
+    long Publishes = 0,
+    long Recenters = 0);
+
+/// <summary>
 /// Reserved profile identities. Custom profiles are numbered from 2.
 /// </summary>
 public static class KbmProfileIds

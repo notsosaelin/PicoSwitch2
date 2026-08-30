@@ -40,9 +40,21 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   so nothing about the user's console changes on upgrade; an unmodified mapping becomes Default and
   consumes no slot; **the v13 management-companion table survives byte for byte**, with its own
   regression. The record remains single-bank and non-CRC: sanitize rejects malformed state and is
-  explicitly **not** torn-write detection. 77/77 host, 585 Windows, all Android JVM tests, lint
-  clean, debug APK, both boards build, management command parity 60/60 and descriptor parity green.
-  **Nothing in the profile system has run on hardware yet.**
+  explicitly **not** torn-write detection.
+  **One defect was found on hardware and fixed the same day:** adding the active-mapping identity
+  pushed `kbm status` to 729 bytes worst case (559 measured on the adapter) against the 512-byte
+  `CONFIG_WIRELESS_RESPONSE_CAPACITY`. An oversized reply is not truncated — the bridge substitutes
+  `response_too_large`, so the whole Keyboard & Mouse read failed and the new profile UI never
+  rendered at all. Product state and the 15 ingress counters are now two commands (`kbm status`
+  318 B, `kbm counters` 414 B worst case), a client merges them, and an adapter that does not know
+  `kbm counters` degrades to zeroed counters rather than failing. `kbm profiles` and `kbm map` now
+  page against `NS2_KBM_REPLY_MAX_BYTES` and compute `more` from what was actually emitted; both
+  previously budgeted against a 4096-byte firmware-local buffer. The status test asserted against
+  that same local buffer, which is exactly why it passed while the adapter was broken — it now
+  saturates every field and asserts the **wire** limit.
+  77/77 host, 585 Windows, all Android JVM tests, lint clean, debug APK, both boards build,
+  management command parity 62/62 and descriptor parity green.
+  **The rest of the profile system has still not run on hardware.**
   [`docs/architecture/kbm-profile-system-hld.md`](docs/architecture/kbm-profile-system-hld.md)
 
 - **BLE keyboard input — root-caused and fixed 2026-08-29; HARDWARE-CONFIRMED.** An 8BitDo

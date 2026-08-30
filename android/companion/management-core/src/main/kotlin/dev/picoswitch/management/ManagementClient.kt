@@ -23,7 +23,41 @@ class ManagementClient(
     suspend fun amiiboStatus() = exchange(ManagementCommands.AMIIBO_STATUS, ManagementProtocol::amiibo)
     suspend fun inputSources() = exchange(ManagementCommands.INPUT_SOURCES, ManagementProtocol::inputSources)
     suspend fun managementEnabled() = exchange(ManagementCommands.MANAGEMENT_STATUS, ManagementProtocol::managementEnabled)
-    suspend fun kbmStatus() = exchange(ManagementCommands.KBM_STATUS, ManagementProtocol::kbmStatus)
+    /**
+     * KB/M status, with the ingress counters merged in.
+     *
+     * Two commands, because the combined reply outgrew the 512-byte wireless
+     * response slot and the bridge answered `response_too_large` — which failed
+     * the whole Keyboard & Mouse read rather than one field. The split is a wire
+     * detail, so it is hidden here and every caller is unchanged.
+     *
+     * Counters are tolerated as absent: firmware that predates the split still
+     * returns them inside `kbm status`, and the merge leaves those values alone.
+     */
+    suspend fun kbmStatus(): KbmStatus {
+        val status = exchange(ManagementCommands.KBM_STATUS, ManagementProtocol::kbmStatus)
+        val counters = try {
+            exchange(ManagementCommands.KBM_COUNTERS, ManagementProtocol::kbmCounters)
+        } catch (error: AdapterCommandException) {
+            if (error.isUnsupported()) return status else throw error
+        }
+        return status.copy(
+            keyboardReports = counters.keyboardReports,
+            mouseReports = counters.mouseReports,
+            rejectedMode = counters.rejectedMode,
+            rejectedDuplicate = counters.rejectedDuplicate,
+            rejectedNotOwner = counters.rejectedNotOwner,
+            rejectedNoPeerKey = counters.rejectedNoPeerKey,
+            rejectedUnclassified = counters.rejectedUnclassified,
+            rejectedNoRole = counters.rejectedNoRole,
+            undecodedReports = counters.undecodedReports,
+            rollover = counters.rollover,
+            roleLosses = counters.roleLosses,
+            mapGeneration = counters.mapGeneration,
+            publishes = counters.publishes,
+            recenters = counters.recenters,
+        )
+    }
     suspend fun kbmMouse() = exchange(ManagementCommands.KBM_MOUSE, ManagementProtocol::kbmMouse)
     suspend fun persistenceStatus() =
         exchange(ManagementCommands.SAVE_STATUS, ManagementProtocol::persistenceStatus)
@@ -179,11 +213,39 @@ class ManagementClient(
         return KbmMapping(profile.layout, bindings, loaded = true)
     }
 
-    /** The profile library and both realized mappings. */
+    /**
+     * The profile library and both realized mappings.
+     *
+     * The library is paged: six rows do not fit one 512-byte reply, and
+     * formatting them into the adapter's larger local buffer is exactly how
+     * `kbm status` came to be refused over Bluetooth. Guarded the same way as the
+     * mapping pages — a non-progressing or total-shifting adapter fails loudly
+     * rather than looping.
+     */
     suspend fun kbmProfiles(): KbmProfiles {
-        val profiles = exchange(ManagementCommands.KBM_PROFILES, ManagementProtocol::kbmProfileList)
+        val profiles = mutableListOf<KbmProfileInfo>()
+        var pageNumber = 0
+        var expectedTotal: Int? = null
+        var max = 0
+        while (true) {
+            val command = ManagementCommands.kbmProfilePage(pageNumber)
+            val page = exchange(command, ManagementProtocol::kbmProfilePage)
+            if (page.page != pageNumber) {
+                throw ManagementPaginationException("Adapter returned a different KB/M profile page")
+            }
+            if (expectedTotal == null) expectedTotal = page.total
+            if (expectedTotal != page.total || profiles.size + page.profiles.size > page.total) {
+                throw ManagementPaginationException("Adapter changed the KB/M profile total during pagination")
+            }
+            max = page.max
+            profiles += page.profiles
+            if (!page.more) break
+            if (page.profiles.isEmpty() || ++pageNumber > MAX_KBM_MAP_PAGES) {
+                throw ManagementPaginationException("Adapter returned a non-progressing KB/M profile list")
+            }
+        }
         val active = exchange(ManagementCommands.KBM_ACTIVE, ManagementProtocol::kbmActive)
-        return KbmProfiles(profiles, active, max = KBM_PROFILE_CAPACITY)
+        return KbmProfiles(profiles, active, max = max)
     }
 
     /**

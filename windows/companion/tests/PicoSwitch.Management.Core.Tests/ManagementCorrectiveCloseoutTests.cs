@@ -122,6 +122,7 @@ public sealed class ManagementCorrectiveCloseoutTests
             Unsupported("unknown command"),
             Unsupported("unknown command"),
             ManagementWorkflowTests.KbmStatusReply("kbmouse", "auto", "kbm"),
+            ManagementWorkflowTests.KbmCountersReply(),
             ManagementWorkflowTests.KbmMouseReply());
 
         var refresh = await new ManagementClient(supported).RefreshAllAsync();
@@ -246,6 +247,7 @@ public sealed class ManagementCorrectiveCloseoutTests
             "bonds list",
             "input sources",
             "kbm status",
+            "kbm counters",
             "kbm mouse",
         ];
 

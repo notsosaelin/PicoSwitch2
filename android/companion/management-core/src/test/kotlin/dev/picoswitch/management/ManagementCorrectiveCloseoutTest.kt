@@ -86,6 +86,7 @@ class ManagementCorrectiveCloseoutTest {
             optionalUnsupported("unknown command"),
             optionalUnsupported("unknown command"),
             kbmStatus(),
+            kbmCounters(),
             kbmMouse(),
         )
         val refresh = ManagementClient(supported).refreshAll()
@@ -160,6 +161,7 @@ class ManagementCorrectiveCloseoutTest {
             "bonds list",
             "input sources",
             "kbm status",
+            "kbm counters",
             "kbm mouse",
         )
         return ScriptedCorrectiveChannel(
@@ -177,7 +179,10 @@ class ManagementCorrectiveCloseoutTest {
     private fun optionalUnsupported(message: String) = """{"error":"$message"}"""
 
     private fun kbmStatus() =
-        """{"mode":"kbmouse","override":"auto","profile":"kbm","keyboard":true,"mouse":true,"nativeMouse":false,"keyboardConn":1,"mouseConn":2,"keyboardReports":0,"mouseReports":0,"rejectedMode":0,"rejectedDuplicate":0,"rejectedNotOwner":0,"rollover":0,"roleLosses":0,"mapGeneration":0,"publishes":0,"recenters":0}"""
+        """{"mode":"kbmouse","override":"auto","profile":"kbm","keyboard":true,"mouse":true,"nativeMouse":false,"keyboardConn":1,"mouseConn":2}"""
+
+    private fun kbmCounters() =
+        """{"keyboardReports":0,"mouseReports":0,"rejectedMode":0,"rejectedDuplicate":0,"rejectedNotOwner":0,"rejectedNoPeerKey":0,"rejectedUnclassified":0,"rejectedNoRole":0,"undecodedReports":0,"rollover":0,"roleLosses":0,"mapGeneration":0,"neutralizations":0,"publishes":0,"recenters":0}"""
 
     private fun kbmMouse() =
         """{"sensitivityX":512,"sensitivityY":512,"recenterMs":12,"invertX":false,"invertY":false,"antiDeadzone":0,"sensitivityMin":16,"sensitivityMax":8192,"recenterMinMs":1,"recenterMaxMs":100,"antiDeadzoneMax":50}"""

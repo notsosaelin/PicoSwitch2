@@ -14,8 +14,14 @@ public sealed class KeyboardMouseServiceTests
 {
     private const string Address = "AA:BB:CC:DD:EE:01";
 
+    // Product state and counters are read as TWO commands: together they exceed
+    // the 512-byte wireless reply slot and the whole read is refused with
+    // `response_too_large`.
     private const string Status =
         """{"ok":true,"mode":"keyboard","override":"auto","profile":"kb","keyboard":true,"mouse":false,"nativeMouse":false}""";
+
+    private const string Counters =
+        """{"keyboardReports":0,"mouseReports":0,"rejectedMode":0,"rejectedDuplicate":0,"rejectedNotOwner":0,"rejectedNoPeerKey":0,"rejectedUnclassified":0,"rejectedNoRole":0,"undecodedReports":0,"rollover":0,"roleLosses":0,"mapGeneration":0,"neutralizations":0,"publishes":0,"recenters":0}""";
 
     private const string Mouse =
         """{"ok":true,"sensitivityX":256,"sensitivityY":256,"recenterMs":8,"invertX":false,"invertY":false,"antiDeadzone":10,"sensitivityMin":64,"sensitivityMax":1024,"recenterMinMs":2,"recenterMaxMs":32,"antiDeadzoneMax":100}""";
@@ -24,9 +30,9 @@ public sealed class KeyboardMouseServiceTests
     // synthesises, which is what keeps all six adapter slots for the user.
     private const string Profiles =
         """
-        {"profiles":[
+        {"page":0,"total":1,"max":6,"profiles":[
           {"id":2,"layout":"kb","name":"Splatoon","revision":3,"overrides":3,"fingerprint":111}
-        ],"max":6,"more":false}
+        ],"more":false}
         """;
 
     // What each layout is REALLY running. The Keyboard layout is running the
@@ -45,8 +51,9 @@ public sealed class KeyboardMouseServiceTests
     private static void ScriptFullRead(ConnectionServiceFixture fixture)
     {
         fixture.Transport.Replies["kbm status"] = Status;
+        fixture.Transport.Replies["kbm counters"] = Counters;
         fixture.Transport.Replies["kbm mouse"] = Mouse;
-        fixture.Transport.Replies["kbm profiles"] = Profiles;
+        fixture.Transport.Replies["kbm profiles 0"] = Profiles;
         fixture.Transport.Replies["kbm active"] = Active;
         fixture.Transport.Replies["kbm map kb 0"] = Page("kb", "key:04", "a");
         fixture.Transport.Replies["kbm map kbm 0"] = Page("kbm", "key:05", "b");
@@ -96,6 +103,7 @@ public sealed class KeyboardMouseServiceTests
         using var fixture = new ConnectionServiceFixture();
         await fixture.RememberAdapterAsync(Address);
         fixture.Transport.Replies["kbm status"] = Status;
+        fixture.Transport.Replies["kbm counters"] = Counters;
         fixture.Transport.Replies["kbm mouse"] = Mouse;
         fixture.Transport.Failures["kbm map kb 0"] = new ManagementException("link dropped");
 
@@ -280,6 +288,7 @@ public sealed class KeyboardMouseServiceTests
         fixture.Transport.Replies["kbm mode kbmouse"] = """{"ok":true}""";
         fixture.Transport.Replies["kbm status"] =
             """{"ok":true,"mode":"controller","override":"kbmouse","profile":"kbm","keyboard":false,"mouse":true,"nativeMouse":false}""";
+        fixture.Transport.Replies["kbm counters"] = Counters;
 
         var status = await fixture.Service.SetKeyboardMouseModeAsync(KbmMode.KeyboardMouse);
 
@@ -429,9 +438,9 @@ public sealed class KeyboardMouseServiceTests
         using var fixture = new ConnectionServiceFixture();
         await fixture.RememberAdapterAsync(Address);
         ScriptFullRead(fixture);
-        fixture.Transport.Replies.Remove("kbm profiles");
-        fixture.Transport.Failures["kbm profiles"] =
-            new AdapterCommandException("kbm profiles", null, "unknown command");
+        fixture.Transport.Replies.Remove("kbm profiles 0");
+        fixture.Transport.Failures["kbm profiles 0"] =
+            new AdapterCommandException("kbm profiles 0", null, "unknown command");
 
         var state = await fixture.Service.RefreshKeyboardMouseAsync();
 

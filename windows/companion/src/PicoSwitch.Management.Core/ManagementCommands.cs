@@ -132,7 +132,19 @@ public static partial class ManagementCommands
 
     public static string KbmMode(KbmMode mode) => $"kbm mode {mode.Wire()}";
 
+    /// <summary>
+    /// The ingress counters, split out of <c>kbm status</c> because the two
+    /// together outgrew the 512-byte wireless response slot.
+    /// </summary>
+    public const string KbmCounters = "kbm counters";
+
     public const string KbmProfileList = "kbm profiles";
+
+    /// <summary>
+    /// One page of the profile library. Paginated against the WIRE limit, not a
+    /// local buffer: six rows do not fit one 512-byte reply.
+    /// </summary>
+    public static string KbmProfilePage(int page) => $"kbm profiles {page}";
 
     /// <summary>The realized mapping of each layout, and its divergence state.</summary>
     public const string KbmActive = "kbm active";
