@@ -73,7 +73,36 @@ public sealed record KeyboardMouseView
 
     public required bool MouseConnected { get; init; }
 
+    /// <summary>The profile being EDITED.</summary>
     public required KbmProfile Profile { get; init; }
+
+    /// <summary>
+    /// The profile the adapter is actually resolving against right now.
+    ///
+    /// Not user-settable: there is no `kbm profile` command. The adapter derives
+    /// it from which roles are filled — a keyboard alone resolves the Keyboard
+    /// profile, a keyboard and a mouse resolve the Keyboard-and-mouse one.
+    /// </summary>
+    public required KbmProfile ActiveProfile { get; init; }
+
+    /// <summary>
+    /// True when the user is editing a profile the adapter is not using.
+    ///
+    /// This is worth saying out loud. A binding made here is saved and survives
+    /// a reload, so every management operation reports success — and the key
+    /// does nothing at the console, because the adapter is resolving the other
+    /// profile. Silence there is indistinguishable from a broken keyboard.
+    /// </summary>
+    public bool EditingInactiveProfile => Profile != ActiveProfile;
+
+    public string? InactiveProfileWarning => EditingInactiveProfile
+        ? $"The adapter is currently using the {Label(ActiveProfile)}. Changes here " +
+          "are saved, but will not affect the console until that profile is in use."
+        : null;
+
+    public static string Label(KbmProfile profile) => profile == KbmProfile.Keyboard
+        ? "keyboard profile"
+        : "keyboard and mouse profile";
 
     /// <summary>Every drawn key, flat. Used for counting and lookup.</summary>
     public required IReadOnlyList<KeyBindingCell> Keys { get; init; }
@@ -190,6 +219,7 @@ public static class KeyboardMouse
             KeyboardConnected = state.Status.KeyboardConnected,
             MouseConnected = state.Status.MouseConnected,
             Profile = profile,
+            ActiveProfile = state.Status.Profile,
             Keys = KeyboardLayout.AllKeys.Select(cap => Cell(cap, byKey)).ToArray(),
             Clusters = KeyboardLayout.Clusters
                 .Select(cluster => new KeyClusterCells(

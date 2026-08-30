@@ -1048,11 +1048,20 @@ bool ns2_kbm_source_parse(const char *text, ns2_kbm_source_t *out) {
 ns2_kbm_primary_t ns2_kbm_primary_from_evidence(ns2_kbm_peer_caps_t caps,
                                                 bool declares_combo,
                                                 bool strong_keyboard) {
-    // COMBO is never INFERRED from having both capabilities -- see below. It is
-    // granted only when the device has said so, through its Class of Device or
-    // through a report descriptor that is unmistakably a keyboard's.
-    if ((declares_combo || strong_keyboard) && caps.keyboard && caps.pointer)
+    // COMBO means one peer OWNS BOTH logical roles, so it is granted only to a
+    // device that states it is an integrated keyboard-with-pointing-device.
+    // Only a Classic Class of Device says that. Inferring it from a descriptor
+    // that merely contains both collections makes an ordinary keyboard squat the
+    // mouse role, and a separately paired mouse is then refused as a duplicate.
+    if (declares_combo && caps.keyboard && caps.pointer)
         return NS2_KBM_PRIMARY_COMBO;
+
+    // A descriptor that is unmistakably a keyboard's takes the KEYBOARD role and
+    // nothing else, whatever else it declares. The pointer capability remains
+    // recorded -- it is true, and diagnostics report it -- but it claims no
+    // role, so the mouse slot stays free for a real mouse.
+    if (strong_keyboard && caps.keyboard) return NS2_KBM_PRIMARY_KEYBOARD;
+
     return ns2_kbm_primary_from_caps(caps);
 }
 

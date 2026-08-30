@@ -128,16 +128,23 @@ void bthid_keyboard_set_descriptor(bthid_device_t *device, const uint8_t *desc,
     // Says WHY, because a support report that only shows the outcome cannot
     // distinguish "misclassified" from "correctly classified, wrong device".
     if (kb->has_pointer) {
-        printf("[BTHID_KEYBOARD] kb+pointer: primary_usage=0x%02X strong=%d "
-               "modifier=%d rollover=%u bitmap=%u cod_combo=%d -> %s\n",
-               kb->map.primary_application_usage,
+        // Capability, classification and role ownership are three different
+        // facts; a report that collapses them cannot tell "misclassified" from
+        // "classified right, wrong device". `primary` is what this peer IS;
+        // which logical slots it ends up holding is decided later by
+        // ns2_kbm_roles_admit() and is not this line's to claim.
+        const char *primary =
+            (declares_combo) ? "combo"
+            : (shape.strong_keyboard) ? "keyboard"
+            : "mouse (macro-safe fallback)";
+        printf("[BTHID_KEYBOARD] classify: kb=1 ptr=1 strong_kb=%d "
+               "primary_usage=0x%02X modifier=%d rollover=%u bitmap=%u "
+               "cod_combo=%d -> primary=%s\n",
                shape.strong_keyboard ? 1 : 0,
+               kb->map.primary_application_usage,
                shape.has_modifier_byte ? 1 : 0,
                shape.rollover_slots, shape.key_bitmap_bits,
-               declares_combo ? 1 : 0,
-               (declares_combo || shape.strong_keyboard)
-                   ? "COMBO"
-                   : "MOUSE (macro-safe fallback)");
+               declares_combo ? 1 : 0, primary);
     }
 
     ns2_kbm_runtime_note_classification(device->conn_index,
