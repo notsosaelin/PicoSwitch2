@@ -254,11 +254,24 @@ public sealed partial class KeyboardMousePage : Page
         suppressSelection = false;
 
         var enabled = view.Availability.Enabled;
-        ModeBox.IsEnabled = enabled;
-        ModeApply.IsEnabled = enabled;
-        RefreshButton.IsEnabled = enabled;
-        ResetProfile.IsEnabled = enabled;
-        ResetAll.IsEnabled = enabled;
+
+        // Commands are gated on the busy flag as well as on the connection.
+        //
+        // Without this, Reload stays clickable while a reload is running, so an
+        // impatient click queues a SECOND full read -- four more exchanges behind
+        // the first -- and a third, and a fourth. Observed on hardware 2026-08-29:
+        // five reloads in five seconds against an adapter that was already slow to
+        // answer. The busy flag existed; the buttons were simply not wired to it.
+        //
+        // The keys and sliders are deliberately NOT gated this way: the whole point
+        // of a section-scoped flag is that live tuning stays usable, and a slider
+        // already coalesces to its settled value.
+        var ready = enabled && !adapters.KeyboardMouseBusy.Value;
+        ModeBox.IsEnabled = ready;
+        ModeApply.IsEnabled = ready;
+        RefreshButton.IsEnabled = ready;
+        ResetProfile.IsEnabled = ready;
+        ResetAll.IsEnabled = ready;
         InvertXBox.IsEnabled = enabled;
         InvertYBox.IsEnabled = enabled;
 
