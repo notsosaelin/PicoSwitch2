@@ -57,7 +57,18 @@ public sealed class AdapterCommandException(string command, int? code, string ad
             StringComparison.OrdinalIgnoreCase);
 }
 
-public sealed class ManagementProtocolException(string message, Exception? innerException = null)
+/// <summary>The adapter answered, but with something this build cannot use.</summary>
+public class ManagementProtocolException(string message, Exception? innerException = null)
     : ManagementException(message, innerException);
 
-public sealed class ManagementPaginationException(string message) : ManagementException(message);
+/// <summary>
+/// A multi-reply read did not reconstruct a complete, consistent result.
+/// </summary>
+/// <remarks>
+/// Derives from <see cref="ManagementProtocolException"/> because that is what it
+/// is: the adapter said something unusable. They were siblings, so a handler that
+/// meant "the adapter's answer was bad" had to name both, and one that named only
+/// the base type let a pagination failure escape as an unhandled transport error.
+/// </remarks>
+public sealed class ManagementPaginationException(string message)
+    : ManagementProtocolException(message);

@@ -8,8 +8,8 @@ public sealed class ManagementWorkflowTests
     public async Task KbmPaginationAssemblesOneCompleteMapping()
     {
         var channel = new ScriptedChannel(
-            ("kbm map kb 0", """{"profile":"kb","page":0,"pageSize":1,"total":2,"bindings":[{"src":"key:04","dst":"a","custom":false}],"more":true}"""),
-            ("kbm map kb 1", """{"profile":"kb","page":1,"pageSize":1,"total":2,"bindings":[{"src":"key:05","dst":"b","custom":true}],"more":false}"""));
+            ("kbm map kb 0", """{"profile":"kb","profileId":1,"cursor":0,"total":2,"bindings":[{"src":"key:04","dst":"a","custom":false}],"next":1}"""),
+            ("kbm map kb 1", """{"profile":"kb","profileId":1,"cursor":1,"total":2,"bindings":[{"src":"key:05","dst":"b","custom":true}],"next":null}"""));
 
         var mapping = await new ManagementClient(channel).LoadKbmMappingAsync(KbmLayout.Keyboard);
         Assert.Equal(2, mapping.Bindings.Count);
@@ -21,8 +21,8 @@ public sealed class ManagementWorkflowTests
     public async Task KbmPaginationRejectsAChangingTotal()
     {
         var channel = new ScriptedChannel(
-            ("kbm map kb 0", """{"profile":"kb","page":0,"pageSize":1,"total":2,"bindings":[{"src":"key:04","dst":"a","custom":false}],"more":true}"""),
-            ("kbm map kb 1", """{"profile":"kb","page":1,"pageSize":1,"total":3,"bindings":[{"src":"key:05","dst":"b","custom":false}],"more":false}"""));
+            ("kbm map kb 0", """{"profile":"kb","profileId":1,"cursor":0,"total":2,"bindings":[{"src":"key:04","dst":"a","custom":false}],"next":1}"""),
+            ("kbm map kb 1", """{"profile":"kb","profileId":1,"cursor":1,"total":3,"bindings":[{"src":"key:05","dst":"b","custom":false}],"next":null}"""));
 
         await Assert.ThrowsAsync<ManagementPaginationException>(
             () => new ManagementClient(channel).LoadKbmMappingAsync(KbmLayout.Keyboard));

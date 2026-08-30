@@ -80,31 +80,26 @@ public sealed class ManagementClient(
     /// KB/M status, with the ingress counters merged in.
     /// </summary>
     /// <remarks>
-    /// Two commands, because the combined reply outgrew the 512-byte wireless
-    /// response slot and the bridge answered <c>response_too_large</c> — which
-    /// failed the whole Keyboard &amp; Mouse read rather than one field. The split
-    /// is a wire detail, so it is hidden here and every caller is unchanged.
+    /// Two commands, because the combined reply outgrew the wireless response
+    /// slot and the bridge answered <c>response_too_large</c> — which failed the
+    /// whole Keyboard &amp; Mouse read rather than one field. The split is a wire
+    /// detail, so it is hidden here and every caller is unchanged.
     ///
-    /// Counters are tolerated as absent: firmware that predates the split still
-    /// returns them inside <c>kbm status</c>, and the merge below leaves those
-    /// values alone.
+    /// <c>kbm counters</c> is REQUIRED, not probed. This companion targets one
+    /// firmware contract; an adapter that does not answer it is running firmware
+    /// from before the profile system, and the honest response is to say so
+    /// (<see cref="KeyboardMouseState"/> renders "firmware update required")
+    /// rather than to synthesize zeroed counters that read as a healthy adapter
+    /// receiving no input.
     /// </remarks>
     public async Task<KbmStatus> KbmStatusAsync(CancellationToken ct = default)
     {
         var status = await ExchangeAsync(ManagementCommands.KbmStatus,
                                          ManagementProtocol.KbmStatus, ct)
             .ConfigureAwait(false);
-        KbmCounters counters;
-        try
-        {
-            counters = await ExchangeAsync(ManagementCommands.KbmCounters,
+        var counters = await ExchangeAsync(ManagementCommands.KbmCounters,
                                            ManagementProtocol.KbmCounters, ct)
-                .ConfigureAwait(false);
-        }
-        catch (AdapterCommandException error) when (error.IsUnsupported())
-        {
-            return status;
-        }
+            .ConfigureAwait(false);
 
         return status with
         {
@@ -252,107 +247,120 @@ public sealed class ManagementClient(
         return status;
     }
 
-    public async Task<KbmMapping> LoadKbmMappingAsync(
+    public Task<KbmMapping> LoadKbmMappingAsync(
         KbmLayout profile,
-        CancellationToken ct = default)
-    {
-        var bindings = new List<KbmBinding>();
-        var pageNumber = 0;
-        int? expectedTotal = null;
-        while (true)
-        {
-            var command = ManagementCommands.KbmMap(profile, pageNumber);
-            var page = await ExchangeAsync(command, ManagementProtocol.KbmMapPage, ct)
-                .ConfigureAwait(false);
-            if (page.Profile != profile || page.Page != pageNumber)
-            {
-                throw new ManagementPaginationException(
-                    "Adapter returned a different KB/M profile or page");
-            }
-
-            expectedTotal ??= page.Total;
-            if (expectedTotal != page.Total || bindings.Count + page.Bindings.Count > page.Total)
-            {
-                throw new ManagementPaginationException(
-                    "Adapter changed the KB/M binding total during pagination");
-            }
-
-            bindings.AddRange(page.Bindings);
-            if (!page.More)
-            {
-                break;
-            }
-
-            if (page.Bindings.Count == 0 || ++pageNumber > MaxKbmMapPages)
-            {
-                throw new ManagementPaginationException(
-                    "Adapter returned a non-progressing KB/M binding list");
-            }
-        }
-
-        if (bindings.Count != expectedTotal)
-        {
-            throw new ManagementPaginationException("Adapter returned an incomplete KB/M binding list");
-        }
-
-        return new KbmMapping(profile, new ValueList<KbmBinding>(bindings), Loaded: true);
-    }
+        CancellationToken ct = default) =>
+        WalkKbmMappingAsync(
+            profile,
+            cursor => ManagementCommands.KbmMap(profile, cursor),
+            $"the realized {profile.Wire()} mapping",
+            ct);
 
     /// <summary>
-    /// One STORED profile's mapping, as opposed to the layout's realized one.
-    ///
-    /// Shares the pagination guards above by construction: the same page-shape,
-    /// total-stability and progress checks apply, because the same class of
-    /// adapter bug would be just as invisible here.
+    /// Walks a mapping to completion under the cursor contract, and reports what
+    /// is actually wrong when it cannot.
     /// </summary>
-    public async Task<KbmMapping> LoadKbmProfileMappingAsync(
-        KbmProfileInfo profile,
-        CancellationToken ct = default)
+    /// <remarks>
+    /// The failure this replaces said only "incomplete", which was true and
+    /// useless: it named neither the layout, nor how far the walk got, nor which
+    /// items never arrived. That cost a full diagnostic round trip on hardware to
+    /// establish something the client already knew. The message now carries the
+    /// cursor trail and the shortfall, because the next protocol defect in here
+    /// should be identifiable from the banner alone.
+    /// </remarks>
+    private async Task<KbmMapping> WalkKbmMappingAsync(
+        KbmLayout layout,
+        Func<int, string> command,
+        string what,
+        CancellationToken ct)
     {
         var bindings = new List<KbmBinding>();
-        var pageNumber = 0;
+        var visited = new List<int>();
+        var cursor = 0;
         int? expectedTotal = null;
+
         while (true)
         {
-            var command = ManagementCommands.KbmProfileMap(profile.Id, pageNumber);
-            var page = await ExchangeAsync(command, ManagementProtocol.KbmMapPage, ct)
+            var page = await ExchangeAsync(command(cursor),
+                                           ManagementProtocol.KbmMapPage, ct)
                 .ConfigureAwait(false);
-            if (page.Page != pageNumber)
+            visited.Add(cursor);
+
+            // The reply must be about the mapping that was asked for. Without
+            // this, the keyboard-and-mouse layout's bindings could be assembled
+            // under the keyboard layout's name and a later bind would edit the
+            // wrong mapping.
+            if (page.Profile != layout)
             {
                 throw new ManagementPaginationException(
-                    "Adapter returned a different KB/M page");
+                    $"Adapter answered for layout {page.Profile.Wire()} when {what} was requested");
+            }
+
+            if (page.Cursor != cursor)
+            {
+                throw new ManagementPaginationException(
+                    $"Adapter answered cursor {page.Cursor} for {what} when {cursor} was requested");
             }
 
             expectedTotal ??= page.Total;
-            if (expectedTotal != page.Total ||
-                bindings.Count + page.Bindings.Count > page.Total)
+            if (expectedTotal != page.Total)
             {
                 throw new ManagementPaginationException(
-                    "Adapter changed the KB/M binding total during pagination");
+                    $"Adapter changed the item count of {what} mid-walk: {expectedTotal} then {page.Total}");
+            }
+
+            if (bindings.Count != cursor)
+            {
+                // The cursor is a logical index, so the accumulator length and
+                // the cursor must stay equal. They diverge only if a reply was
+                // parsed into fewer rows than the adapter counted — which is the
+                // exact shape of the defect that shipped, seen from this side.
+                throw new ManagementPaginationException(
+                    $"Reconstruction of {what} desynchronized: {bindings.Count} bindings held at cursor {cursor}");
             }
 
             bindings.AddRange(page.Bindings);
-            if (!page.More)
+
+            if (page.Next is not { } next)
             {
                 break;
             }
 
-            if (page.Bindings.Count == 0 || ++pageNumber > MaxKbmMapPages)
+            if (next <= cursor || visited.Count > KbmLimits.MaxMappingItems)
             {
                 throw new ManagementPaginationException(
-                    "Adapter returned a non-progressing KB/M binding list");
+                    $"Adapter did not advance while reading {what}: cursors {string.Join("->", visited)}, next {next}");
             }
+
+            cursor = next;
         }
 
         if (bindings.Count != expectedTotal)
         {
             throw new ManagementPaginationException(
-                "Adapter returned an incomplete KB/M binding list");
+                $"Adapter returned an incomplete KB/M binding list for {what}: " +
+                $"{bindings.Count} of {expectedTotal} bindings after {visited.Count} replies " +
+                $"(cursors {string.Join("->", visited)})");
         }
 
-        return new KbmMapping(profile.Layout, new ValueList<KbmBinding>(bindings),
+        return new KbmMapping(layout, new ValueList<KbmBinding>(bindings),
                               Loaded: true);
     }
+
+    /// <summary>
+    /// One STORED profile's mapping, as opposed to the layout's realized one.
+    ///
+    /// Shares the walk above by construction rather than by resemblance: the two
+    /// had duplicate loops, and the pagination defect was present in both.
+    /// </summary>
+    public Task<KbmMapping> LoadKbmProfileMappingAsync(
+        KbmProfileInfo profile,
+        CancellationToken ct = default) =>
+        WalkKbmMappingAsync(
+            profile.Layout,
+            cursor => ManagementCommands.KbmProfileMap(profile.Id, cursor),
+            $"stored profile {profile.Id} ({profile.Name})",
+            ct);
 
     public async Task<KbmStatus> SetKbmModeAsync(KbmMode mode, CancellationToken ct = default)
     {
@@ -375,50 +383,55 @@ public sealed class ManagementClient(
     /// The profile library and both realized mappings.
     /// </summary>
     /// <remarks>
-    /// The library is paged: six rows do not fit one 512-byte reply, and
-    /// formatting them into the adapter's 4096-byte local buffer is exactly how
-    /// <c>kbm status</c> came to be refused over Bluetooth. Guarded the same way
-    /// as the mapping pages — a non-progressing or total-shifting adapter fails
-    /// loudly rather than looping.
+    /// The library is walked by cursor for the same reason a mapping is: six
+    /// rows do not fit one reply, and a fixed page stride silently loses
+    /// whatever a byte budget cut short.
+    ///
+    /// A row this build cannot interpret is skipped by the parser but still
+    /// occupies a logical slot, so the walk follows the adapter's <c>next</c>
+    /// rather than counting accepted rows. Counting locally would turn one
+    /// unreadable profile into an infinite loop or a permanent gap.
     /// </remarks>
     public async Task<KbmProfiles> KbmProfilesAsync(CancellationToken ct = default)
     {
         var profiles = new List<KbmProfileInfo>();
-        var pageNumber = 0;
+        var visited = new List<int>();
+        var cursor = 0;
         int? expectedTotal = null;
         var max = 0;
         while (true)
         {
-            var command = ManagementCommands.KbmProfilePage(pageNumber);
-            var page = await ExchangeAsync(command,
+            var page = await ExchangeAsync(ManagementCommands.KbmProfilePage(cursor),
                                            ManagementProtocol.KbmProfileList, ct)
                 .ConfigureAwait(false);
-            if (page.Page != pageNumber)
+            visited.Add(cursor);
+            if (page.Cursor != cursor)
             {
                 throw new ManagementPaginationException(
-                    "Adapter returned a different KB/M profile page");
+                    $"Adapter answered profile cursor {page.Cursor} when {cursor} was requested");
             }
 
             expectedTotal ??= page.Total;
-            if (expectedTotal != page.Total ||
-                profiles.Count + page.Profiles.Count > page.Total)
+            if (expectedTotal != page.Total)
             {
                 throw new ManagementPaginationException(
-                    "Adapter changed the KB/M profile total during pagination");
+                    $"Adapter changed the profile count mid-walk: {expectedTotal} then {page.Total}");
             }
 
             max = page.Max;
             profiles.AddRange(page.Profiles);
-            if (!page.More)
+            if (page.Next is not { } next)
             {
                 break;
             }
 
-            if (page.Profiles.Count == 0 || ++pageNumber > MaxKbmMapPages)
+            if (next <= cursor || visited.Count > KbmLimits.MaxProfiles + 1)
             {
                 throw new ManagementPaginationException(
-                    "Adapter returned a non-progressing KB/M profile list");
+                    $"Adapter did not advance while reading the profile library: cursors {string.Join("->", visited)}, next {next}");
             }
+
+            cursor = next;
         }
 
         var active = await ExchangeAsync(ManagementCommands.KbmActive,

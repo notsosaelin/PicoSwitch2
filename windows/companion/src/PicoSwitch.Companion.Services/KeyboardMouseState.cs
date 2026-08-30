@@ -17,6 +17,45 @@ namespace PicoSwitch.Companion.Services;
 /// profile with genuinely zero bindings is indistinguishable from one that was
 /// never fetched, and only one of those should send the user to a mapping screen.
 /// </summary>
+/// <summary>
+/// The Keyboard and Mouse page's top-level state. Exactly one is true at a time.
+/// </summary>
+/// <remarks>
+/// This is explicit because the implicit version shipped a bad failure. The page
+/// previously inferred readiness from a <c>Loaded</c> flag and quietly degraded
+/// to a pre-profile editor whenever the profile contract did not answer. When a
+/// protocol defect made the read fail, the user was left looking at the old
+/// half-working mapping page with no profile controls and no statement that
+/// anything had gone wrong — which is indistinguishable from the feature simply
+/// not having been built.
+///
+/// There is no legacy fallback. This companion targets ONE firmware contract.
+/// </remarks>
+public enum KeyboardMouseReadiness
+{
+    /// <summary>Never read this session.</summary>
+    NotRead,
+
+    /// <summary>Read in progress.</summary>
+    Loading,
+
+    /// <summary>The current contract loaded. The only state with a usable page.</summary>
+    Ready,
+
+    /// <summary>
+    /// The adapter answered, but does not implement a command the current
+    /// contract requires. Its firmware predates the profile system.
+    /// </summary>
+    FirmwareUpdateRequired,
+
+    /// <summary>
+    /// The adapter implements the contract but returned data this build could
+    /// not use — malformed, incomplete, or inconsistent. A defect, not a version
+    /// gap, and <see cref="KeyboardMouseState.Fault"/> says which.
+    /// </summary>
+    Error,
+}
+
 public sealed record KeyboardMouseState
 {
     public KbmStatus Status { get; init; } = new();
@@ -26,21 +65,32 @@ public sealed record KeyboardMouseState
     public ValueList<KbmMapping> Mappings { get; init; } = ValueList<KbmMapping>.Empty;
 
     /// <summary>
-    /// The adapter's named profiles. Empty on firmware that predates them, which
-    /// is not an error: the page falls back to one mapping per layout, exactly
-    /// as it behaved before.
+    /// The adapter's named profiles. Required by the current contract: an
+    /// adapter that cannot list them is reported as needing a firmware update,
+    /// never silently treated as having none.
     /// </summary>
     public KbmProfiles Profiles { get; init; } = KbmProfiles.Empty;
 
-    /// <summary>Whether status has been read at all this session.</summary>
-    public bool Loaded { get; init; }
+    public KeyboardMouseReadiness Readiness { get; init; } =
+        KeyboardMouseReadiness.NotRead;
+
+    /// <summary>
+    /// Why the page is not Ready, in developer terms. Shown verbatim in the
+    /// diagnostics log and summarized on the page; the generic banner it
+    /// replaces cost a hardware round trip to turn into a diagnosis.
+    /// </summary>
+    public string Fault { get; init; } = string.Empty;
+
+    /// <summary>Whether the current contract loaded completely.</summary>
+    public bool Loaded => Readiness == KeyboardMouseReadiness.Ready;
 
     /// <summary>
     /// Whether the adapter supports the KB/M family at all.
     ///
-    /// Separate from <see cref="Loaded"/>: Unknown means the probe did not answer,
-    /// Unsupported means the firmware said no. Only the second may hide the
-    /// feature.
+    /// Distinct from <see cref="Readiness"/>: this drives whether the feature is
+    /// offered in navigation, while Readiness drives what the page shows once
+    /// opened. Unknown means the probe did not answer; Unsupported means the
+    /// firmware said no.
     /// </summary>
     public CapabilityState Capability { get; init; } = CapabilityState.Unknown;
 

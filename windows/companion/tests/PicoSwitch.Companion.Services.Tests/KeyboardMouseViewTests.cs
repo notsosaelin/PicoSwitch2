@@ -29,7 +29,7 @@ public sealed class KeyboardMouseViewTests
                 new ValueList<KbmBinding>(bindings?.ToList() ?? []),
                 Loaded: true),
         ]),
-        Loaded = true,
+        Readiness = KeyboardMouseReadiness.Ready,
         Capability = capability,
     };
 
@@ -49,19 +49,40 @@ public sealed class KeyboardMouseViewTests
     /* --------------------------------------------------- capability and gating */
 
     [Fact]
-    public void AnUnsupportedAdapterHidesTheFeatureAndSaysTheRestStillWorks()
+    public void AnAdapterMissingTheContractAsksForAnUpdateInsteadOfHidingOrDegrading()
     {
-        var view = Project(State(capability: CapabilityState.Unsupported));
+        // The page is always REACHABLE. What changes is what it shows: an
+        // adapter whose firmware predates the profile system gets a statement
+        // that it needs updating, not a hidden feature and not a pre-profile
+        // editor. Both of those made a version gap look like a missing feature.
+        var view = Project(State(capability: CapabilityState.Unsupported) with
+        {
+            Readiness = KeyboardMouseReadiness.FirmwareUpdateRequired,
+            Fault = "The adapter does not implement 'kbm profiles 0'.",
+        });
 
-        Assert.False(view.Visible);
-        Assert.Contains("Everything else in this app still works", view.HiddenReason);
+        Assert.True(view.Visible);
+        Assert.False(view.ShowEditor);
+        Assert.Equal("Firmware update required", view.NotReadyTitle);
+        Assert.Contains("kbm profiles 0", view.NotReadyDetail);
     }
 
     [Fact]
-    public void AnUnknownCapabilityKeepsThePage()
+    public void MalformedDataIsDistinguishedFromAnOutOfDateAdapter()
     {
-        // The rule that stops a probe timeout from removing a working feature.
-        Assert.True(Project(State(capability: CapabilityState.Unknown)).Visible);
+        // Current firmware answering badly is a defect to chase; old firmware is
+        // a version to upgrade past. Collapsing them sends the user to the wrong
+        // remedy, and cost a hardware round trip to tell apart.
+        var view = Project(State() with
+        {
+            Readiness = KeyboardMouseReadiness.Error,
+            Fault = "Adapter returned an incomplete KB/M binding list for the realized kb mapping: 25 of 26 bindings",
+        });
+
+        Assert.True(view.Visible);
+        Assert.False(view.ShowEditor);
+        Assert.Equal("The adapter's reply could not be used", view.NotReadyTitle);
+        Assert.Contains("25 of 26", view.NotReadyDetail);
     }
 
     [Fact]
@@ -395,7 +416,10 @@ public sealed class KeyboardMouseViewTests
         // Zeroes that were never read look exactly like zeroes that were, and
         // "no reports arrived" is the conclusion this display exists to support.
         var view = KeyboardMouse.Project(
-            State(profile: KbmLayout.Keyboard) with { Loaded = false },
+            State(profile: KbmLayout.Keyboard) with
+            {
+                Readiness = KeyboardMouseReadiness.NotRead,
+            },
             KbmLayout.Keyboard,
             connected: true);
 
@@ -452,14 +476,19 @@ public sealed class KeyboardMouseViewTests
     }
 
     [Fact]
-    public void FirmwareWithoutAProfileLibraryDegradesRatherThanBreaking()
+    public void AReadyPagePreselectsTheProfileTheConsoleIsRunning()
     {
-        // Not a degraded state to apologise for: that adapter has exactly one
-        // mapping per layout and behaves as this app always did. The profile
-        // controls are simply not offered.
-        var view = KeyboardMouse.Project(State(), KbmLayout.Keyboard, connected: true);
-        Assert.False(view.ProfilesSupported);
-        Assert.False(view.CanApply);
+        // With no draft open the selector must still name something: the profile
+        // the console is actually using. A null selection left the picker blank
+        // on every fresh load and disabled Set Active, which is indistinguishable
+        // from the profile workflow not being there.
+        var library = Library();
+        var view = KeyboardMouse.Project(State() with { Profiles = library },
+                                         KbmLayout.Keyboard, connected: true);
+
+        Assert.True(view.ProfilesSupported);
+        Assert.NotNull(view.SelectedProfile);
+        Assert.Equal(view.ActiveMapping?.SourceId, view.SelectedProfile!.Id);
     }
 
     [Fact]

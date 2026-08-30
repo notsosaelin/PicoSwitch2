@@ -715,6 +715,24 @@ public sealed record KbmCounters(
 /// <summary>
 /// Reserved profile identities. Custom profiles are numbered from 2.
 /// </summary>
+/// <summary>
+/// Bounds the firmware enforces, restated once so the client can reject a
+/// nonsensical request before spending a round trip and can bound its own
+/// pagination loops.
+/// </summary>
+/// <remarks>
+/// These mirror <c>NS2_KBM_MAX_EFFECTIVE</c> and <c>NS2_KBM_MAX_PROFILES</c> in
+/// include/ns2_kbm.h. They are not a second authority: the adapter still refuses
+/// anything out of range, and the reply's own <c>total</c> is what the client
+/// reconstructs against. They exist so a runaway pagination loop terminates.
+/// </remarks>
+public static class KbmLimits
+{
+    public const int MaxMappingItems = 96;
+
+    public const int MaxProfiles = 6;
+}
+
 public static class KbmProfileIds
 {
     public const int None = 0;
@@ -1014,13 +1032,25 @@ public sealed record KbmMapping(
     public int CustomCount => Bindings.Count(binding => binding.Custom);
 }
 
+/// <summary>
+/// One slice of a mapping, starting at logical item <paramref name="Cursor"/>.
+/// </summary>
+/// <remarks>
+/// CURSOR, NOT PAGE INDEX. Rows are variable width, so the number that fits one
+/// 511-byte reply is not a constant. The firmware previously answered a fixed
+/// <c>page * PAGE_SIZE</c> offset while emitting however many rows the byte
+/// budget allowed, which silently dropped the difference on every page and
+/// surfaced only as an incomplete reconstruction. <see cref="Next"/> is the
+/// index the adapter actually reached, and it is null exactly when the walk is
+/// complete.
+/// </remarks>
 public sealed record KbmMapPage(
     KbmLayout Profile,
-    int Page,
-    int PageSize,
+    int ProfileId,
+    int Cursor,
     int Total,
     ValueList<KbmBinding> Bindings,
-    bool More);
+    int? Next);
 
 public sealed record KbmMouseConfig(
     int SensitivityX = 0,

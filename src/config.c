@@ -29,9 +29,10 @@
 #include "usb.h"  // g_usb_personality (personality query command)
 #include "ns2_wake.h"  // ns2_wake_manual_request (wake command)
 #include "ns2_active_input.h" // source registry / explicit active input
-#include "ns2_kbm.h"          // Bluetooth keyboard / KB+M mapping model
-#include "ns2_kbm_runtime.h"  // live KB/M configuration + status
-#include "ns2_kbm_status.h"   // shared KB/M status JSON formatter
+#include "ns2_kbm.h"           // Bluetooth keyboard / KB+M mapping model
+#include "ns2_kbm_commands.h"  // shared, host-tested KB/M read formatters
+#include "ns2_kbm_runtime.h"   // live KB/M configuration + status
+#include "ns2_kbm_status.h"    // shared KB/M status JSON formatter
 #include "bt/btstack/btstack_host.h"  // bonds list/remove (management)
 #ifdef NS2_PRO
 #include "ns2_nfc_mirror.h"  // amiibo reader (controller-as-reader backup)
@@ -981,10 +982,11 @@ static void cmd_input_active(const char *arg) {
 // constants, so a UI never has to know a report layout or reconstruct defaults
 // from source.
 //
-// Responses stay inside the 512-byte wireless slot: the profile listing is
-// paged, and every page reports its own bounds.
-#define KBM_MAP_PAGE_SIZE 8u
-
+// Responses stay inside the wireless slot. The READ formatters live in
+// src/ns2_kbm_commands.c, not here: this file cannot be compiled on the host, so
+// pagination written here was only ever checked by hand-written client fixtures
+// -- and a page-index bug shipped that way. See that file for the cursor
+// contract; this one only dispatches.
 static void cmd_kbm_status(void) {
     ns2_kbm_runtime_status_t status;
     ns2_kbm_runtime_status(&status);
@@ -997,48 +999,23 @@ static void cmd_kbm_status(void) {
 
 // Render one mapping, whether it is a layout's realized snapshot or a stored
 // profile's content. `profile_id` is NS2_KBM_PROFILE_ID_NONE for the realized
-// one, which is what an old client asking `kbm map kb` gets.
+// one, which is what `kbm map kb` reads.
+//
+// Formatted into a buffer sized to the WIRE limit, not to `out`. `out` is 4096
+// because the UART console can take that, and formatting a management reply
+// into it is exactly how `kbm status` came to be refused over Bluetooth. A reply
+// that will not fit is therefore impossible to produce here by construction.
 static void cmd_kbm_map(const ns2_kbm_content_t *content,
                         ns2_kbm_layout_t layout, uint8_t profile_id,
-                        unsigned page) {
-    static ns2_kbm_effective_t effective[NS2_KBM_MAX_EFFECTIVE];
-    uint16_t total = ns2_kbm_effective_bindings(content, layout, effective,
-                                                NS2_KBM_MAX_EFFECTIVE);
-    uint16_t first = (uint16_t)(page * KBM_MAP_PAGE_SIZE);
-    // `profile` stays the LAYOUT name so every existing client keeps parsing
-    // this reply unchanged; `profileId` is the new, unambiguous identity.
-    int j = snprintf(out, sizeof(out),
-                     "{\"profile\":\"%s\",\"profileId\":%u,\"page\":%u,"
-                     "\"pageSize\":%u,\"total\":%u,\"bindings\":[",
-                     ns2_kbm_layout_name(layout), profile_id, page,
-                     (unsigned)KBM_MAP_PAGE_SIZE, (unsigned)total);
-    // Budgeted against the WIRE slot, not against `out`.
-    //
-    // `out` is 4096 because the UART console can take that; the wireless bridge
-    // cannot, and formatting to the local buffer is exactly how `kbm status`
-    // came to be refused over Bluetooth with `response_too_large`. `more` is
-    // computed from what was actually emitted, so a short page still paginates
-    // correctly instead of dropping rows.
-    const int budget = (int)NS2_KBM_REPLY_MAX_BYTES;
-    const int suffix_reserve = 24;
-    uint16_t emitted = 0;
-    for (uint16_t i = first;
-         i < total && emitted < KBM_MAP_PAGE_SIZE; ++i, ++emitted) {
-        char source[12];
-        ns2_kbm_source_format(effective[i].source, source, sizeof(source));
-        int room = budget - suffix_reserve - j;
-        if (room <= 0) break;
-        int written = snprintf(out + j, (size_t)room,
-                               "%s{\"src\":\"%s\",\"dst\":\"%s\",\"custom\":%s}",
-                               emitted ? "," : "", source,
-                               ns2_kbm_destination_name(effective[i].destination),
-                               effective[i].overridden ? "true" : "false");
-        if (written < 0 || written >= room) break;
-        j += written;
+                        unsigned cursor) {
+    char wire[NS2_KBM_REPLY_MAX_BYTES + 1u];
+    int len = ns2_kbm_format_map(content, layout, profile_id, (uint16_t)cursor,
+                                 wire, sizeof(wire));
+    if (len < 0) {
+        reply("{\"error\":\"mapping does not fit a reply\"}");
+        return;
     }
-    snprintf(out + j, sizeof(out) - (size_t)j, "],\"more\":%s}",
-             (uint16_t)(first + emitted) < total ? "true" : "false");
-    reply(out);
+    reply(wire);
 }
 
 // Both of these delegate to ns2_kbm_status.c so this surface and the UART
@@ -1272,58 +1249,17 @@ static void cmd_kbm_draft(const char *arg) {
     reply("{\"error\":\"usage: kbm draft begin|bind|mouse|commit|abort\"}");
 }
 
-// Three profiles per page.
-//
-// A row is at most ~95 bytes (19-character name, ten-digit fingerprint) and the
-// wire slot is 512, so three rows plus the wrapper always fit with room to
-// spare. Deliberately budgeted against the WIRE limit rather than the 4096-byte
-// `out` buffer: `out` is what the UART console can take, and formatting to that
-// is exactly how `kbm status` came to be refused over Bluetooth.
-#define KBM_PROFILE_PAGE_SIZE 3u
-
-static void cmd_kbm_profiles(unsigned page) {
+static void cmd_kbm_profiles(unsigned cursor) {
     ns2_kbm_config_t snapshot;
     ns2_kbm_runtime_config_snapshot(&snapshot);
-
-    // Reserve the suffix BEFORE appending each row, against the wire budget.
-    // The peers inventory bug was a budgeting mistake, not a size one: it tested
-    // the reserve against the length left by the PREVIOUS row and then appended
-    // against full capacity, so the reserve reserved nothing.
-    const int budget = (int)NS2_KBM_REPLY_MAX_BYTES;
-    const int suffix_reserve = 40;
-
-    uint8_t live[NS2_KBM_MAX_PROFILES];
-    uint8_t count = 0;
-    for (uint8_t i = 0; i < NS2_KBM_MAX_PROFILES; ++i)
-        if (snapshot.profiles[i].used) live[count++] = i;
-
-    uint8_t first_row = (uint8_t)(page * KBM_PROFILE_PAGE_SIZE);
-    int j = snprintf(out, sizeof(out), "{\"profiles\":[");
-    bool first = true;
-    uint8_t emitted = 0;
-    for (uint8_t n = first_row;
-         n < count && emitted < KBM_PROFILE_PAGE_SIZE; ++n, ++emitted) {
-        const ns2_kbm_profile_slot_t *slot = &snapshot.profiles[live[n]];
-        ns2_kbm_layout_t layout = (ns2_kbm_layout_t)slot->layout;
-        int room = budget - suffix_reserve - j;
-        if (room <= 0) break;
-        int written = snprintf(
-            out + j, (size_t)room,
-            "%s{\"id\":%u,\"layout\":\"%s\",\"name\":\"%.19s\",\"revision\":%u,"
-            "\"overrides\":%u,\"fingerprint\":%lu}",
-            first ? "" : ",", slot->profile_id, ns2_kbm_layout_name(layout),
-            slot->name, slot->revision, slot->content.overrides.count,
-            (unsigned long)ns2_kbm_content_fingerprint(&slot->content, layout));
-        if (written < 0 || written >= room) break;
-        j += written;
-        first = false;
+    char wire[NS2_KBM_REPLY_MAX_BYTES + 1u];
+    int len = ns2_kbm_format_profiles(&snapshot, (uint16_t)cursor, wire,
+                                      sizeof(wire));
+    if (len < 0) {
+        reply("{\"error\":\"profile list does not fit a reply\"}");
+        return;
     }
-    bool more = (uint16_t)(first_row + emitted) < count;
-    snprintf(out + j, sizeof(out) - (size_t)j,
-             "],\"page\":%u,\"total\":%u,\"max\":%u,\"more\":%s}", page,
-             (unsigned)count, (unsigned)NS2_KBM_MAX_PROFILES,
-             more ? "true" : "false");
-    reply(out);
+    reply(wire);
 }
 
 // The realized mapping of each layout, and whether it still matches the profile
@@ -1331,22 +1267,13 @@ static void cmd_kbm_profiles(unsigned page) {
 static void cmd_kbm_active(void) {
     ns2_kbm_config_t snapshot;
     ns2_kbm_runtime_config_snapshot(&snapshot);
-    int j = snprintf(out, sizeof(out), "{\"active\":[");
-    for (uint8_t i = 0; i < NS2_KBM_LAYOUT_COUNT; ++i) {
-        ns2_kbm_layout_t layout = (ns2_kbm_layout_t)i;
-        const ns2_kbm_active_t *active = &snapshot.active[i];
-        j += snprintf(out + j, sizeof(out) - (size_t)j,
-                      "%s{\"layout\":\"%s\",\"sourceId\":%u,\"revision\":%u,"
-                      "\"fingerprint\":%lu,\"matchesSaved\":%s}",
-                      i ? "," : "", ns2_kbm_layout_name(layout),
-                      active->source_id, active->source_revision,
-                      (unsigned long)ns2_kbm_content_fingerprint(
-                          &active->content, layout),
-                      ns2_kbm_active_matches_source(&snapshot, layout)
-                          ? "true" : "false");
+    char wire[NS2_KBM_REPLY_MAX_BYTES + 1u];
+    int len = ns2_kbm_format_active(&snapshot, wire, sizeof(wire));
+    if (len < 0) {
+        reply("{\"error\":\"active mappings do not fit a reply\"}");
+        return;
     }
-    snprintf(out + j, sizeof(out) - (size_t)j, "]}");
-    reply(out);
+    reply(wire);
 }
 
 static void cmd_kbm_profile(const char *arg) {
@@ -1499,18 +1426,23 @@ static void cmd_kbm(char *arg) {
         return;
     }
 
+    // `cursor` is the index of the first item to return, echoed back with a
+    // `next` telling the client where to resume. NOT a page index: rows are
+    // variable width, so the number that fits a reply is not a constant, and a
+    // fixed stride silently drops whatever did not fit. See ns2_kbm_commands.h.
     if (strcmp(arg, "profiles") == 0) {
         cmd_kbm_profiles(0);
         return;
     }
 
     if (strncmp(arg, "profiles ", 9) == 0) {
-        unsigned page = 0;
-        if (sscanf(arg + 9, "%u", &page) != 1 || page > 32u) {
-            reply("{\"error\":\"usage: kbm profiles [page]\"}");
+        unsigned cursor = 0;
+        if (sscanf(arg + 9, "%u", &cursor) != 1 ||
+            cursor > NS2_KBM_MAX_PROFILES) {
+            reply("{\"error\":\"usage: kbm profiles [cursor]\"}");
             return;
         }
-        cmd_kbm_profiles(page);
+        cmd_kbm_profiles(cursor);
         return;
     }
 
@@ -1544,29 +1476,29 @@ static void cmd_kbm(char *arg) {
 
     if (strncmp(arg, "map ", 4) == 0) {
         char name[8] = {0};
-        unsigned page = 0;
-        int consumed = 0;
-        int fields = sscanf(arg + 4, "%7s %u %n", name, &page, &consumed);
+        unsigned cursor = 0;
         ns2_kbm_layout_t layout;
-        if (fields < 1 || !kbm_layout_arg(name, &layout) || page > 32u) {
-            reply("{\"error\":\"usage: kbm map <kb|kbm> [page]\"}");
+        if (sscanf(arg + 4, "%7s %u", name, &cursor) < 1 ||
+            !kbm_layout_arg(name, &layout) || cursor > NS2_KBM_MAX_EFFECTIVE) {
+            reply("{\"error\":\"usage: kbm map <kb|kbm> [cursor]\"}");
             return;
         }
         ns2_kbm_config_t snapshot;
         ns2_kbm_runtime_config_snapshot(&snapshot);
         cmd_kbm_map(&snapshot.active[layout].content, layout,
-                    (uint8_t)NS2_KBM_PROFILE_ID_NONE, page);
+                    (uint8_t)NS2_KBM_PROFILE_ID_NONE, cursor);
         return;
     }
 
     // Read one STORED profile's mapping, as opposed to the realized one.
     if (strncmp(arg, "pmap ", 5) == 0) {
         char target[12] = {0};
-        unsigned page = 0;
+        unsigned cursor = 0;
         uint8_t id = 0;
-        if (sscanf(arg + 5, "%11s %u", target, &page) < 1 ||
-            !kbm_profile_arg(target, &id) || page > 32u) {
-            reply("{\"error\":\"usage: kbm pmap <id> [page]\"}");
+        if (sscanf(arg + 5, "%11s %u", target, &cursor) < 1 ||
+            !kbm_profile_arg(target, &id) ||
+            cursor > NS2_KBM_MAX_EFFECTIVE) {
+            reply("{\"error\":\"usage: kbm pmap <id> [cursor]\"}");
             return;
         }
         ns2_kbm_config_t snapshot;
@@ -1577,7 +1509,7 @@ static void cmd_kbm(char *arg) {
             return;
         }
         cmd_kbm_map(&slot->content, (ns2_kbm_layout_t)slot->layout,
-                    slot->profile_id, page);
+                    slot->profile_id, cursor);
         return;
     }
 

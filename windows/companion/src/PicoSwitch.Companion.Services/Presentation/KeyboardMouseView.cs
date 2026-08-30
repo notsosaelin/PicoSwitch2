@@ -110,14 +110,31 @@ public sealed record KeyboardMouseView
     /// <summary>
     /// Every profile of the layout being edited, built-in Default first.
     ///
-    /// Empty on firmware without a profile library, which is not a degraded
-    /// state: that adapter has exactly one mapping per layout and the profile
-    /// controls are simply not shown.
+    /// Never empty when <see cref="Readiness"/> is Ready: Default always exists,
+    /// and an adapter that cannot list profiles is not Ready.
     /// </summary>
     public required IReadOnlyList<KbmProfileInfo> Profiles { get; init; }
 
-    /// <summary>Whether this adapter has a profile library at all.</summary>
-    public required bool ProfilesSupported { get; init; }
+    /// <summary>
+    /// The page's top-level state. The profile workflow is reachable in exactly
+    /// one of them.
+    /// </summary>
+    public required KeyboardMouseReadiness Readiness { get; init; }
+
+    /// <summary>What to say when <see cref="Readiness"/> is not Ready.</summary>
+    public required string NotReadyTitle { get; init; }
+
+    public required string NotReadyDetail { get; init; }
+
+    /// <summary>
+    /// True only in the Ready state. There is no partial page: the profile
+    /// workflow IS the product, and showing a mapping grid without it is the
+    /// legacy fallback this replaced.
+    /// </summary>
+    public bool ShowEditor => Readiness == KeyboardMouseReadiness.Ready;
+
+    /// <summary>Kept for the profile controls' own enablement rules.</summary>
+    public bool ProfilesSupported => Readiness == KeyboardMouseReadiness.Ready;
 
     /// <summary>Which profile the editor currently has open. Never null when supported.</summary>
     public KbmProfileInfo? SelectedProfile { get; init; }
@@ -330,25 +347,48 @@ public static class KeyboardMouse
             .ToDictionary(binding => binding.Source.Code);
 
         var profileRows = state.Profiles.For(profile);
+        // With a draft open, the selection is whatever the draft is editing.
+        // WITHOUT one, it is the profile the console is actually running — not
+        // nothing. A null selection left the page's profile picker blank on every
+        // fresh load and disabled Set Active, which made the profile workflow
+        // look absent rather than idle.
+        var active = state.Profiles.ActiveFor(profile);
         var selected = draft is not null
             ? profileRows.FirstOrDefault(row => row.Id == draft.ProfileId)
-            : null;
+            : profileRows.FirstOrDefault(row => row.Id == active?.SourceId)
+              ?? profileRows.FirstOrDefault();
         var draftState = draft is null
             ? (connected ? KbmDraftState.Clean : KbmDraftState.Disconnected)
             : draft.StateAgainst(state.Profiles, connected);
 
         var drawnKeys = KeyboardLayout.AllKeys.Select(cap => cap.Usage).ToHashSet();
 
-        // Supported unless the adapter said otherwise. Unknown keeps the page.
-        var supported = state.Capability != CapabilityState.Unsupported;
+        // The page is always REACHABLE; what it shows depends on readiness. It
+        // is never replaced by a pre-profile editor, and it never silently shows
+        // a mapping grid it could not fully load.
+        var (title, detail) = state.Readiness switch
+        {
+            KeyboardMouseReadiness.FirmwareUpdateRequired =>
+                ("Firmware update required",
+                 "This adapter's firmware predates the keyboard and mouse profile " +
+                 "system, so this page cannot configure it. Update the adapter, " +
+                 "then reopen this page. " + state.Fault),
+            KeyboardMouseReadiness.Error =>
+                ("The adapter's reply could not be used",
+                 "The adapter implements this feature but returned data this app " +
+                 "could not read completely. " + state.Fault),
+            KeyboardMouseReadiness.Loading => ("Loading…", string.Empty),
+            KeyboardMouseReadiness.Ready => (string.Empty, string.Empty),
+            _ => ("Not read yet", "Reload to read this adapter's keyboard and mouse settings."),
+        };
 
         return new KeyboardMouseView
         {
-            Visible = supported,
-            HiddenReason = supported
-                ? null
-                : "This adapter's firmware does not support keyboard and mouse input. " +
-                  "Everything else in this app still works.",
+            Readiness = state.Readiness,
+            NotReadyTitle = title,
+            NotReadyDetail = detail,
+            Visible = true,
+            HiddenReason = null,
             Availability = !connected
                 ? SectionAvailability.Disabled(AdapterDashboard.NotConnected)
                 : SectionAvailability.Available,
@@ -361,7 +401,6 @@ public static class KeyboardMouse
             Profile = profile,
             ActiveLayout = state.Status.Profile,
             Profiles = profileRows,
-            ProfilesSupported = state.Profiles.Supported,
             SelectedProfile = selected,
             ActiveMapping = state.Profiles.ActiveFor(profile),
             DraftState = draftState,
