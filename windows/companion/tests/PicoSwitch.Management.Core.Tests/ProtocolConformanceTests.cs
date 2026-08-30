@@ -55,11 +55,11 @@ public sealed class ProtocolConformanceTests
             ["peerPage"] = ManagementCommands.PeersPage(2),
             ["peerForget"] = ManagementCommands.PeersForget("p_5E6F7A8B"),
             ["kbmDefault"] = ManagementCommands.KbmBind(
-                KbmProfile.KeyboardMouse,
+                KbmLayout.KeyboardMouse,
                 new KbmSource(KbmSourceKind.Key, 0x1A),
                 null),
             ["kbmNone"] = ManagementCommands.KbmBind(
-                KbmProfile.KeyboardMouse,
+                KbmLayout.KeyboardMouse,
                 new KbmSource(KbmSourceKind.Key, 0x1A),
                 KbmDestination.None),
             ["mouseSensitivityX"] = ManagementCommands.KbmMouse(KbmMouseField.SensitivityX, 512),
@@ -187,6 +187,57 @@ public sealed class ProtocolConformanceTests
     }
 
     [Fact]
+    public void KbmProfilesCarryTheirLayoutAndActiveSelection()
+    {
+        var profiles = ManagementProtocol.KbmProfiles(
+            "kbm profiles",
+            """
+            {"profiles":[
+              {"id":0,"layout":"kb","name":"Default","active":true,"builtin":true,"overrides":0},
+              {"id":2,"layout":"kb","name":"Splatoon","active":false,"builtin":false,"overrides":3},
+              {"id":3,"layout":"kbm","name":"Zelda","active":true,"builtin":false,"overrides":9}
+            ],"max":6}
+            """);
+
+        Assert.Equal(3, profiles.Profiles.Count);
+        Assert.Equal(6, profiles.Max);
+        Assert.False(profiles.Full);
+        Assert.Equal("Default", profiles.ActiveFor(KbmLayout.Keyboard)?.Name);
+        Assert.Equal("Zelda", profiles.ActiveFor(KbmLayout.KeyboardMouse)?.Name);
+        Assert.True(profiles.Profiles[0].Builtin);
+        Assert.False(profiles.Profiles[1].Builtin);
+
+        // A row this build cannot make sense of is skipped, not shown as a
+        // selectable profile the adapter would refuse.
+        var partial = ManagementProtocol.KbmProfiles(
+            "kbm profiles",
+            """
+            {"profiles":[
+              {"id":0,"layout":"kb","name":"Default","active":true,"builtin":true,"overrides":0},
+              {"id":4,"layout":"future","name":"Nope","active":false,"builtin":false,"overrides":0},
+              {"id":5,"layout":"kb","name":"","active":false,"builtin":false,"overrides":0}
+            ],"max":6}
+            """);
+        Assert.Single(partial.Profiles);
+    }
+
+    [Fact]
+    public void KbmCommandsKeepTheirLayoutSpelling()
+    {
+        // `kb` and `kbm` now mean "that layout's ACTIVE profile" on the adapter.
+        // Keeping the spelling is what makes the profile system invisible to a
+        // user who does not want it, and keeps every older client working.
+        Assert.Equal("kbm map kb 0", ManagementCommands.KbmMap(KbmLayout.Keyboard, 0));
+        Assert.Equal("kbm reset kbm",
+                     ManagementCommands.KbmReset(KbmLayout.KeyboardMouse));
+        Assert.Equal("kbm profile use kb 2",
+                     ManagementCommands.KbmProfileUse(KbmLayout.Keyboard, 2));
+        Assert.Equal("kbm profile new kbm Zelda",
+                     ManagementCommands.KbmProfileNew(KbmLayout.KeyboardMouse, "Zelda"));
+        Assert.Equal("kbm profile delete 3", ManagementCommands.KbmProfileDelete(3));
+    }
+
+    [Fact]
     public void KbmStatusReadsTheCompositeIdentityFields()
     {
         // `group` and `source` have always been in the firmware's reply
@@ -249,13 +300,13 @@ public sealed class ProtocolConformanceTests
         Assert.Equal(
             "kbm bind kb key:04 none",
             ManagementCommands.KbmBind(
-                KbmProfile.Keyboard,
+                KbmLayout.Keyboard,
                 new KbmSource(KbmSourceKind.Key, 4),
                 KbmDestination.None));
         Assert.Equal(
             "kbm bind kb key:04 default",
             ManagementCommands.KbmBind(
-                KbmProfile.Keyboard,
+                KbmLayout.Keyboard,
                 new KbmSource(KbmSourceKind.Key, 4),
                 null));
     }
@@ -383,7 +434,7 @@ public sealed class ProtocolConformanceTests
         Assert.Throws<ArgumentOutOfRangeException>(
             () => ManagementCommands.SetPersonality(Personality.Config));
         Assert.Throws<ArgumentOutOfRangeException>(
-            () => ManagementCommands.KbmMap(KbmProfile.Keyboard, 33));
+            () => ManagementCommands.KbmMap(KbmLayout.Keyboard, 33));
         Assert.Throws<ArgumentOutOfRangeException>(() => ManagementCommands.BondsPage(-1));
         Assert.Throws<ArgumentOutOfRangeException>(
             () => ManagementCommands.AmiiboBegin(541, "12345678"));

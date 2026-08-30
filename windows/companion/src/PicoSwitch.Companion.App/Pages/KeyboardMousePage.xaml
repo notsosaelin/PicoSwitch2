@@ -125,10 +125,20 @@
                                     Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                             </StackPanel>
                             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                                <ComboBox x:Name="ProfileBox" MinWidth="240" Header="Editing" SelectionChanged="OnProfileChanged">
-                                    <ComboBoxItem Content="Keyboard profile" />
-                                    <ComboBoxItem Content="Keyboard and mouse profile" />
+                                <ComboBox x:Name="ProfileBox" MinWidth="220" Header="Layout" SelectionChanged="OnProfileChanged">
+                                    <ComboBoxItem Content="Keyboard" />
+                                    <ComboBoxItem Content="Keyboard and mouse" />
                                 </ComboBox>
+                                <!-- Selecting here changes what the ADAPTER
+                                     resolves, not merely what is being edited,
+                                     so the editor's target and the console's
+                                     behaviour cannot drift apart. -->
+                                <ComboBox
+                                    x:Name="ProfileSelector"
+                                    MinWidth="200"
+                                    Header="Profile"
+                                    Visibility="Collapsed"
+                                    SelectionChanged="OnActiveProfileChanged" />
                                 <Button x:Name="ResetProfile" Content="Reset profile" Click="OnResetProfile" />
                             </StackPanel>
                         </Grid>

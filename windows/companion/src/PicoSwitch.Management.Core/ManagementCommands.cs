@@ -119,7 +119,7 @@ public static partial class ManagementCommands
         return $"peers forget {peerId}";
     }
 
-    public static string KbmMap(KbmProfile profile, int page)
+    public static string KbmMap(KbmLayout profile, int page)
     {
         if (page is < 0 or > 32)
         {
@@ -131,10 +131,29 @@ public static partial class ManagementCommands
 
     public static string KbmMode(KbmMode mode) => $"kbm mode {mode.Wire()}";
 
-    public static string KbmBind(KbmProfile profile, KbmSource source, KbmDestination? destination) =>
+    public const string KbmProfileList = "kbm profiles";
+
+    /// <summary>
+    /// Select which profile a layout resolves against. This changes what the
+    /// ADAPTER is using, not merely what the app is editing — which is the whole
+    /// point: the editor's target and the console's behaviour become the same
+    /// thing rather than two states that can silently disagree.
+    /// </summary>
+    public static string KbmProfileUse(KbmLayout layout, int id) =>
+        $"kbm profile use {layout.Wire()} {id}";
+
+    public static string KbmProfileNew(KbmLayout layout, string name) =>
+        $"kbm profile new {layout.Wire()} {name}";
+
+    public static string KbmProfileRename(int id, string name) =>
+        $"kbm profile rename {id} {name}";
+
+    public static string KbmProfileDelete(int id) => $"kbm profile delete {id}";
+
+    public static string KbmBind(KbmLayout profile, KbmSource source, KbmDestination? destination) =>
         $"kbm bind {profile.Wire()} {source.Wire} {(destination is null ? "default" : destination.Value.Wire())}";
 
-    public static string KbmReset(KbmProfile profile) => $"kbm reset {profile.Wire()}";
+    public static string KbmReset(KbmLayout profile) => $"kbm reset {profile.Wire()}";
 
     public static string KbmMouse(KbmMouseField field, int value) =>
         $"kbm mouse {field.Wire()} {value}";

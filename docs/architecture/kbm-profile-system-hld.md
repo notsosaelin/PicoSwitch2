@@ -1,6 +1,8 @@
 # Keyboard / Mouse Mode, Template and Profile System — High-Level Design
 
-**Status:** Proposed architecture; implementation is not authorized by this document
+**Status:** Implemented in firmware and Windows (steps 1-6), 2026-08-30. Android
+parity (step 7) outstanding. Six profiles and Default-only templates were the
+maintainer's decisions from §13.
 **Date:** 2026-08-29
 **Scope:** KB/M mapping selection in firmware, the management surface, Windows and Android
 **Evidence baseline:** hardware failures recorded in
@@ -319,12 +321,22 @@ deliberate: if either is wrong, it is wrong on its own commit.
 
 ## 13. Open product decisions
 
-These need the maintainer, not more code:
+Settled 2026-08-29:
 
-1. **Six profiles, or four?** Six requires widening the record to 2048 bytes.
-   Four fits today with no headroom. This design recommends six.
-2. **Which templates ship?** The mechanism is content-free by design; see §6.
+1. ~~**Six profiles, or four?**~~ **Six**, widening the record to 2048 bytes.
+   Verified before implementing that this compromises nothing: the config sector
+   is ours alone and is erased whole on every save regardless, so the window in
+   which a power loss costs the settings is unchanged. The torn-program surface
+   does grow from four pages to eight and the record has no CRC, so
+   `ns2_kbm_config_sanitize()` now repairs the profile table.
+2. ~~**Which templates ship?**~~ **Default only.** The mechanism is content-free
+   by design; see §6. Adding one later is one ROM table entry.
+
+Still open:
 3. **Is a profile-switch chord wanted?** Explicitly out of scope here.
-4. **Should profiles be per-peer?** A user with two keyboards may want different
+4. **Should a CRC cover the settings record?** Separate from this feature, but
+   this feature doubled the pages a torn write can half-fill. Sanitize fails
+   that closed for the KB/M block; nothing does for the rest of the record.
+5. **Should profiles be per-peer?** A user with two keyboards may want different
    mappings per device. This design says no — the mapping belongs to the layout,
    not the hardware — but that is a judgement, not a fact.

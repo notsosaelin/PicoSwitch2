@@ -483,7 +483,7 @@ public sealed class AdapterConnectionService
     /// Bind one key or mouse button, or clear it by passing a null destination.
     /// </summary>
     public Task<KbmMapping> BindAsync(
-        KbmProfile profile,
+        KbmLayout profile,
         KbmSource source,
         KbmDestination? destination,
         CancellationToken cancellationToken = default) =>
@@ -500,14 +500,31 @@ public sealed class AdapterConnectionService
         });
 
     public Task<KbmMapping> ResetProfileAsync(
-        KbmProfile profile,
+        KbmLayout profile,
         CancellationToken cancellationToken = default) =>
         RunKbmAsync(async () =>
         {
-            var mapping = await repository.ResetKbmProfileAsync(profile, cancellationToken)
+            var mapping = await repository.ResetKbmLayoutAsync(profile, cancellationToken)
                 .ConfigureAwait(false);
             diagnostics.Warn("kbm", $"reset profile {profile.Wire()} to adapter defaults");
             return mapping;
+        });
+
+    /// <summary>
+    /// Activate a named profile for one layout on the adapter.
+    ///
+    /// This is a change to what the ADAPTER resolves, not a local view
+    /// preference, which is exactly why it goes through the same serialized
+    /// KB/M path as a binding edit.
+    /// </summary>
+    public Task<KeyboardMouseState> UseKeyboardMouseProfileAsync(
+        KbmLayout layout,
+        int id) =>
+        RunKbmAsync(async () =>
+        {
+            var state = await repository.UseKbmProfileAsync(layout, id)
+                .ConfigureAwait(false);
+            return state;
         });
 
     public Task<KeyboardMouseState> ResetAllKeyboardMouseAsync(

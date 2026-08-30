@@ -11,7 +11,7 @@ public sealed class ManagementWorkflowTests
             ("kbm map kb 0", """{"profile":"kb","page":0,"pageSize":1,"total":2,"bindings":[{"src":"key:04","dst":"a","custom":false}],"more":true}"""),
             ("kbm map kb 1", """{"profile":"kb","page":1,"pageSize":1,"total":2,"bindings":[{"src":"key:05","dst":"b","custom":true}],"more":false}"""));
 
-        var mapping = await new ManagementClient(channel).LoadKbmMappingAsync(KbmProfile.Keyboard);
+        var mapping = await new ManagementClient(channel).LoadKbmMappingAsync(KbmLayout.Keyboard);
         Assert.Equal(2, mapping.Bindings.Count);
         Assert.Equal(1, mapping.CustomCount);
         channel.AssertDrained();
@@ -25,7 +25,7 @@ public sealed class ManagementWorkflowTests
             ("kbm map kb 1", """{"profile":"kb","page":1,"pageSize":1,"total":3,"bindings":[{"src":"key:05","dst":"b","custom":false}],"more":false}"""));
 
         await Assert.ThrowsAsync<ManagementPaginationException>(
-            () => new ManagementClient(channel).LoadKbmMappingAsync(KbmProfile.Keyboard));
+            () => new ManagementClient(channel).LoadKbmMappingAsync(KbmLayout.Keyboard));
     }
 
     [Fact]

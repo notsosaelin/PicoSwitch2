@@ -23,7 +23,7 @@ public sealed class KbmPaginationTests
     private static Task AssertRejected(params (string Command, object Reply)[] script) =>
         Assert.ThrowsAsync<ManagementPaginationException>(
             () => new ManagementClient(new ScriptedChannel(script))
-                .LoadKbmMappingAsync(KbmProfile.Keyboard));
+                .LoadKbmMappingAsync(KbmLayout.Keyboard));
 
     [Fact]
     public Task ADifferentProfileThanRequestedIsRejected() =>
@@ -53,7 +53,7 @@ public sealed class KbmPaginationTests
             () => new ManagementClient(new ScriptedChannel(
                 ("kbm map kb 0",
                     """{"profile":"kb","page":0,"pageSize":2,"total":1,"bindings":[{"src":"key:04","dst":"a","custom":false},{"src":"key:05","dst":"b","custom":false}],"more":false}""")))
-                .LoadKbmMappingAsync(KbmProfile.Keyboard));
+                .LoadKbmMappingAsync(KbmLayout.Keyboard));
     }
 
     [Fact]
@@ -91,7 +91,7 @@ public sealed class KbmPaginationTests
 
         await Assert.ThrowsAsync<ManagementPaginationException>(
             () => new ManagementClient(new ScriptedChannel([.. script]))
-                .LoadKbmMappingAsync(KbmProfile.Keyboard));
+                .LoadKbmMappingAsync(KbmLayout.Keyboard));
     }
 
     [Fact]
@@ -111,7 +111,7 @@ public sealed class KbmPaginationTests
             ("kbm map kb 0",
                 """{"profile":"kb","page":0,"pageSize":1,"total":1,"bindings":[{"src":"key:04","dst":"a","custom":true}],"more":false}"""));
 
-        var mapping = await new ManagementClient(channel).LoadKbmMappingAsync(KbmProfile.Keyboard);
+        var mapping = await new ManagementClient(channel).LoadKbmMappingAsync(KbmLayout.Keyboard);
 
         Assert.Single(mapping.Bindings);
         Assert.True(mapping.Loaded);
@@ -127,7 +127,7 @@ public sealed class KbmPaginationTests
             ("kbm map kb 0",
                 """{"profile":"kb","page":0,"pageSize":1,"total":0,"bindings":[],"more":false}"""));
 
-        var mapping = await new ManagementClient(channel).LoadKbmMappingAsync(KbmProfile.Keyboard);
+        var mapping = await new ManagementClient(channel).LoadKbmMappingAsync(KbmLayout.Keyboard);
 
         Assert.Empty(mapping.Bindings);
         Assert.True(mapping.Loaded);

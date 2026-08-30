@@ -7,6 +7,35 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **KB/M named profiles shipped 2026-08-30; REQUIRES A REFLASH; device validation pending.** The
+  mapping a keyboard resolves against is now the user's choice. It was previously **derived** from
+  which peer roles happened to be filled, one-to-one from the input mode, with no `kbm profile`
+  command anywhere — which is how a user could bind `key:05 → B`, watch every operation report
+  success and the binding read back correctly, and get nothing at the console because the adapter
+  was resolving the other mapping. Three concepts are now separate: **mode** (which peers may own
+  the console), **layout** (keyboard, or keyboard and mouse — a fact about what is connected, still
+  derived and still not selectable) and **profile** (a named override set the user selects, several
+  per layout, exactly one active). Six slots; slot 0 and 1 are the reserved Defaults, editable and
+  resettable but never renameable or deletable, which is what makes "every layout always has an
+  active profile" true by construction rather than by convention. A profile belongs to one layout
+  and the model refuses to activate it on the other, because its source domain and canonical
+  defaults are layout-specific. **`kb` and `kbm` keep working everywhere they were accepted**, now
+  meaning "that layout's active profile", so a user with one mapping per layout types exactly what
+  they typed before. New verbs: `kbm profiles`, `kbm profile use|new|rename|delete`; `kbm status`
+  gains `activeProfile`/`activeProfileName`. `CONFIG_RECORD_BYTES` widened 1024 → 2048 after
+  verifying the persistence map rather than reasoning from the sector size: the config sector is
+  ours alone, the erase already covers all 4096 bytes whatever the value is, and there is no
+  redundant or transactional storage to compromise — but the torn-program surface doubles and the
+  record has no CRC, so `ns2_kbm_config_sanitize()` now repairs the profile table. Migration
+  v13 → v14 turns the two per-layout override sets into the two Defaults and activates them, and its
+  test asserts equivalence by resolving a binding through the migrated record. Windows shows a
+  profile selector that changes what the ADAPTER resolves, not merely what is being edited, and
+  hides itself when there is nothing to choose between. Templates ship as the mechanism plus the
+  existing canonical defaults only; game-shaped template content needs evidence, not invention.
+  77/77 host tests, 572 Windows tests, both boards build. **Android parity outstanding**, and the
+  management parity guard reads the Kotlin command list, so the new verbs enter it with that
+  backport. [`docs/architecture/kbm-profile-system-hld.md`](docs/architecture/kbm-profile-system-hld.md)
+
 - **BLE keyboard input — root-caused and fixed 2026-08-29; HARDWARE-CONFIRMED.** An 8BitDo
   2DC8:2028 keyboard paired, held the keyboard role, reported `keyboard=true`, and produced no
   console input whatsoever. Three investigation passes went to the transport, the role model and the

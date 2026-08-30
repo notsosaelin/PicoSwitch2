@@ -35,7 +35,7 @@ public sealed partial class KeyboardMousePage : Page
 
     private readonly AdapterConnectionService adapters = AppServices.Adapters;
 
-    private KbmProfile profile = KbmProfile.Keyboard;
+    private KbmLayout profile = KbmLayout.Keyboard;
 
     /// <summary>
     /// Whether the user has chosen which profile to edit.
@@ -46,6 +46,13 @@ public sealed partial class KeyboardMousePage : Page
     /// resolving the other profile the whole time.
     /// </summary>
     private bool profileChosenByUser;
+
+    /// <summary>
+    /// Suppresses the selector's SelectionChanged while Render() populates it.
+    /// Without it, redrawing the page would look like the user picking a
+    /// profile and would send a `use` to the adapter on every refresh.
+    /// </summary>
+    private bool populatingProfiles;
     private DispatcherTimer? mouseCommit;
     private KbmMouseField? pendingMouseField;
     private int pendingMouseValue;
@@ -118,6 +125,63 @@ public sealed partial class KeyboardMousePage : Page
         });
     }
 
+    private void RenderProfileSelector(KeyboardMouseView view)
+    {
+        // One profile is not a choice; a control with a single option invites
+        // the user to look for meaning that is not there. Firmware without named
+        // profiles reports none and lands here too.
+        if (!view.ShowProfiles)
+        {
+            ProfileSelector.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        populatingProfiles = true;
+        try
+        {
+            ProfileSelector.Visibility = Visibility.Visible;
+            ProfileSelector.Items.Clear();
+            var selected = -1;
+            for (var i = 0; i < view.Profiles.Count; i++)
+            {
+                var profile = view.Profiles[i];
+                ProfileSelector.Items.Add(new ComboBoxItem
+                {
+                    Content = profile.Name,
+                    Tag = profile.Id,
+                });
+                if (profile.Active)
+                {
+                    selected = i;
+                }
+            }
+
+            ProfileSelector.SelectedIndex = selected;
+        }
+        finally
+        {
+            populatingProfiles = false;
+        }
+    }
+
+    private async void OnActiveProfileChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (populatingProfiles || ProfileSelector.SelectedItem is not ComboBoxItem item)
+        {
+            return;
+        }
+
+        if (item.Tag is not int id)
+        {
+            return;
+        }
+
+        // Activate on the adapter, then re-read: switching profile changes every
+        // binding at once, so the page must be rebuilt from what the adapter
+        // now reports rather than patched.
+        await SafeAsync(() => adapters.UseKeyboardMouseProfileAsync(profile, id));
+    }
+
     private void OnProfileChanged(object sender, SelectionChangedEventArgs e)
     {
         if (suppressSelection || ProfileBox.SelectedIndex < 0)
@@ -125,7 +189,7 @@ public sealed partial class KeyboardMousePage : Page
             return;
         }
 
-        profile = (KbmProfile)ProfileBox.SelectedIndex;
+        profile = (KbmLayout)ProfileBox.SelectedIndex;
         profileChosenByUser = true;
         Render();
     }
@@ -309,6 +373,8 @@ public sealed partial class KeyboardMousePage : Page
             ? Visibility.Collapsed
             : Visibility.Visible;
         CountersText.Text = view.Counters?.Text ?? string.Empty;
+
+        RenderProfileSelector(view);
 
         InactiveProfileBar.IsOpen = view.Loaded && view.EditingInactiveProfile;
         InactiveProfileBar.Message = view.InactiveProfileWarning ?? string.Empty;

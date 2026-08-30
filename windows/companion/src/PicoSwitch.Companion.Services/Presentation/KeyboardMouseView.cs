@@ -104,34 +104,57 @@ public sealed record KeyboardMouseView
 
     public required bool MouseConnected { get; init; }
 
-    /// <summary>The profile being EDITED.</summary>
-    public required KbmProfile Profile { get; init; }
+    /// <summary>The LAYOUT being edited — the shape of the mapping.</summary>
+    public required KbmLayout Profile { get; init; }
 
     /// <summary>
-    /// The profile the adapter is actually resolving against right now.
+    /// The named profiles of the layout being edited, and which one is live.
     ///
-    /// Not user-settable: there is no `kbm profile` command. The adapter derives
-    /// it from which roles are filled — a keyboard alone resolves the Keyboard
-    /// profile, a keyboard and a mouse resolve the Keyboard-and-mouse one.
+    /// Empty on firmware without named profiles, which is not a degraded state:
+    /// that adapter has exactly one mapping per layout and the selector is
+    /// simply not shown.
     /// </summary>
-    public required KbmProfile ActiveProfile { get; init; }
+    public required IReadOnlyList<KbmProfileInfo> Profiles { get; init; }
+
+    public KbmProfileInfo? ActiveProfile =>
+        Profiles.FirstOrDefault(profile => profile.Active);
 
     /// <summary>
-    /// True when the user is editing a profile the adapter is not using.
+    /// Whether to offer the profile selector at all. One profile is not a
+    /// choice, and a control with a single option invites the user to look for
+    /// meaning that is not there.
+    /// </summary>
+    public bool ShowProfiles => Profiles.Count > 1;
+
+    /// <summary>
+    /// The LAYOUT the adapter is actually resolving against right now.
+    ///
+    /// Not user-settable, and deliberately so: the adapter derives it from which
+    /// roles are filled. A keyboard alone resolves the Keyboard layout; a
+    /// keyboard and a mouse resolve the Keyboard-and-mouse one. Asserting the
+    /// latter with no mouse would silently drop the right stick.
+    ///
+    /// Which PROFILE is used within that layout is the user's choice, and that
+    /// is what the selector changes.
+    /// </summary>
+    public required KbmLayout ActiveLayout { get; init; }
+
+    /// <summary>
+    /// True when the user is editing a layout the adapter is not using.
     ///
     /// This is worth saying out loud. A binding made here is saved and survives
     /// a reload, so every management operation reports success — and the key
     /// does nothing at the console, because the adapter is resolving the other
-    /// profile. Silence there is indistinguishable from a broken keyboard.
+    /// layout. Silence there is indistinguishable from a broken keyboard.
     /// </summary>
-    public bool EditingInactiveProfile => Profile != ActiveProfile;
+    public bool EditingInactiveProfile => Profile != ActiveLayout;
 
     public string? InactiveProfileWarning => EditingInactiveProfile
-        ? $"The adapter is currently using the {Label(ActiveProfile)}. Changes here " +
-          "are saved, but will not affect the console until that profile is in use."
+        ? $"The adapter is currently using the {Label(ActiveLayout)}. Changes here " +
+          "are saved, but will not affect the console until that layout is in use."
         : null;
 
-    public static string Label(KbmProfile profile) => profile == KbmProfile.Keyboard
+    public static string Label(KbmLayout profile) => profile == KbmLayout.Keyboard
         ? "keyboard profile"
         : "keyboard and mouse profile";
 
@@ -222,7 +245,7 @@ public static class KeyboardMouse
 {
     public static KeyboardMouseView Project(
         KeyboardMouseState state,
-        KbmProfile profile,
+        KbmLayout profile,
         bool connected)
     {
         var mapping = state.Mapping(profile);
@@ -255,7 +278,8 @@ public static class KeyboardMouse
             KeyboardConnected = state.Status.KeyboardConnected,
             MouseConnected = state.Status.MouseConnected,
             Profile = profile,
-            ActiveProfile = state.Status.Profile,
+            ActiveLayout = state.Status.Profile,
+            Profiles = state.Profiles.For(profile).ToArray(),
             Keys = KeyboardLayout.AllKeys.Select(cap => Cell(cap, byKey)).ToArray(),
             Clusters = KeyboardLayout.Clusters
                 .Select(cluster => new KeyClusterCells(
@@ -270,7 +294,7 @@ public static class KeyboardMouse
                 .ToArray(),
 
             // Only the keyboard-and-mouse profile has a mouse to press.
-            ShowMouseButtons = profile == KbmProfile.KeyboardMouse,
+            ShowMouseButtons = profile == KbmLayout.KeyboardMouse,
 
             // Everything the adapter reports that this build cannot draw. Listed
             // rather than dropped: a binding the user cannot see is one they cannot
@@ -310,7 +334,7 @@ public static class KeyboardMouse
         var mouse = status.MouseConnected ? $"yes (conn {status.MouseConn})" : "no";
 
         return new KbmRuntimeCounters(
-            $"mode={KbmModes.Wire(status.Mode)} profile={KbmProfiles.Wire(status.Profile)} " +
+            $"mode={KbmModes.Wire(status.Mode)} profile={KbmLayouts.Wire(status.Profile)} " +
             $"keyboard={keyboard} mouse={mouse} group={status.GroupId} source={status.SourceId}",
 
             $"accepted(keyboard={status.KeyboardReports} mouse={status.MouseReports}) " +

@@ -586,8 +586,21 @@ public sealed class AdapterRepository(IManagementTransport transport)
 
         var mouse = await client.KbmMouseAsync(cancellationToken).ConfigureAwait(false);
 
+        // Named profiles are newer than the rest of the KB/M surface. An adapter
+        // without them is not degraded — it has exactly one mapping per layout,
+        // which is what this app did for its whole life until now.
+        KbmProfiles profiles;
+        try
+        {
+            profiles = await client.KbmProfilesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (AdapterCommandException error) when (error.IsUnsupported())
+        {
+            profiles = KbmProfiles.Empty;
+        }
+
         var mappings = new List<KbmMapping>();
-        foreach (var profile in KbmProfiles.All)
+        foreach (var profile in KbmLayouts.All)
         {
             mappings.Add(await client.LoadKbmMappingAsync(profile, cancellationToken)
                 .ConfigureAwait(false));
@@ -598,6 +611,7 @@ public sealed class AdapterRepository(IManagementTransport transport)
             Status = status,
             Mouse = mouse,
             Mappings = new ValueList<KbmMapping>(mappings),
+            Profiles = profiles,
             Loaded = true,
             Capability = CapabilityState.Available,
         });
@@ -627,7 +641,7 @@ public sealed class AdapterRepository(IManagementTransport transport)
     /// a paged surface: the reply is the truth.
     /// </summary>
     public async Task<KbmMapping> BindKbmAsync(
-        KbmProfile profile,
+        KbmLayout profile,
         KbmSource source,
         KbmDestination? destination,
         CancellationToken cancellationToken = default)
@@ -638,11 +652,38 @@ public sealed class AdapterRepository(IManagementTransport transport)
         return mapping;
     }
 
-    public async Task<KbmMapping> ResetKbmProfileAsync(
-        KbmProfile profile,
+    /// <summary>
+    /// Activate a profile on the adapter and re-read everything that depends on
+    /// it.
+    ///
+    /// The mapping is re-read, not patched: switching profile changes every
+    /// binding at once, and a client that kept its old page would show the
+    /// previous profile's mapping under the new profile's name.
+    /// </summary>
+    public async Task<KeyboardMouseState> UseKbmProfileAsync(
+        KbmLayout layout,
+        int id,
         CancellationToken cancellationToken = default)
     {
-        var mapping = await client.ResetKbmProfileAsync(profile, cancellationToken).ConfigureAwait(false);
+        var profiles = await client.UseKbmProfileAsync(layout, id, cancellationToken)
+            .ConfigureAwait(false);
+        var status = await client.KbmStatusAsync(cancellationToken).ConfigureAwait(false);
+        var mapping = await client.LoadKbmMappingAsync(layout, cancellationToken)
+            .ConfigureAwait(false);
+
+        keyboardMouse.Set(keyboardMouse.Value.With(mapping) with
+        {
+            Status = status,
+            Profiles = profiles,
+        });
+        return keyboardMouse.Value;
+    }
+
+    public async Task<KbmMapping> ResetKbmLayoutAsync(
+        KbmLayout profile,
+        CancellationToken cancellationToken = default)
+    {
+        var mapping = await client.ResetKbmLayoutAsync(profile, cancellationToken).ConfigureAwait(false);
         keyboardMouse.Set(keyboardMouse.Value.With(mapping));
         return mapping;
     }
