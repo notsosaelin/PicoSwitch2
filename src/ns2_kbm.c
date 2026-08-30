@@ -253,7 +253,75 @@ void ns2_kbm_config_defaults(ns2_kbm_config_t *config) {
         config->active[i].source_id = (uint8_t)NS2_KBM_PROFILE_ID_DEFAULT;
         config->active[i].source_revision = 0u;
         ns2_kbm_template_default((ns2_kbm_layout_t)i, &config->active[i].content);
+        // Boot realizes Default until the user explicitly persists another
+        // choice. memset already cleared the switch table: no key is reserved.
+        config->boot_profile_id[i] = (uint8_t)NS2_KBM_PROFILE_ID_DEFAULT;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Profile-switch bindings
+// ---------------------------------------------------------------------------
+
+uint8_t ns2_kbm_switch_target(const ns2_kbm_config_t *config,
+                              ns2_kbm_layout_t layout, ns2_kbm_source_t source) {
+    if (!config || layout >= NS2_KBM_LAYOUT_COUNT) return NS2_KBM_PROFILE_ID_NONE;
+    for (uint8_t i = 0; i < NS2_KBM_SWITCH_BINDINGS_MAX; ++i) {
+        const ns2_kbm_switch_binding_t *entry = &config->switches[layout][i];
+        if (entry->used && entry->kind == source.kind && entry->code == source.code)
+            return entry->profile_id;
+    }
+    return NS2_KBM_PROFILE_ID_NONE;
+}
+
+bool ns2_kbm_switch_bind(ns2_kbm_config_t *config, ns2_kbm_layout_t layout,
+                         ns2_kbm_source_t source, uint8_t profile_id) {
+    if (!config || layout >= NS2_KBM_LAYOUT_COUNT) return false;
+    if (!ns2_kbm_source_valid(source)) return false;
+
+    // Clearing: drop any entry on this source. Always succeeds, so a UI can
+    // unbind a key without first knowing whether it was bound.
+    if (profile_id == NS2_KBM_PROFILE_ID_NONE) {
+        for (uint8_t i = 0; i < NS2_KBM_SWITCH_BINDINGS_MAX; ++i) {
+            ns2_kbm_switch_binding_t *entry = &config->switches[layout][i];
+            if (entry->used && entry->kind == source.kind &&
+                entry->code == source.code) {
+                memset(entry, 0, sizeof(*entry));
+            }
+        }
+        return true;
+    }
+
+    // The target must be a resident slot OF THIS LAYOUT. A key that selects a
+    // slot the layout cannot realize would be a control that silently does
+    // nothing, and Default is not selectable this way: it is the fallback the
+    // layout already returns to, not a slot to switch into.
+    const ns2_kbm_profile_slot_t *slot = ns2_kbm_profile_find(config, profile_id);
+    if (!slot || slot->layout != (uint8_t)layout) return false;
+
+    // Rebind in place when the source is already assigned, so a source can never
+    // appear twice with different targets.
+    for (uint8_t i = 0; i < NS2_KBM_SWITCH_BINDINGS_MAX; ++i) {
+        ns2_kbm_switch_binding_t *entry = &config->switches[layout][i];
+        if (entry->used && entry->kind == source.kind &&
+            entry->code == source.code) {
+            entry->profile_id = profile_id;
+            return true;
+        }
+    }
+
+    for (uint8_t i = 0; i < NS2_KBM_SWITCH_BINDINGS_MAX; ++i) {
+        ns2_kbm_switch_binding_t *entry = &config->switches[layout][i];
+        if (!entry->used) {
+            entry->used = 1u;
+            entry->kind = (uint8_t)source.kind;
+            entry->code = source.code;
+            entry->profile_id = profile_id;
+            return true;
+        }
+    }
+
+    return false;  // table full
 }
 
 // ---------------------------------------------------------------------------
@@ -774,7 +842,141 @@ bool ns2_kbm_config_sanitize(ns2_kbm_config_t *config) {
         if (!sanitize_mouse(&active->content.mouse)) clean = false;
     }
 
+    config->reserved2[0] = config->reserved2[1] = 0;
+    for (uint8_t i = 0; i < NS2_KBM_LAYOUT_COUNT; ++i) {
+        // A boot choice naming a slot that no longer exists falls back to
+        // Default, which always exists. Leaving it dangling would make the next
+        // power-up realize nothing.
+        if (config->boot_profile_id[i] != NS2_KBM_PROFILE_ID_DEFAULT &&
+            !ns2_kbm_profile_find(config, config->boot_profile_id[i])) {
+            config->boot_profile_id[i] = (uint8_t)NS2_KBM_PROFILE_ID_DEFAULT;
+            clean = false;
+        }
+
+        for (uint8_t j = 0; j < NS2_KBM_SWITCH_BINDINGS_MAX; ++j) {
+            ns2_kbm_switch_binding_t *entry = &config->switches[i][j];
+            if (!entry->used) {
+                ns2_kbm_switch_binding_t empty;
+                memset(&empty, 0, sizeof(empty));
+                if (memcmp(entry, &empty, sizeof(empty)) != 0) {
+                    *entry = empty;
+                    clean = false;
+                }
+                continue;
+            }
+
+            // A switch key must name a readable source AND a resident slot of
+            // THIS layout. Anything else is a key that would either do nothing
+            // or reach across layouts, so it is dropped rather than kept as a
+            // control the user cannot understand.
+            ns2_kbm_source_t source = {entry->kind, entry->code};
+            const ns2_kbm_profile_slot_t *slot =
+                ns2_kbm_profile_find(config, entry->profile_id);
+            if (!ns2_kbm_source_valid(source) || !slot ||
+                slot->layout != i) {
+                memset(entry, 0, sizeof(*entry));
+                clean = false;
+                continue;
+            }
+
+            // One source, one meaning.
+            for (uint8_t k = 0; k < j; ++k) {
+                const ns2_kbm_switch_binding_t *prior = &config->switches[i][k];
+                if (prior->used && prior->kind == entry->kind &&
+                    prior->code == entry->code) {
+                    memset(entry, 0, sizeof(*entry));
+                    clean = false;
+                    break;
+                }
+            }
+        }
+    }
+
     return clean;
+}
+
+// ---------------------------------------------------------------------------
+// Profile-switch edge detection
+// ---------------------------------------------------------------------------
+
+static bool bitmap_held(const uint8_t *bitmap, uint8_t usage) {
+    return bitmap && (bitmap[usage >> 3] & (uint8_t)(1u << (usage & 7u))) != 0u;
+}
+
+uint8_t ns2_kbm_switch_edge(const ns2_kbm_config_t *config,
+                            ns2_kbm_layout_t layout, const uint8_t *previous,
+                            const uint8_t *current) {
+    if (!config || !current || layout >= NS2_KBM_LAYOUT_COUNT)
+        return NS2_KBM_PROFILE_ID_NONE;
+
+    for (uint8_t i = 0; i < NS2_KBM_SWITCH_BINDINGS_MAX; ++i) {
+        const ns2_kbm_switch_binding_t *entry = &config->switches[layout][i];
+        if (!entry->used || entry->kind != NS2_KBM_SRC_KEY) continue;
+
+        // KEY-DOWN EDGE ONLY. Held is not repeated: a user resting a finger on
+        // the switch key would otherwise re-apply the profile on every report,
+        // which at keyboard report rate is a neutralization storm.
+        if (bitmap_held(current, entry->code) &&
+            !bitmap_held(previous, entry->code)) {
+            return entry->profile_id;
+        }
+    }
+
+    return NS2_KBM_PROFILE_ID_NONE;
+}
+
+void ns2_kbm_switch_mask(const ns2_kbm_config_t *config,
+                         ns2_kbm_layout_t layout, uint8_t *bitmap) {
+    if (!config || !bitmap || layout >= NS2_KBM_LAYOUT_COUNT) return;
+
+    // The switch key is CONSUMED. It must not also emit whatever the active
+    // profile maps that usage to, or pressing it would both change profile and
+    // fire a controller button -- and the button would belong to the profile
+    // being left.
+    for (uint8_t i = 0; i < NS2_KBM_SWITCH_BINDINGS_MAX; ++i) {
+        const ns2_kbm_switch_binding_t *entry = &config->switches[layout][i];
+        if (!entry->used || entry->kind != NS2_KBM_SRC_KEY) continue;
+        bitmap[entry->code >> 3] &=
+            (uint8_t)~(uint8_t)(1u << (entry->code & 7u));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Boot realization
+// ---------------------------------------------------------------------------
+
+bool ns2_kbm_set_boot_profile(ns2_kbm_config_t *config, ns2_kbm_layout_t layout,
+                              uint8_t profile_id, bool *changed) {
+    if (changed) *changed = false;
+    if (!config || layout >= NS2_KBM_LAYOUT_COUNT) return false;
+
+    // Persisting a boot choice also realizes it: "use this from now on" that did
+    // not take effect until the next power cycle would be a surprising control.
+    bool realized = false;
+    if (!ns2_kbm_apply(config, layout, profile_id, &realized)) return false;
+
+    bool moved = config->boot_profile_id[layout] != profile_id;
+    config->boot_profile_id[layout] = profile_id;
+    if (changed) *changed = realized || moved;
+    return true;
+}
+
+void ns2_kbm_realize_boot_profiles(ns2_kbm_config_t *config) {
+    if (!config) return;
+    // Init realizes the PERSISTED boot choice, never whatever `active[]`
+    // happened to hold when the record was last written.
+    //
+    // That distinction is the whole point of separating the two. A profile-switch
+    // key rewrites `active[]` in RAM with no flash write; some later, unrelated
+    // save (a colour change, a new bond) would otherwise persist that runtime
+    // choice as if the user had chosen it, and the adapter would come back up in
+    // a profile nobody selected. Realizing from `boot_profile_id` makes power-up
+    // deterministic regardless of what was written when.
+    for (uint8_t i = 0; i < NS2_KBM_LAYOUT_COUNT; ++i) {
+        bool changed = false;
+        (void)ns2_kbm_apply(config, (ns2_kbm_layout_t)i,
+                            config->boot_profile_id[i], &changed);
+    }
 }
 
 uint8_t ns2_kbm_default_binding(ns2_kbm_layout_t layout,

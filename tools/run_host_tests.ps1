@@ -101,6 +101,13 @@ $tests = @(
     # the real formatter and also GENERATES tools/fixtures/management/
     # kbm-wire-corpus.json, which the Windows and Android tests replay.
     @{ g='management'; n='test_ns2_kbm_commands';                   src='tools/test_ns2_kbm_commands.c src/ns2_kbm_commands.c src/ns2_kbm.c';           flags='-Isrc/bt_hid -Wno-unused-parameter' }
+    # Profile-switch keys: selecting a RESIDENT SLOT with no companion attached,
+    # which is the reason the adapter stores profiles at all. Covers the
+    # properties whose absence is dangerous rather than merely wrong -- a stuck
+    # button across a switch, a key that both switches and fires, a hotkey that
+    # reaches across layouts, and runtime activation leaking into the persisted
+    # boot choice (which would put flash wear on the gameplay path).
+    @{ g='management'; n='test_ns2_kbm_switch_keys';                src='tools/test_ns2_kbm_switch_keys.c src/ns2_kbm.c';                               flags='-Isrc/bt_hid -Wno-unused-parameter' }
     @{ g='input';     n='test_bthid_mouse_report';                  src='tools/test_bthid_mouse_report.c src/bt_hid/bt/bthid/devices/generic/bthid_mouse_report.c src/bt_hid/usb/usbh/hid/devices/generic/hid_parser.c'; flags='-Isrc/bt_hid' }
 
     # -- Controller drivers / quirks ------------------------------------------

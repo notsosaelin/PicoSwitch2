@@ -22,7 +22,9 @@
 #include "ns2_kbm.h"  // ns2_kbm_config_t
 
 #define CONFIG_PERSIST_MAGIC 0x50535731u  // 'PSW1'
-#define CONFIG_PERSIST_VERSION 14u
+// v15: profile-switch key bindings and the persisted boot-active resident slot.
+// Both are appended to the KB/M block; every earlier field keeps its offset.
+#define CONFIG_PERSIST_VERSION 15u
 
 // How many management companions an adapter remembers.
 //
@@ -131,6 +133,30 @@ typedef struct {
     ns2_kbm_config_v13_t kbm;
     config_mgmt_companion_t mgmt_companions[CONFIG_MGMT_COMPANIONS_MAX];
 } config_record_v13_t;
+
+// Schema 14's KB/M container. Frozen: it describes bytes on real adapters that
+// have already run the v14 firmware. Schema 15 APPENDS the boot-active slot and
+// the profile-switch table to it, so the v14 prefix is byte-identical and the
+// migration is a copy plus deterministic defaults for the new fields.
+typedef struct {
+    uint8_t mode;
+    uint8_t next_profile_id;
+    uint8_t reserved[2];
+    ns2_kbm_profile_slot_t profiles[NS2_KBM_MAX_PROFILES];
+    ns2_kbm_active_t active[NS2_KBM_LAYOUT_COUNT];
+} ns2_kbm_config_v14_t;
+
+typedef struct {
+    uint32_t magic;
+    uint8_t version;
+    uint8_t body_color[3];
+    uint8_t joycon2_left_accent[3];
+    uint8_t joycon2_right_accent[3];
+    uint8_t wake_valid;
+    config_wake_identity_t wake_identity;
+    ns2_kbm_config_v14_t kbm;
+    config_mgmt_companion_t mgmt_companions[CONFIG_MGMT_COMPANIONS_MAX];
+} config_record_v14_t;
 
 typedef struct {
     uint32_t magic;
