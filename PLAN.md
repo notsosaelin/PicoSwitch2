@@ -113,19 +113,25 @@ UX_PASS owns the polished Keyboard / Keyboard + Mouse remapping editor. It consu
 pass and must not need to restructure the Bluetooth input path, edit firmware constants, or
 reconstruct defaults from source.
 
-### Accepted: mode / template / custom-profile system
+### Layout / template / profile system — Complete (hardware validation pending)
 
-Designed 2026-08-29; implementation not started. The two mapping profiles are **derived** from which
-peer roles are filled and cannot be selected — which produced a hardware-observed silent failure
-where a binding saved, read back, and did nothing because the adapter was resolving the other
-profile. The design separates **mode** (which peers may own the console), **layout** (keyboard, or
-keyboard and mouse — a fact, still derived) and **profile** (a named override set the user selects,
-several per layout). Templates are immutable ROM starting points applied *into* a profile, never
-selected or edited.
+Shipped 2026-08-30 across firmware, the management protocol, Windows and Android. Five concepts kept
+separate: **runtime mode**, **layout** (derived, never a user assertion about hardware), **template**
+(immutable ROM Default, consuming no slot), **saved profile** (six custom, named, user-selected) and
+the **active realized mapping** (a per-layout snapshot). Save stores; Apply is what changes the
+console; editing sends nothing at all.
 
-Design, including the storage schema, migration, wire surface, test matrix, staged implementation
-order and the open product decisions:
+Everything is source- and test-validated. **No part of it has run on hardware.** The one outstanding
+gate is the end-to-end smoke test in §14 of the design record — migration against real stored bytes,
+the staged transaction over a real BLE session, Save-vs-Apply observed at the console, persistence
+across a power cycle, and cross-platform hand-off.
+
+Design record, kept accurate to what shipped:
 [`docs/architecture/kbm-profile-system-hld.md`](docs/architecture/kbm-profile-system-hld.md).
+
+Deliberately not built, and not to be reopened without new evidence: per-game or title-aware
+switching, profile-switch key chords, user-selectable layout, game-shaped template content, and a
+generic mapping framework. A config CRC or A/B record is a separate durability decision.
 
 ---
 

@@ -7,34 +7,43 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
-- **KB/M named profiles shipped 2026-08-30; REQUIRES A REFLASH; device validation pending.** The
-  mapping a keyboard resolves against is now the user's choice. It was previously **derived** from
-  which peer roles happened to be filled, one-to-one from the input mode, with no `kbm profile`
-  command anywhere — which is how a user could bind `key:05 → B`, watch every operation report
-  success and the binding read back correctly, and get nothing at the console because the adapter
-  was resolving the other mapping. Three concepts are now separate: **mode** (which peers may own
-  the console), **layout** (keyboard, or keyboard and mouse — a fact about what is connected, still
-  derived and still not selectable) and **profile** (a named override set the user selects, several
-  per layout, exactly one active). Six slots; slot 0 and 1 are the reserved Defaults, editable and
-  resettable but never renameable or deletable, which is what makes "every layout always has an
-  active profile" true by construction rather than by convention. A profile belongs to one layout
-  and the model refuses to activate it on the other, because its source domain and canonical
-  defaults are layout-specific. **`kb` and `kbm` keep working everywhere they were accepted**, now
-  meaning "that layout's active profile", so a user with one mapping per layout types exactly what
-  they typed before. New verbs: `kbm profiles`, `kbm profile use|new|rename|delete`; `kbm status`
-  gains `activeProfile`/`activeProfileName`. `CONFIG_RECORD_BYTES` widened 1024 → 2048 after
-  verifying the persistence map rather than reasoning from the sector size: the config sector is
-  ours alone, the erase already covers all 4096 bytes whatever the value is, and there is no
-  redundant or transactional storage to compromise — but the torn-program surface doubles and the
-  record has no CRC, so `ns2_kbm_config_sanitize()` now repairs the profile table. Migration
-  v13 → v14 turns the two per-layout override sets into the two Defaults and activates them, and its
-  test asserts equivalence by resolving a binding through the migrated record. Windows shows a
-  profile selector that changes what the ADAPTER resolves, not merely what is being edited, and
-  hides itself when there is nothing to choose between. Templates ship as the mechanism plus the
-  existing canonical defaults only; game-shaped template content needs evidence, not invention.
-  77/77 host tests, 572 Windows tests, both boards build. **Android parity outstanding**, and the
-  management parity guard reads the Kotlin command list, so the new verbs enter it with that
-  backport. [`docs/architecture/kbm-profile-system-hld.md`](docs/architecture/kbm-profile-system-hld.md)
+- **KB/M profile system shipped end-to-end 2026-08-30; REQUIRES A REFLASH; hardware validation
+  pending.** Firmware, management protocol, Windows and Android in one pass. Two defects are fixed.
+  **(1)** The mapping a keyboard resolved against was **derived** from which peer roles happened to
+  be filled, with no `kbm profile` command anywhere — which is how a user could bind `key:05 → B`,
+  watch every operation report success and read back correctly, and get nothing at the console.
+  **(2)** The editor wrote `kbm bind` per keystroke, erasing flash once per changed key and making
+  Save and Discard impossible to offer, because the change had already happened.
+  Five concepts are now separate: **runtime mode** (which peers may own the console), **layout**
+  (keyboard, or keyboard and mouse — derived from admitted roles, never a user assertion about
+  hardware), **template** (immutable ROM; one Default per layout, consuming no slot), **saved
+  profile** (six CUSTOM, named, user-selected), and the **active realized mapping** (a per-layout
+  SNAPSHOT of content). `ns2_kbm_resolve()` reads only the snapshot, which is what makes
+  **Save ≠ Apply structural** rather than a UI convention: saving the profile that is currently
+  applied stores it and leaves the console running the old behaviour until Set Active. A pointer
+  into a mutable slot could not express that state at all. Stable profile ids survive slot reuse so
+  a cached draft cannot rebind to an unrelated mapping; revisions make a stale save a **conflict**,
+  never a silent overwrite; an FNV-1a fingerprint over canonicalized content — identical in C, C#
+  and Kotlin — answers "is what I saved what is running?" without trusting a local flag and lets
+  Apply skip a flash write when content is already realized. Mouse sensitivity, inversion and
+  anti-deadzone are **profile-owned**; velocity/idle constants stay transport properties. Saving is
+  one staged transaction (`kbm draft begin|bind|mouse|commit|abort`) because a loop of per-binding
+  writes is not atomic — a disconnect halfway leaves half of one mapping and half of another.
+  Editing 30 controls costs **0** flash writes; Save 1; Apply 1, or 0 when already realized.
+  Legacy `kbm map/bind/reset/mouse` keep their exact meaning — they act on the layout's realized
+  mapping immediately — and the resulting divergence from the saved profile is reported truthfully
+  instead of a client claiming the profile is still applied. `CONFIG_RECORD_BYTES` widened
+  1024 → 2048 after verifying the flash map: the config sector is ours alone, the erase already
+  covers all 4096 bytes whatever the value is, and there is **no A/B record whose atomicity is
+  compromised**. Record is 1888 of 2048, compile-time asserted. Migration v13 → v14 keeps a
+  customized mapping as a named profile (`Current Keyboard` / `Current KB + Mouse`) and realizes it,
+  so nothing about the user's console changes on upgrade; an unmodified mapping becomes Default and
+  consumes no slot; **the v13 management-companion table survives byte for byte**, with its own
+  regression. The record remains single-bank and non-CRC: sanitize rejects malformed state and is
+  explicitly **not** torn-write detection. 77/77 host, 585 Windows, all Android JVM tests, lint
+  clean, debug APK, both boards build, management command parity 60/60 and descriptor parity green.
+  **Nothing in the profile system has run on hardware yet.**
+  [`docs/architecture/kbm-profile-system-hld.md`](docs/architecture/kbm-profile-system-hld.md)
 
 - **BLE keyboard input — root-caused and fixed 2026-08-29; HARDWARE-CONFIRMED.** An 8BitDo
   2DC8:2028 keyboard paired, held the keyboard role, reported `keyboard=true`, and produced no
