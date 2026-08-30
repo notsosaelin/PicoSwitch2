@@ -95,6 +95,82 @@ public sealed class KeyboardMouseViewTests
         Assert.Equal(AdapterDashboard.NotConnected, view.Availability.DisabledReason);
     }
 
+    /* -------------------------------------------------------- clear a binding */
+
+    [Fact]
+    public void OnlyABoundInputAdvertisesAndAcceptsTheClearGesture()
+    {
+        // Middle-click clears a binding. The page asks the CELL whether that means
+        // anything here, rather than deciding for itself, so the gesture, the
+        // tooltip that advertises it and the guard that suppresses it cannot
+        // disagree.
+        //
+        // An unmapped key must refuse it: clearing nothing would still write a
+        // NONE override into the draft, and Dirty is computed from content — so
+        // Save would light up for a change the user cannot see anywhere.
+        var view = Project(State(bindings:
+        [
+            new KbmBinding(new KbmSource(KbmSourceKind.Key, 0x04), KbmDestination.A, Custom: true),
+        ]));
+
+        var bound = view.Keys.Single(cell => cell.Cap.Usage == 0x04);
+        Assert.True(bound.Bound);
+        Assert.True(bound.CanClear);
+        Assert.Contains("Middle-click to clear", bound.Tooltip);
+
+        var unbound = view.Keys.First(cell => !cell.Bound);
+        Assert.False(unbound.CanClear);
+        Assert.DoesNotContain("Middle-click", unbound.Tooltip);
+
+        // The tooltip still leads with the fact, so the shortcut hint is an
+        // addition to what the key does rather than a replacement for it.
+        Assert.StartsWith(bound.AccessibleName, bound.Tooltip);
+    }
+
+    [Fact]
+    public void ClearingABindingInADraftDirtiesItAndPuttingItBackCleansIt()
+    {
+        // What middle-click actually does, at the layer that owns it. Clearing is
+        // an ordinary draft edit: no adapter write, undone by Discard, and Dirty
+        // follows from content rather than from a flag — which is what makes
+        // "clear it, then set it back" correctly disable Save again.
+        var library = Library();
+        var source = new KbmSource(KbmSourceKind.Key, 0x04);
+        var row = library.For(KbmLayout.Keyboard).First(p => p.Id == 2);
+        var draft = KeyboardMouseDraft.From(
+            row,
+            [new KbmBinding(source, KbmDestination.A, Custom: true)],
+            new KbmMouseConfig());
+
+        Assert.False(draft.Dirty);
+
+        var cleared = draft.With(source, KbmDestination.None);
+        Assert.True(cleared.Dirty);
+
+        // NONE is stored, not dropped: "this key does nothing" is a real answer,
+        // and dropping the entry would restore the adapter's default instead.
+        Assert.Equal(KbmDestination.None,
+                     cleared.Bindings.Single(b => b.Source.Equals(source)).Destination);
+
+        Assert.False(cleared.With(source, KbmDestination.A).Dirty);
+    }
+
+    [Fact]
+    public void AClearedBindingReadsAsUnmappedAndStopsOfferingTheGesture()
+    {
+        // The round trip through the projection: once cleared, the cell reports
+        // itself unmapped, so a second middle-click on the same key does nothing.
+        var view = Project(State(bindings:
+        [
+            new KbmBinding(new KbmSource(KbmSourceKind.Key, 0x04), KbmDestination.None, Custom: true),
+        ]));
+
+        var cell = view.Keys.Single(c => c.Cap.Usage == 0x04);
+        Assert.False(cell.Bound);
+        Assert.False(cell.CanClear);
+        Assert.Contains("not mapped", cell.AccessibleName);
+    }
+
     /* ------------------------------------------------------------ mouse ranges */
 
     [Fact]
@@ -124,7 +200,60 @@ public sealed class KeyboardMouseViewTests
 
         var sensitivity = view.MouseSliders.Single(s => s.Field == KbmMouseField.Sensitivity);
         Assert.False(sensitivity.Available);
-        Assert.Contains("has not reported an adjustable range", sensitivity.Detail);
+        Assert.Equal("Not adjustable on this firmware", sensitivity.ValueText);
+
+        // The description stays regardless: it explains what the setting IS, and
+        // that is worth reading even when it cannot be changed here.
+        Assert.NotEmpty(sensitivity.Description);
+    }
+
+    [Fact]
+    public void EveryMouseControlCarriesAValueAndAnExplanation()
+    {
+        // Mouse tuning is the one section on this page that earns explanatory
+        // copy: "anti-deadzone" and "smoothing window" describe an analogue-stick
+        // emulation the user cannot see. The wording lives here rather than in the
+        // page so it is reviewable and cannot drift into ad-hoc markup.
+        //
+        // Value and description are SEPARATE fields because they go in different
+        // places — a short right-aligned readout beside the slider, and a wrapped
+        // line beneath it. They were one field, so a value and a paragraph
+        // competed for the same line and nothing lined up.
+        var view = Project();
+
+        Assert.Equal(3, view.MouseSliders.Count);
+        foreach (var slider in view.MouseSliders)
+        {
+            Assert.NotEmpty(slider.ValueText);
+            Assert.NotEmpty(slider.Description);
+            Assert.DoesNotContain(slider.ValueText, slider.Description);
+        }
+
+        Assert.Equal(2, view.MouseToggles.Count);
+        foreach (var toggle in view.MouseToggles)
+        {
+            Assert.NotEmpty(toggle.Label);
+            Assert.NotEmpty(toggle.Description);
+        }
+    }
+
+    [Fact]
+    public void TheInvertTogglesReportTheDraftRatherThanTheStoredValue()
+    {
+        // Same rule as the sliders: an open draft is what the user is editing, so
+        // the switches must show it. Reading the stored value would make an
+        // unsaved inversion look like it had not been applied.
+        var library = Library();
+        var draft = Draft(library) with
+        {
+            Mouse = Draft(library).Mouse with { InvertY = true },
+        };
+
+        var view = KeyboardMouse.Project(State() with { Profiles = library },
+                                         KbmLayout.Keyboard, connected: true, draft);
+
+        Assert.True(view.MouseToggles.Single(t => t.Field == KbmMouseField.InvertY).Value);
+        Assert.False(view.MouseToggles.Single(t => t.Field == KbmMouseField.InvertX).Value);
     }
 
     [Fact]
@@ -160,7 +289,7 @@ public sealed class KeyboardMouseViewTests
     public void SensitivityIsShownAsItsMultiplierBecauseTheRawValueMeansNothing() =>
         Assert.Equal(
             "×1.00",
-            Project().MouseSliders.Single(s => s.Field == KbmMouseField.Sensitivity).Detail);
+            Project().MouseSliders.Single(s => s.Field == KbmMouseField.Sensitivity).ValueText);
 
     /* ------------------------------------------------------------------- mode */
 

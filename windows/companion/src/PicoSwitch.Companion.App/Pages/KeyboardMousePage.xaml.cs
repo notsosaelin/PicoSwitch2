@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using PicoSwitch.Companion.Services;
 using PicoSwitch.Companion.Services.Presentation;
 using PicoSwitch.Management;
@@ -69,6 +70,14 @@ public sealed partial class KeyboardMousePage : Page
     public KeyboardMousePage()
     {
         InitializeComponent();
+
+        // Save is the primary action of the profile row and is styled as such.
+        // Applied here rather than in markup because a Page.Resources style that
+        // is BasedOn a framework theme style does not resolve at markup-compile
+        // time, and the page already reaches for this resource the same way to
+        // mark a changed key.
+        SaveButton.Style = (Style)Application.Current.Resources["AccentButtonStyle"];
+
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
     }
@@ -464,16 +473,6 @@ public sealed partial class KeyboardMousePage : Page
         }
     }
 
-    private async void OnInvertX(object sender, RoutedEventArgs e) =>
-        await SafeAsync(() => adapters.SetMouseAsync(
-            KbmMouseField.InvertX,
-            InvertXBox.IsChecked == true ? 1 : 0));
-
-    private async void OnInvertY(object sender, RoutedEventArgs e) =>
-        await SafeAsync(() => adapters.SetMouseAsync(
-            KbmMouseField.InvertY,
-            InvertYBox.IsChecked == true ? 1 : 0));
-
     /// <summary>
     /// Pick a destination for one source, clear it, or restore its default.
     ///
@@ -510,25 +509,9 @@ public sealed partial class KeyboardMousePage : Page
 
         var result = await dialog.ShowAsync();
 
-        // Both paths edit the LOCAL DRAFT and send nothing. That is the whole
-        // point of the draft: rebinding thirty keys costs zero adapter writes
-        // and zero flash erases, and Discard can actually undo it.
-        //
-        // Without a profile library (older firmware) there is no draft, and the
-        // per-binding command remains the only way to change a mapping.
         if (result == ContentDialogResult.Secondary)
         {
-            if (draft is not null)
-            {
-                draft = draft.With(source, DefaultDestination(source));
-                Render();
-            }
-            else
-            {
-                // A null destination is the protocol's `default`.
-                await SafeAsync(() => adapters.BindAsync(profile, source, destination: null));
-            }
-
+            await RestoreDefaultAsync(source);
             return;
         }
 
@@ -537,15 +520,54 @@ public sealed partial class KeyboardMousePage : Page
             return;
         }
 
-        var chosen = destinations[list.SelectedIndex];
+        await ApplyDestinationAsync(source, destinations[list.SelectedIndex]);
+    }
+
+    /// <summary>
+    /// THE single path by which any binding changes.
+    /// </summary>
+    /// <remarks>
+    /// The dialog, the middle-click clear gesture and anything added later all
+    /// route through here, so a new gesture cannot acquire its own idea of what
+    /// changing a binding means or forget to repaint.
+    ///
+    /// It edits the LOCAL DRAFT and sends nothing. That is the whole point of the
+    /// draft: rebinding thirty keys costs zero adapter writes and zero flash
+    /// erases, and Discard can actually undo it. Dirty state falls out of this
+    /// for free — it is computed from draft content against the saved profile,
+    /// never tracked with a flag — so a clear marks the profile unsaved exactly
+    /// when it changed something.
+    ///
+    /// Before a profile has been opened there is no draft, and the per-binding
+    /// command is the only way to reach the realized mapping.
+    /// </remarks>
+    private async Task ApplyDestinationAsync(KbmSource source, KbmDestination destination)
+    {
         if (draft is not null)
         {
-            draft = draft.With(source, chosen);
+            draft = draft.With(source, destination);
             Render();
             return;
         }
 
-        await SafeAsync(() => adapters.BindAsync(profile, source, chosen));
+        await SafeAsync(() => adapters.BindAsync(profile, source, destination));
+    }
+
+    /// <summary>
+    /// Put back whatever the adapter shipped with, which is NOT the same as
+    /// clearing: <c>default</c> restores, <c>none</c> silences.
+    /// </summary>
+    private async Task RestoreDefaultAsync(KbmSource source)
+    {
+        if (draft is not null)
+        {
+            draft = draft.With(source, DefaultDestination(source));
+            Render();
+            return;
+        }
+
+        // A null destination is the protocol's `default`.
+        await SafeAsync(() => adapters.BindAsync(profile, source, destination: null));
     }
 
     /// <summary>
@@ -656,8 +678,6 @@ public sealed partial class KeyboardMousePage : Page
         RefreshButton.IsEnabled = interactive;
         ResetProfile.IsEnabled = interactive;
         ResetAll.IsEnabled = interactive;
-        InvertXBox.IsEnabled = enabled;
-        InvertYBox.IsEnabled = enabled;
 
         DisabledReason.Text = view.Availability.DisabledReason ?? string.Empty;
         DisabledReason.Visibility = view.Availability.DisabledReason is null
@@ -680,12 +700,10 @@ public sealed partial class KeyboardMousePage : Page
         InactiveProfileBar.IsOpen = view.Loaded && view.EditingInactiveProfile;
         InactiveProfileBar.Message = view.InactiveProfileWarning ?? string.Empty;
 
-        InvertXBox.IsChecked = view.InvertX;
-        InvertYBox.IsChecked = view.InvertY;
-
         BuildKeyboard(view, enabled);
         BuildMouseButtons(view, enabled);
         BuildSliders(view, enabled);
+        BuildMouseToggles(view, enabled);
 
         UndrawnSection.Visibility = view.Undrawn.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         UndrawnList.ItemsSource = view.Undrawn;
@@ -710,7 +728,7 @@ public sealed partial class KeyboardMousePage : Page
         OtherKeysHost.Children.Clear();
         foreach (var cell in current.OtherKeys.Cells)
         {
-            OtherKeysHost.Children.Add(KeyButton(cell, enabled));
+            OtherKeysHost.Children.Add(KeyButton(cell, enabled, fixedGeometry: false));
         }
     }
 
@@ -755,17 +773,30 @@ public sealed partial class KeyboardMousePage : Page
 
         foreach (var cell in current.MouseButtons)
         {
-            MouseButtonHost.Children.Add(KeyButton(cell, enabled, width: cell.Cap.Width, mouse: true));
+            MouseButtonHost.Children.Add(KeyButton(cell, enabled, width: cell.Cap.Width,
+                                                   mouse: true, fixedGeometry: false));
         }
     }
 
-    private Button KeyButton(KeyBindingCell cell, bool enabled, double? width = null, bool mouse = false)
+    /// <param name="fixedGeometry">
+    /// True for the keyboard grid, where a key must occupy exactly its share of
+    /// the layout or the picture stops being a keyboard. False for the ISO,
+    /// international and mouse-button rows, which are ordinary lists: those size
+    /// to their content, because a key-unit width clipped "Muhenkan" and
+    /// "Katakana/Hiragana" down to an ellipsis for no layout benefit at all.
+    /// </param>
+    private Button KeyButton(KeyBindingCell cell, bool enabled, double? width = null,
+                             bool mouse = false, bool fixedGeometry = true)
     {
         var caption = new StackPanel { Spacing = 0 };
         caption.Children.Add(new TextBlock
         {
             Text = cell.Cap.Label,
             HorizontalAlignment = HorizontalAlignment.Center,
+            // Only the grid clips. Elsewhere the button grows instead.
+            TextTrimming = fixedGeometry
+                ? TextTrimming.CharacterEllipsis
+                : TextTrimming.None,
         });
 
         // The binding is shown ON the key. A keyboard where you have to hover to
@@ -777,24 +808,36 @@ public sealed partial class KeyboardMousePage : Page
                 Text = cell.DestinationLabel,
                 FontSize = 10,
                 HorizontalAlignment = HorizontalAlignment.Center,
-                TextTrimming = TextTrimming.CharacterEllipsis,
+                TextTrimming = fixedGeometry
+                    ? TextTrimming.CharacterEllipsis
+                    : TextTrimming.None,
             });
         }
 
         var button = new Button
         {
             Content = caption,
-            Width = (width ?? cell.Cap.Width) * KeyUnit - KeyGap,
             Height = KeyUnit - KeyGap,
-            Padding = new Thickness(2),
             IsEnabled = enabled,
             Tag = cell.Cap.Usage,
         };
 
+        if (fixedGeometry)
+        {
+            button.Width = (width ?? cell.Cap.Width) * KeyUnit - KeyGap;
+            button.Padding = new Thickness(2);
+        }
+        else
+        {
+            // Grow to fit; the key unit becomes a floor rather than a ceiling.
+            button.MinWidth = (width ?? cell.Cap.Width) * KeyUnit - KeyGap;
+            button.Padding = new Thickness(10, 2, 10, 2);
+        }
+
         // Colour alone cannot carry "this one is changed" -- it fails high contrast
         // and it fails a screen reader. The accessible name carries the whole fact.
         AutomationProperties.SetName(button, cell.AccessibleName);
-        ToolTipService.SetToolTip(button, cell.AccessibleName);
+        ToolTipService.SetToolTip(button, cell.Tooltip);
 
         if (cell.Overridden)
         {
@@ -805,20 +848,91 @@ public sealed partial class KeyboardMousePage : Page
             ? new KbmSource(KbmSourceKind.MouseButton, cell.Cap.Usage)
             : new KbmSource(KbmSourceKind.Key, cell.Cap.Usage);
         button.Click += async (_, _) => await EditAsync(source, cell.Cap.Label);
+
+        // MIDDLE-CLICK CLEARS.
+        //
+        // A shortcut for the most common edit, which otherwise costs a dialog and
+        // a list selection. It routes through the same ApplyDestinationAsync as
+        // the dialog, so it produces an ordinary draft edit -- no adapter write,
+        // undone by Discard, and dirty state follows from the content like any
+        // other change.
+        //
+        // Guarded on CanClear so the gesture cannot dirty a profile with a change
+        // that alters nothing: middle-clicking an unmapped key does nothing.
+        //
+        // PointerPressed rather than PointerReleased because that is where the
+        // button's own middle-button state is unambiguous, and Handled is set so
+        // the gesture cannot also trip the click path that opens the dialog.
+        if (cell.CanClear)
+        {
+            button.PointerPressed += async (s, args) =>
+            {
+                var point = args.GetCurrentPoint((UIElement)s);
+                if (!point.Properties.IsMiddleButtonPressed)
+                {
+                    return;
+                }
+
+                args.Handled = true;
+                if (!button.IsEnabled)
+                {
+                    return;
+                }
+
+                await ApplyDestinationAsync(source, KbmDestination.None);
+            };
+        }
+
         return button;
     }
 
+    /// <summary>
+    /// The mouse-tuning block: name and value on one line, slider under it,
+    /// description under that.
+    /// </summary>
+    /// <remarks>
+    /// The value sits in a fixed-width, right-aligned column so the three
+    /// readouts line up with each other and the sliders all start and end at the
+    /// same x. Previously the value was appended below each slider as free text
+    /// of varying length, so nothing in the section shared an edge.
+    ///
+    /// The wording comes from <see cref="MouseSlider"/>, not from here: it is
+    /// product copy, it is asserted by tests, and building it in the page would
+    /// put it beyond both.
+    /// </remarks>
     private void BuildSliders(KeyboardMouseView current, bool enabled)
     {
         SliderHost.Children.Clear();
         foreach (var model in current.MouseSliders)
         {
-            var panel = new StackPanel { Spacing = 2 };
-            panel.Children.Add(new TextBlock
+            var panel = new StackPanel { Spacing = 4 };
+
+            var heading = new Grid();
+            heading.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            heading.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var label = new TextBlock
             {
                 Text = model.Label,
                 Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"],
-            });
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetColumn(label, 0);
+            heading.Children.Add(label);
+
+            var value = new TextBlock
+            {
+                Text = model.ValueText,
+                Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
+                Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextAlignment = TextAlignment.Right,
+                MinWidth = 96,
+            };
+            Grid.SetColumn(value, 1);
+            heading.Children.Add(value);
+            panel.Children.Add(heading);
 
             var slider = new Slider
             {
@@ -826,7 +940,8 @@ public sealed partial class KeyboardMousePage : Page
                 Maximum = Math.Max(model.Maximum, model.Minimum + 1),
                 Value = Math.Clamp(model.Value, model.Minimum, Math.Max(model.Maximum, model.Minimum + 1)),
                 IsEnabled = enabled && model.Available,
-                Width = 320,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                Margin = new Thickness(0, -4, 0, 0),
             };
             AutomationProperties.SetName(slider, model.Label);
 
@@ -838,19 +953,61 @@ public sealed partial class KeyboardMousePage : Page
             // the settle timer is the one mechanism that covers every input method.
             var field = model.Field;
             slider.ValueChanged += (s, _) => ScheduleMouseCommit(field, (int)((Slider)s).Value);
-
             panel.Children.Add(slider);
-            if (model.Detail is { } detail)
+
+            panel.Children.Add(new TextBlock
             {
-                panel.Children.Add(new TextBlock
-                {
-                    Text = detail,
-                    Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
-                    TextWrapping = TextWrapping.Wrap,
-                });
-            }
+                Text = model.Description,
+                Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
+                Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, -4, 0, 0),
+            });
 
             SliderHost.Children.Add(panel);
+        }
+    }
+
+    /// <summary>
+    /// The invert switches, each with its one-line description beneath it.
+    /// </summary>
+    /// <remarks>
+    /// Stacked rather than side by side: two checkboxes on one row cannot carry
+    /// descriptions without the second column's text wrapping against the first
+    /// one's, and "invert vertical" is exactly the setting a user is unsure about.
+    /// </remarks>
+    private void BuildMouseToggles(KeyboardMouseView current, bool enabled)
+    {
+        ToggleHost.Children.Clear();
+        foreach (var model in current.MouseToggles)
+        {
+            var panel = new StackPanel { Spacing = 0 };
+            var box = new CheckBox
+            {
+                Content = model.Label,
+                IsChecked = model.Value,
+                IsEnabled = enabled,
+                MinWidth = 0,
+            };
+            AutomationProperties.SetName(box, model.Label);
+
+            var field = model.Field;
+            box.Click += async (s, _) => await SafeAsync(() => adapters.SetMouseAsync(
+                field, ((CheckBox)s).IsChecked == true ? 1 : 0));
+
+            panel.Children.Add(box);
+            panel.Children.Add(new TextBlock
+            {
+                Text = model.Description,
+                Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
+                Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+                TextWrapping = TextWrapping.Wrap,
+                // Line the description up under the checkbox's label, not under
+                // its box.
+                Margin = new Thickness(30, 0, 0, 0),
+            });
+
+            ToggleHost.Children.Add(panel);
         }
     }
 

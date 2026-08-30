@@ -10,6 +10,15 @@ public sealed record KeyBindingCell(
 {
     public bool Bound => Destination != KbmDestination.None;
 
+    /// <summary>
+    /// Whether a quick "clear this binding" gesture does anything here.
+    ///
+    /// Only a bound input can be cleared. Letting the gesture fire on an unmapped
+    /// key would mark the draft dirty with a change that alters nothing, so Save
+    /// would light up for an edit the user cannot see.
+    /// </summary>
+    public bool CanClear => Bound;
+
     /// <summary>The adapter's default, changed by the user. Worth showing as different.</summary>
     public bool Overridden => Custom;
 
@@ -23,6 +32,16 @@ public sealed record KeyBindingCell(
     public string AccessibleName => Bound
         ? $"{Cap.Label}, mapped to {DestinationLabel}" + (Custom ? ", changed" : string.Empty)
         : $"{Cap.Label}, not mapped";
+
+    /// <summary>
+    /// The hover tooltip: what this key does, plus the shortcut for clearing it.
+    ///
+    /// The shortcut is advertised only where it applies. A middle-click hint on a
+    /// key that has nothing to clear teaches the gesture wrong.
+    /// </summary>
+    public string Tooltip => CanClear
+        ? $"{AccessibleName}\nMiddle-click to clear"
+        : AccessibleName;
 }
 
 /// <summary>One mouse-tuning slider, with the range the ADAPTER reported.</summary>
@@ -42,6 +61,17 @@ public sealed record KeyBindingCell(
 /// Either way, inventing client-side bounds would let the user drag to a value
 /// the adapter clamps — a slider that springs back with no explanation.
 /// </param>
+/// <param name="ValueText">
+/// The current value, formatted for the readout column. Kept separate from
+/// <paramref name="Description"/> so the page can right-align a short value
+/// beside the slider and put the explanation underneath: the two were one field,
+/// which is why a value and a paragraph competed for the same line.
+/// </param>
+/// <param name="Description">
+/// What the setting actually changes, in one line. Mouse tuning is the one part
+/// of this page where the control names genuinely do not explain themselves —
+/// "anti-deadzone" means nothing without knowing there is a stick underneath.
+/// </param>
 public sealed record MouseSlider(
     KbmMouseField Field,
     string Label,
@@ -49,7 +79,15 @@ public sealed record MouseSlider(
     int Minimum,
     int Maximum,
     bool Available,
-    string? Detail = null);
+    string ValueText,
+    string Description);
+
+/// <summary>One mouse-tuning toggle, with the same one-line explanation.</summary>
+public sealed record MouseToggle(
+    KbmMouseField Field,
+    string Label,
+    bool Value,
+    string Description);
 
 /// <summary>
 /// The adapter's KB/M ingress counters, as three readable lines.
@@ -271,6 +309,9 @@ public sealed record KeyboardMouseView
 
     public required IReadOnlyList<MouseSlider> MouseSliders { get; init; }
 
+    /// <summary>The invert switches, carrying their own explanations.</summary>
+    public required IReadOnlyList<MouseToggle> MouseToggles { get; init; }
+
     public required bool InvertX { get; init; }
 
     public required bool InvertY { get; init; }
@@ -449,6 +490,8 @@ public static class KeyboardMouse
                                              AntiDeadzone = draft.Mouse.AntiDeadzone,
                                          }
                                        : state.Mouse),
+            MouseToggles = Toggles(draft?.Mouse.InvertX ?? state.Mouse.InvertX,
+                                   draft?.Mouse.InvertY ?? state.Mouse.InvertY),
             InvertX = draft?.Mouse.InvertX ?? state.Mouse.InvertX,
             InvertY = draft?.Mouse.InvertY ?? state.Mouse.InvertY,
             Loaded = state.Loaded,
@@ -495,11 +538,26 @@ public static class KeyboardMouse
     /// is silent — the adapter clamps, the slider springs back, and nothing says
     /// why.
     /// </summary>
+    /// <summary>
+    /// The mouse-tuning block.
+    /// </summary>
+    /// <remarks>
+    /// These carry real explanations, unlike the rest of the page. The mapping
+    /// grid explains itself — a key with a controller button written on it needs
+    /// no paragraph — but "smoothing window" and "anti-deadzone" describe an
+    /// analogue-stick emulation the user cannot see, and without one line each
+    /// they are three sliders to be moved at random.
+    ///
+    /// Ranges come from the adapter, never invented here: a client-side bound
+    /// would let the user drag to a value the firmware clamps, and the slider
+    /// would spring back with no explanation.
+    /// </remarks>
     private static IReadOnlyList<MouseSlider> Sliders(KbmMouseConfig mouse)
     {
-        const string NoRange =
-            "The adapter has not reported an adjustable range for this setting, so it " +
-            "cannot be changed here.";
+        const string NoRange = "Not adjustable on this firmware";
+
+        var smoothingRanged = mouse.VelocityWindowMaxMs > mouse.VelocityWindowMinMs;
+        var antiDeadzoneRanged = mouse.AntiDeadzoneMax > 0;
 
         return
         [
@@ -510,27 +568,39 @@ public static class KeyboardMouse
                 mouse.SensitivityMin,
                 mouse.SensitivityMax,
                 mouse.Ranged,
-                mouse.Ranged ? $"×{mouse.Multiplier(mouse.SensitivityX):0.00}" : NoRange),
+                mouse.Ranged ? $"×{mouse.Multiplier(mouse.SensitivityX):0.00}" : NoRange,
+                "How far the stick pushes for a given amount of mouse movement. " +
+                "Raise it to turn faster with a smaller hand movement."),
             new MouseSlider(
                 KbmMouseField.VelocityWindow,
                 "Smoothing window",
                 mouse.VelocityWindowMs,
                 mouse.VelocityWindowMinMs,
                 mouse.VelocityWindowMaxMs,
-                mouse.VelocityWindowMaxMs > mouse.VelocityWindowMinMs,
-                mouse.VelocityWindowMaxMs > mouse.VelocityWindowMinMs
-                    ? $"{mouse.VelocityWindowMs} ms"
-                    : NoRange),
+                smoothingRanged,
+                smoothingRanged ? $"{mouse.VelocityWindowMs} ms" : NoRange,
+                "How long mouse movement is averaged over. Higher is steadier but " +
+                "less responsive; lower reacts instantly and can feel jittery."),
             new MouseSlider(
                 KbmMouseField.AntiDeadzone,
                 "Anti-deadzone",
                 mouse.AntiDeadzone,
                 0,
                 mouse.AntiDeadzoneMax,
-                mouse.AntiDeadzoneMax > 0,
-                mouse.AntiDeadzoneMax > 0 ? mouse.AntiDeadzone.ToString() : NoRange),
+                antiDeadzoneRanged,
+                antiDeadzoneRanged ? mouse.AntiDeadzone.ToString() : NoRange,
+                "Games ignore small stick movements. This adds a minimum push so " +
+                "slow mouse movement still registers. Too high and the aim drifts."),
         ];
     }
+
+    private static IReadOnlyList<MouseToggle> Toggles(bool invertX, bool invertY) =>
+    [
+        new MouseToggle(KbmMouseField.InvertX, "Invert horizontal", invertX,
+                        "Moving the mouse left aims right."),
+        new MouseToggle(KbmMouseField.InvertY, "Invert vertical", invertY,
+                        "Moving the mouse forward aims down, like an aircraft stick."),
+    ];
 
     /// <summary>
     /// What the adapter is actually doing, and whether that is what was asked.
