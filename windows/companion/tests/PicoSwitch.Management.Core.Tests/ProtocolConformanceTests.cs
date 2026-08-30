@@ -187,6 +187,36 @@ public sealed class ProtocolConformanceTests
     }
 
     [Fact]
+    public void KbmStatusReadsTheCompositeIdentityFields()
+    {
+        // `group` and `source` have always been in the firmware's reply
+        // (ns2_kbm_status.c) and were never read. They are what distinguishes
+        // "the keyboard holds its role" from "the composite owns the console
+        // slot" -- the two are not the same, and only the second one makes a
+        // keypress reach the game.
+        //
+        // The shared protocol fixture predates them, so this uses a literal
+        // reply; absence must stay tolerated, which the second case pins.
+        var status = ManagementProtocol.KbmStatus(
+            "kbm status",
+            """
+            {"mode":"keyboard","override":"auto","profile":"kb",
+             "keyboard":true,"mouse":false,"nativeMouse":false,
+             "keyboardConn":5,"mouseConn":0,"group":2,"source":7}
+            """);
+
+        Assert.Equal(2, status.GroupId);
+        Assert.Equal(7, status.SourceId);
+
+        // An older adapter that omits them still parses; zero is also the real
+        // value the firmware reports for "no composite" and "not owning".
+        var older = ManagementProtocol.KbmStatus(
+            Vector("kbmStatus").Command, Vector("kbmStatus").Reply);
+        Assert.Equal(0, older.GroupId);
+        Assert.Equal(0, older.SourceId);
+    }
+
+    [Fact]
     public void KbmFixturesDistinguishModeProfileNoneAndAdapterRanges()
     {
         var statusVector = Vector("kbmStatus");

@@ -303,6 +303,13 @@ public sealed partial class KeyboardMousePage : Page
             ? $"{view.BoundCount} of {view.MappableCount} inputs mapped"
             : "Not read yet";
 
+        // Read it, press one key, read it again: the useful signal is the
+        // difference, so the whole block stays visible once anything has loaded.
+        CountersExpander.Visibility = view.Counters is null
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        CountersText.Text = view.Counters?.Text ?? string.Empty;
+
         InactiveProfileBar.IsOpen = view.Loaded && view.EditingInactiveProfile;
         InactiveProfileBar.Message = view.InactiveProfileWarning ?? string.Empty;
 

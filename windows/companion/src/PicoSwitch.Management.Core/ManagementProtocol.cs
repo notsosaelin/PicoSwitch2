@@ -254,6 +254,8 @@ public static class ManagementProtocol
                 NativeMouseOutput: value.Bool("nativeMouse"),
                 KeyboardConn: value.Int("keyboardConn"),
                 MouseConn: value.Int("mouseConn"),
+                GroupId: value.Long("group"),
+                SourceId: value.Long("source"),
                 KeyboardReports: value.Long("keyboardReports"),
                 MouseReports: value.Long("mouseReports"),
                 RejectedMode: value.Long("rejectedMode"),
