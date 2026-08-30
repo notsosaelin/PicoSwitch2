@@ -54,6 +54,31 @@ public sealed partial class KeyboardMousePage : Page
     private bool populatingProfiles;
 
     /// <summary>
+    /// The rows currently realized in the picker, so a render can tell whether the
+    /// collection actually has to change.
+    /// </summary>
+    /// <remarks>
+    /// The picker used to be cleared and rebuilt on every render, which is what
+    /// let an asynchronously-arriving repaint tear the items out from under a
+    /// control that still referenced them. See <see cref="KbmProfileSelection"/>
+    /// for the crash this closes.
+    /// </remarks>
+    private IReadOnlyList<KbmProfileInfo> renderedProfileRows = [];
+
+    /// <summary>
+    /// The selected profile's stable ID. Selection identity lives HERE, not in a
+    /// <see cref="ComboBoxItem"/> that every render replaced.
+    /// </summary>
+    private int selectedProfileId = KbmProfileIds.None;
+
+    /// <summary>
+    /// Whether a <see cref="ContentDialog"/> is open. WinUI allows exactly one;
+    /// a second <c>ShowAsync</c> throws, and from an `async void` handler that
+    /// throw terminates the process.
+    /// </summary>
+    private bool dialogOpen;
+
+    /// <summary>
     /// The local, unsaved copy of the profile being edited.
     ///
     /// Every edit on this page mutates THIS and nothing else. No management
@@ -82,22 +107,23 @@ public sealed partial class KeyboardMousePage : Page
         Unloaded += OnUnloaded;
     }
 
-    private async void OnLoaded(object sender, RoutedEventArgs e)
-    {
-        adapters.KeyboardMouse.Changed += OnStateChanged;
-        adapters.KeyboardMouseBusy.Changed += OnStateChanged;
-        adapters.Connection.Changed += OnStateChanged;
-
-        Render();
-
-        // Read on arrival when there is a session, so the page is useful without a
-        // manual step. A failure here is reported, not thrown at the user as an
-        // empty keyboard with no explanation.
-        if (adapters.Connection.Value.Connected && !adapters.KeyboardMouse.Value.Loaded)
+    private async void OnLoaded(object sender, RoutedEventArgs e) =>
+        await GuardAsync(async () =>
         {
-            await SafeAsync(() => adapters.RefreshKeyboardMouseAsync());
-        }
-    }
+            adapters.KeyboardMouse.Changed += OnStateChanged;
+            adapters.KeyboardMouseBusy.Changed += OnStateChanged;
+            adapters.Connection.Changed += OnStateChanged;
+
+            Render();
+
+            // Read on arrival when there is a session, so the page is useful
+            // without a manual step. A failure here is reported, not thrown at the
+            // user as an empty keyboard with no explanation.
+            if (adapters.Connection.Value.Connected && !adapters.KeyboardMouse.Value.Loaded)
+            {
+                await SafeAsync(() => adapters.RefreshKeyboardMouseAsync());
+            }
+        });
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
@@ -115,9 +141,10 @@ public sealed partial class KeyboardMousePage : Page
     /* ------------------------------------------------------------- actions */
 
     private async void OnRefresh(object sender, RoutedEventArgs e) =>
-        await SafeAsync(() => adapters.RefreshKeyboardMouseAsync());
+        await GuardAsync(() => SafeAsync(() => adapters.RefreshKeyboardMouseAsync()));
 
-    private async void OnSetMode(object sender, RoutedEventArgs e)
+    private async void OnSetMode(object sender, RoutedEventArgs e) =>
+        await GuardAsync(async () =>
     {
         if (ModeBox.SelectedIndex < 0)
         {
@@ -139,7 +166,7 @@ public sealed partial class KeyboardMousePage : Page
                     InfoBarSeverity.Informational);
             }
         });
-    }
+    });
 
     private void RenderProfileSelector(KeyboardMouseView view)
     {
@@ -147,32 +174,59 @@ public sealed partial class KeyboardMousePage : Page
         // Default always exists. The row has no hidden variant any more: an
         // adapter without a profile library does not reach this page at all.
         ProfileRow.Visibility = Visibility.Visible;
-        populatingProfiles = true;
-        try
-        {
-            ProfileSelector.Items.Clear();
-            var selected = -1;
-            for (var i = 0; i < view.Profiles.Count; i++)
-            {
-                var row = view.Profiles[i];
-                ProfileSelector.Items.Add(new ComboBoxItem
-                {
-                    // Built-in Default is labelled as such so a user can tell at
-                    // a glance which row they cannot rename or delete.
-                    Content = row.Builtin ? $"{row.Name} (built-in)" : row.Name,
-                    Tag = row.Id,
-                });
-                if (row.Id == view.SelectedProfile?.Id)
-                {
-                    selected = i;
-                }
-            }
+        // RECONCILE, NEVER REBUILD BLINDLY.
+        //
+        // This collection used to be cleared and repopulated on every render, and
+        // the selection was read back out of the ComboBoxItem objects it created.
+        // Renders arrive asynchronously — from the dispatcher-enqueued state
+        // callback and from every command's completion — so the items could be
+        // torn out from under a control that still referenced them. WER recorded
+        // the result as 0xc000027b in Microsoft.UI.Xaml.dll, ERROR_NOT_FOUND.
+        //
+        // Now: identity is the profile ID (selectedProfileId), the rows are
+        // rebuilt only when what the control DISPLAYS actually differs, and the
+        // collection is never touched while the user has the popup open.
+        var plan = KbmProfileSelection.Plan(renderedProfileRows, view.Profiles,
+                                            view.SelectedProfile?.Id ?? KbmProfileIds.None);
+        selectedProfileId = plan.SelectedId;
 
-            ProfileSelector.SelectedIndex = selected;
-        }
-        finally
+        if (plan.Rebuild && !ProfileSelector.IsDropDownOpen)
         {
-            populatingProfiles = false;
+            populatingProfiles = true;
+            try
+            {
+                ProfileSelector.Items.Clear();
+                foreach (var row in plan.Rows)
+                {
+                    ProfileSelector.Items.Add(new ComboBoxItem
+                    {
+                        // Built-in Default is labelled as such so a user can tell
+                        // at a glance which row they cannot rename or delete.
+                        Content = row.Builtin ? $"{row.Name} (built-in)" : row.Name,
+                        Tag = row.Id,
+                    });
+                }
+
+                renderedProfileRows = [.. plan.Rows];
+            }
+            finally
+            {
+                populatingProfiles = false;
+            }
+        }
+
+        if (ProfileSelector.SelectedIndex != plan.SelectedIndex &&
+            plan.SelectedIndex < ProfileSelector.Items.Count)
+        {
+            populatingProfiles = true;
+            try
+            {
+                ProfileSelector.SelectedIndex = plan.SelectedIndex;
+            }
+            finally
+            {
+                populatingProfiles = false;
+            }
         }
 
         // Save and Apply are separate actions with separate enablement, which is
@@ -200,26 +254,40 @@ public sealed partial class KeyboardMousePage : Page
     /// Selecting a profile OPENS it for viewing and editing. It does not apply
     /// it: a list selection must never change what the console is doing.
     /// </summary>
-    private async void OnSelectedProfileChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (populatingProfiles || ProfileSelector.SelectedItem is not ComboBoxItem item ||
-            item.Tag is not int id || draft?.ProfileId == id)
+    private async void OnSelectedProfileChanged(object sender, SelectionChangedEventArgs e) =>
+        await GuardAsync(async () =>
         {
-            return;
-        }
+            if (ProfileSelector.SelectedItem is not ComboBoxItem item ||
+                item.Tag is not int id)
+            {
+                return;
+            }
 
-        if (draft?.Dirty == true && !await ConfirmAsync(
-                "Discard unsaved changes?",
-                "The changes to this profile have not been saved to the adapter " +
-                "and will be lost.",
-                "Discard"))
-        {
-            Render();  // put the selector back on the profile still being edited
-            return;
-        }
+            // Decided BEFORE anything is awaited. The old version read the draft,
+            // awaited a dialog, then acted on state that could have been replaced
+            // while it was suspended.
+            var action = KbmProfileSelection.Decide(
+                id,
+                draft?.ProfileId ?? KbmProfileIds.None,
+                draft?.Dirty == true,
+                populatingProfiles);
 
-        await OpenProfileAsync(id);
-    }
+            switch (action)
+            {
+                case KbmSelectionAction.Ignore:
+                    return;
+
+                case KbmSelectionAction.ConfirmDiscard
+                    when !await ConfirmAsync(
+                        "Discard unsaved changes?",
+                        "The changes to this profile have not been saved and will be lost.",
+                        "Discard"):
+                    Render();  // put the selector back on the profile still open
+                    return;
+            }
+
+            await OpenProfileAsync(id);
+        });
 
     /// <summary>Load one profile's stored mapping into a fresh local draft.</summary>
     private async Task OpenProfileAsync(int id)
@@ -241,37 +309,38 @@ public sealed partial class KeyboardMousePage : Page
         Render();
     }
 
-    private async void OnSaveProfile(object sender, RoutedEventArgs e)
-    {
-        if (draft is null)
+    private async void OnSaveProfile(object sender, RoutedEventArgs e) =>
+        await GuardAsync(async () =>
         {
-            return;
-        }
-
-        var editing = draft;
-        // Editing the built-in Default becomes a NEW profile: the template is
-        // never written into, which is what keeps it always available.
-        if (editing.IsBuiltin)
-        {
-            var name = await PromptAsync("Save as new profile", "Profile name",
-                                         SuggestName("My mapping"));
-            if (string.IsNullOrWhiteSpace(name))
+            if (draft is null)
             {
                 return;
             }
 
-            editing = editing.WithName(name!);
-        }
+            var editing = draft;
+            // Editing the built-in Default becomes a NEW profile: the template is
+            // never written into, which is what keeps it always available.
+            if (editing.IsBuiltin)
+            {
+                var name = await PromptAsync("Save as new profile", "Profile name",
+                                             SuggestName("My mapping"));
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    return;
+                }
 
-        var saved = await SafeAsync(() => adapters.SaveKeyboardMouseProfileAsync(editing));
-        if (saved is null)
-        {
-            return;
-        }
+                editing = editing.WithName(name!);
+            }
 
-        draft = saved;
-        Render();
-    }
+            var saved = await SafeAsync(() => adapters.SaveKeyboardMouseProfileAsync(editing));
+            if (saved is null)
+            {
+                return;
+            }
+
+            draft = saved;
+            Render();
+        });
 
     private void OnDiscardProfile(object sender, RoutedEventArgs e)
     {
@@ -281,19 +350,21 @@ public sealed partial class KeyboardMousePage : Page
         Render();
     }
 
-    private async void OnApplyProfile(object sender, RoutedEventArgs e)
-    {
-        if (draft is null)
+    private async void OnApplyProfile(object sender, RoutedEventArgs e) =>
+        await GuardAsync(async () =>
         {
-            return;
-        }
+            if (draft is null)
+            {
+                return;
+            }
 
-        await SafeAsync(() =>
-            adapters.ApplyKeyboardMouseProfileAsync(draft.Layout, draft.ProfileId));
-        Render();
-    }
+            await SafeAsync(() =>
+                adapters.ApplyKeyboardMouseProfileAsync(draft.Layout, draft.ProfileId));
+            Render();
+        });
 
-    private async void OnNewProfile(object sender, RoutedEventArgs e)
+    private async void OnNewProfile(object sender, RoutedEventArgs e) =>
+        await GuardAsync(async () =>
     {
         var source = draft?.ProfileId ?? KbmProfileIds.Default;
         var name = await PromptAsync(
@@ -342,9 +413,10 @@ public sealed partial class KeyboardMousePage : Page
         }
 
         Render();
-    }
+    });
 
-    private async void OnRenameProfile(object sender, RoutedEventArgs e)
+    private async void OnRenameProfile(object sender, RoutedEventArgs e) =>
+        await GuardAsync(async () =>
     {
         if (draft is null || draft.IsBuiltin)
         {
@@ -366,9 +438,10 @@ public sealed partial class KeyboardMousePage : Page
         }
 
         Render();
-    }
+    });
 
-    private async void OnDeleteProfile(object sender, RoutedEventArgs e)
+    private async void OnDeleteProfile(object sender, RoutedEventArgs e) =>
+        await GuardAsync(async () =>
     {
         if (draft is null || draft.IsBuiltin)
         {
@@ -398,7 +471,7 @@ public sealed partial class KeyboardMousePage : Page
         }
 
         Render();
-    }
+    });
 
     /// <summary>A name that is not already taken in this layout.</summary>
     private string SuggestName(string basis)
@@ -436,42 +509,46 @@ public sealed partial class KeyboardMousePage : Page
         Render();
     }
 
-    private async void OnResetProfile(object sender, RoutedEventArgs e)
-    {
-        if (!await ConfirmAsync(
-                "Reset this profile?",
-                "Every key in this profile goes back to the adapter's own default mapping. " +
-                "The other profile and the mouse tuning are not affected.",
-                "Reset profile"))
+    private async void OnResetProfile(object sender, RoutedEventArgs e) =>
+        await GuardAsync(async () =>
         {
-            return;
-        }
+            if (!await ConfirmAsync(
+                    "Reset this mapping?",
+                    "Every key goes back to the adapter's own default mapping. " +
+                    "The other layout and the mouse tuning are not affected.",
+                    "Reset mapping"))
+            {
+                return;
+            }
 
-        await SafeAsync(() => adapters.ResetProfileAsync(profile));
-    }
+            await SafeAsync(() => adapters.ResetProfileAsync(profile));
+        });
 
-    private async void OnResetAll(object sender, RoutedEventArgs e)
-    {
-        if (!await ConfirmAsync(
-                "Reset everything?",
-                "Both profiles and the mouse tuning go back to the adapter's own defaults. " +
-                "Every mapping you have changed is lost.",
-                "Reset everything"))
+    private async void OnResetAll(object sender, RoutedEventArgs e) =>
+        await GuardAsync(async () =>
         {
-            return;
-        }
+            if (!await ConfirmAsync(
+                    "Reset everything?",
+                    "Both layouts and the mouse tuning go back to the adapter's own " +
+                    "defaults. Every mapping you have changed is lost.",
+                    "Reset everything"))
+            {
+                return;
+            }
 
-        await SafeAsync(() => adapters.ResetAllKeyboardMouseAsync());
-    }
+            await SafeAsync(() => adapters.ResetAllKeyboardMouseAsync());
+        });
 
-    private async void OnEditUndrawn(object sender, RoutedEventArgs e)
-    {
-        if (sender is FrameworkElement { Tag: int usage })
+    private async void OnEditUndrawn(object sender, RoutedEventArgs e) =>
+        await GuardAsync(async () =>
         {
-            await EditAsync(new KbmSource(KbmSourceKind.Key, usage), KeyboardLayout.Describe(
-                new KbmSource(KbmSourceKind.Key, usage)));
-        }
-    }
+            if (sender is FrameworkElement { Tag: int usage })
+            {
+                await EditAsync(new KbmSource(KbmSourceKind.Key, usage),
+                                KeyboardLayout.Describe(
+                                    new KbmSource(KbmSourceKind.Key, usage)));
+            }
+        });
 
     /// <summary>
     /// Pick a destination for one source, clear it, or restore its default.
@@ -498,7 +575,6 @@ public sealed partial class KeyboardMousePage : Page
 
         var dialog = new ContentDialog
         {
-            XamlRoot = XamlRoot,
             Title = $"What should {label} do?",
             Content = list,
             PrimaryButtonText = "Set",
@@ -507,7 +583,7 @@ public sealed partial class KeyboardMousePage : Page
             DefaultButton = ContentDialogButton.Primary,
         };
 
-        var result = await dialog.ShowAsync();
+        var result = await ShowDialogAsync(dialog);
 
         if (result == ContentDialogResult.Secondary)
         {
@@ -1045,16 +1121,76 @@ public sealed partial class KeyboardMousePage : Page
 
     /* --------------------------------------------------------------- plumbing */
 
-    private async Task<bool> ConfirmAsync(string title, string content, string action) =>
-        await new ContentDialog
+    /// <summary>
+    /// THE exception boundary for every `async void` handler on this page.
+    /// </summary>
+    /// <remarks>
+    /// An exception escaping an `async void` UI handler has no handler at all: it
+    /// is rethrown on the dispatcher and terminates the process. WER recorded
+    /// exactly that — 0xc000027b, a stowed exception surfacing through
+    /// Microsoft.UI.Xaml.dll.
+    ///
+    /// This does NOT swallow: the failure is logged with its full detail and
+    /// shown to the user, the page is repainted into a coherent state, and the
+    /// action can be retried. Nothing is hidden; the process simply survives.
+    /// </remarks>
+    private async Task GuardAsync(Func<Task> handler)
+    {
+        try
         {
-            XamlRoot = XamlRoot,
+            await handler();
+        }
+        catch (Exception error)
+        {
+            var message = ManagementErrorText.Summarize(error);
+            adapters.Diagnostics.Error("ui", $"{message} ({error.GetType().Name})");
+            Report(message, InfoBarSeverity.Error);
+            Render();
+        }
+    }
+
+    /// <summary>
+    /// Show one dialog at a time.
+    /// </summary>
+    /// <remarks>
+    /// WinUI permits a single open <see cref="ContentDialog"/>; a second
+    /// <c>ShowAsync</c> throws. Every dialog on this page is opened from an
+    /// `async void` handler, so that throw was a process kill — the second WER
+    /// bucket (E_UNEXPECTED). Overlap is reachable whenever a dialog is open and
+    /// another handler resumes: a confirmation during a selection change while a
+    /// rename or a key-edit dialog is still up.
+    ///
+    /// A second request is DECLINED rather than queued. Queuing would show the
+    /// user a dialog about a transition they have since moved past.
+    /// </remarks>
+    private async Task<ContentDialogResult> ShowDialogAsync(ContentDialog dialog)
+    {
+        if (dialogOpen)
+        {
+            return ContentDialogResult.None;
+        }
+
+        dialogOpen = true;
+        try
+        {
+            dialog.XamlRoot = XamlRoot;
+            return await dialog.ShowAsync();
+        }
+        finally
+        {
+            dialogOpen = false;
+        }
+    }
+
+    private async Task<bool> ConfirmAsync(string title, string content, string action) =>
+        await ShowDialogAsync(new ContentDialog
+        {
             Title = title,
             Content = content,
             PrimaryButtonText = action,
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Close,
-        }.ShowAsync() == ContentDialogResult.Primary;
+        }) == ContentDialogResult.Primary;
 
     private void Report(string message, InfoBarSeverity severity)
     {
@@ -1086,14 +1222,13 @@ public sealed partial class KeyboardMousePage : Page
 
         var dialog = new ContentDialog
         {
-            XamlRoot = XamlRoot,
             Title = title,
             Content = content,
             PrimaryButtonText = "OK",
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary,
         };
-        return await dialog.ShowAsync() == ContentDialogResult.Primary
+        return await ShowDialogAsync(dialog) == ContentDialogResult.Primary
             ? box.Text.Trim()
             : null;
     }
