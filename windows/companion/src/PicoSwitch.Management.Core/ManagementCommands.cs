@@ -205,6 +205,52 @@ public static partial class ManagementCommands
             ? $"kbm draft begin {layout.Wire()} new {baseRevision} {name}"
             : $"kbm draft begin {layout.Wire()} {id} {baseRevision} {name}";
 
+    /// <summary>
+    /// Begin an upload targeting a specific BANK POSITION.
+    /// </summary>
+    /// <remarks>
+    /// The assignment form: "put this local profile in Keyboard Profile 2". If
+    /// that position holds a profile the upload replaces its content and keeps
+    /// its stable id, so a switch key bound to the position keeps working; if it
+    /// is empty the profile is created there. The adapter refuses a position it
+    /// cannot honour rather than landing somewhere else.
+    /// </remarks>
+    public static string KbmDraftBeginAt(KbmLayout layout, int position,
+                                         int baseRevision, string name)
+    {
+        if (position is < 1 or > KbmLimits.PositionsPerLayout)
+        {
+            throw new ArgumentOutOfRangeException(nameof(position));
+        }
+
+        return $"kbm draft begin {layout.Wire()} pos:{position} {baseRevision} {name}";
+    }
+
+    /// <summary>The persisted boot position for one layout.</summary>
+    public static string KbmBoot(KbmLayout layout, int position) =>
+        position == KbmPositions.Default
+            ? $"kbm boot {layout.Wire()} default"
+            : $"kbm boot {layout.Wire()} {position.ToString(CultureInfo.InvariantCulture)}";
+
+    /// <summary>The profile-switch key assignments. One table for both layouts.</summary>
+    public const string KbmSwitches = "kbm switches";
+
+    /// <summary>
+    /// Assign or clear one profile-switch key.
+    /// </summary>
+    /// <remarks>
+    /// No layout argument, deliberately: the binding names a semantic POSITION
+    /// and the adapter resolves it through whichever layout is derived when the
+    /// key is pressed. Requiring a layout here would force the user to configure
+    /// two disjoint key ranges for the same four actions.
+    /// </remarks>
+    public static string KbmSwitchBind(KbmSource source, int? position) =>
+        position is null
+            ? $"kbm switch {source.Wire} none"
+            : position == KbmPositions.Default
+                ? $"kbm switch {source.Wire} default"
+                : $"kbm switch {source.Wire} {position.Value.ToString(CultureInfo.InvariantCulture)}";
+
     public static string KbmDraftBind(KbmSource source, KbmDestination destination) =>
         $"kbm draft bind {source.Wire} {destination.Wire()}";
 

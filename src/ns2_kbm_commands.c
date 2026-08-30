@@ -208,9 +208,11 @@ int ns2_kbm_format_profiles(const ns2_kbm_config_t *config, uint16_t cursor,
         const ns2_kbm_profile_slot_t *slot = &config->profiles[live[i]];
         ns2_kbm_layout_t layout = (ns2_kbm_layout_t)slot->layout;
         if (!writer_row(&w,
-                        "%s{\"id\":%u,\"layout\":\"%s\",\"name\":\"%.*s\","
-                        "\"revision\":%u,\"overrides\":%u,\"fingerprint\":%lu}",
+                        "%s{\"id\":%u,\"position\":%u,\"layout\":\"%s\","
+                        "\"name\":\"%.*s\",\"revision\":%u,\"overrides\":%u,"
+                        "\"fingerprint\":%lu}",
                         i > cursor ? "," : "", (unsigned)slot->profile_id,
+                        (unsigned)slot->position,
                         ns2_kbm_layout_name(layout),
                         (int)(NS2_KBM_PROFILE_NAME_MAX - 1u), slot->name,
                         (unsigned)slot->revision,

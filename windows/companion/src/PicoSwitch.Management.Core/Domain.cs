@@ -731,6 +731,34 @@ public static class KbmLimits
     public const int MaxMappingItems = 96;
 
     public const int MaxProfiles = 6;
+
+    /// <summary>
+    /// Custom positions in ONE layout's bank. Six records is exactly three
+    /// positions in each of two layouts.
+    /// </summary>
+    public const int PositionsPerLayout = 3;
+}
+
+/// <summary>
+/// A profile POSITION within a layout's bank — what the user selects and what a
+/// switch key names.
+/// </summary>
+/// <remarks>
+/// Deliberately not a storage slot or a profile id. "Profile 1" means the same
+/// thing to a person in both layouts, and the layout derived from what is
+/// connected decides which bank it is read from; exposing ids would force the
+/// user to know which record lives where.
+/// </remarks>
+public static class KbmPositions
+{
+    /// <summary>The built-in template. Occupies no record.</summary>
+    public const int Default = 0;
+
+    public static string Label(int position) =>
+        position == Default ? "Default" : $"Profile {position}";
+
+    public static IEnumerable<int> All =>
+        Enumerable.Range(0, KbmLimits.PositionsPerLayout + 1);
 }
 
 public static class KbmProfileIds
@@ -766,16 +794,25 @@ public static class KbmProfileIds
 /// The adapter's digest of this profile's saved content. Compared against the
 /// realized mapping's fingerprint to answer "is what I saved what is running?"
 /// </param>
+/// <param name="Position">
+/// Which position of its layout's bank this profile occupies (1..3), or
+/// <see cref="KbmPositions.Default"/> for the synthesised built-in. This is the
+/// user-facing identity; <paramref name="Id"/> is the stable internal handle.
+/// </param>
 public sealed record KbmProfileInfo(
     int Id,
     KbmLayout Layout,
     string Name,
     int Revision,
     int Overrides,
-    long Fingerprint)
+    long Fingerprint,
+    int Position = KbmPositions.Default)
 {
     /// <summary>Built-in Defaults are synthesised locally, never stored.</summary>
     public bool Builtin => Id == KbmProfileIds.Default;
+
+    /// <summary>"Profile 2 — Halo", as the bank list shows it.</summary>
+    public string PositionLabel => KbmPositions.Label(Position);
 }
 
 /// <summary>
@@ -786,12 +823,30 @@ public sealed record KbmProfileInfo(
 /// applied, and a legacy per-binding write changes the realized mapping without
 /// touching any saved profile at all.
 /// </summary>
+/// <summary>One profile-switch key assignment.</summary>
+/// <param name="Position">
+/// The semantic action: <see cref="KbmPositions.Default"/> or 1..3. Layout-free
+/// by design — the adapter resolves it through the derived layout at press time.
+/// </param>
+public sealed record KbmSwitchBinding(KbmSource Source, int Position);
+
+/// <param name="BootPosition">
+/// The position this layout realizes at POWER-UP. Persisted.
+/// </param>
+/// <param name="RuntimePosition">
+/// The position it is realizing RIGHT NOW. A profile-switch key moves this and
+/// not the boot choice, so the two differ for the rest of a session after one
+/// key press — and a client that assumed the persisted choice was live would
+/// report the wrong profile as active.
+/// </param>
 public sealed record KbmActiveMapping(
     KbmLayout Layout,
     int SourceId,
     int Revision,
     long Fingerprint,
-    bool MatchesSaved);
+    bool MatchesSaved,
+    int BootPosition = KbmPositions.Default,
+    int RuntimePosition = KbmPositions.Default);
 
 /// <summary>The adapter's profile library and both realized mappings.</summary>
 public sealed record KbmProfiles(
@@ -809,6 +864,26 @@ public sealed record KbmProfiles(
 
     public KbmActiveMapping? ActiveFor(KbmLayout layout) =>
         Active.FirstOrDefault(a => a.Layout == layout);
+
+    /// <summary>
+    /// What occupies one position of a layout's bank, or null when it is empty.
+    /// </summary>
+    /// <remarks>
+    /// The lookup the whole bank UI and every assignment goes through. Position
+    /// is scoped to a layout, so the same number in the other bank is a
+    /// different profile — which is exactly what makes one switch key work for
+    /// both.
+    /// </remarks>
+    public KbmProfileInfo? At(KbmLayout layout, int position) =>
+        position == KbmPositions.Default
+            ? null
+            : Profiles.FirstOrDefault(profile => profile.Layout == layout &&
+                                                 profile.Position == position);
+
+    /// <summary>Positions in this layout's bank with nothing assigned.</summary>
+    public IReadOnlyList<int> FreePositions(KbmLayout layout) =>
+        [.. Enumerable.Range(1, KbmLimits.PositionsPerLayout)
+                      .Where(position => At(layout, position) is null)];
 
     /// <summary>
     /// Every profile a layout can offer, with its built-in Default first.

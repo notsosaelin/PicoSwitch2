@@ -71,6 +71,13 @@ public sealed record KeyboardMouseState
     /// </summary>
     public KbmProfiles Profiles { get; init; } = KbmProfiles.Empty;
 
+    /// <summary>
+    /// The profile-switch key assignments. One table for both layouts, because
+    /// a binding names a semantic position rather than a stored profile.
+    /// </summary>
+    public ValueList<KbmSwitchBinding> Switches { get; init; } =
+        ValueList<KbmSwitchBinding>.Empty;
+
     public KeyboardMouseReadiness Readiness { get; init; } =
         KeyboardMouseReadiness.NotRead;
 

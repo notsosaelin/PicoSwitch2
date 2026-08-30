@@ -60,6 +60,12 @@ void ns2_kbm_runtime_reset_layout(ns2_kbm_layout_t layout);
 // A snapshot of the whole KB/M configuration, for formatting replies.
 void ns2_kbm_runtime_config_snapshot(ns2_kbm_config_t *out);
 
+// Create at a SPECIFIC bank position, for an explicit assignment. 0 = lowest
+// free, which is what an ordinary New wants.
+uint8_t ns2_kbm_runtime_profile_create_at(ns2_kbm_layout_t layout,
+                                          uint8_t position, const char *name,
+                                          const ns2_kbm_content_t *content);
+
 uint8_t ns2_kbm_runtime_profile_create(ns2_kbm_layout_t layout,
                                        const char *name,
                                        const ns2_kbm_content_t *content);

@@ -32,11 +32,15 @@
     },
     "kbmProfiles": {
       "command": "kbm profiles 0",
-      "reply": {"page":0,"total":2,"max":6,"profiles":[{"id":2,"layout":"kb","name":"Splatoon","revision":3,"overrides":3,"fingerprint":111},{"id":3,"layout":"kbm","name":"Zelda","revision":1,"overrides":9,"fingerprint":222}],"more":false}
+      "reply": {"cursor":0,"total":2,"max":6,"profiles":[{"id":2,"position":1,"layout":"kb","name":"Splatoon","revision":3,"overrides":3,"fingerprint":111},{"id":3,"position":1,"layout":"kbm","name":"Zelda","revision":1,"overrides":9,"fingerprint":222}],"next":null}
     },
     "kbmActive": {
       "command": "kbm active",
-      "reply": {"active":[{"layout":"kb","sourceId":2,"revision":3,"fingerprint":111,"matchesSaved":true},{"layout":"kbm","sourceId":1,"revision":0,"fingerprint":900,"matchesSaved":true}]}
+      "reply": {"active":[{"layout":"kb","sourceId":2,"bootPosition":1,"runtimePosition":2,"revision":3,"fingerprint":111,"matchesSaved":true},{"layout":"kbm","sourceId":1,"bootPosition":0,"runtimePosition":0,"revision":0,"fingerprint":900,"matchesSaved":true}]}
+    },
+    "kbmSwitches": {
+      "command": "kbm switches",
+      "reply": {"switches":[{"src":"key:3A","position":0},{"src":"key:3B","position":1},{"src":"key:3C","position":2}],"positions":3}
     },
     "kbmMap": {
       "command": "kbm map kbm 0",

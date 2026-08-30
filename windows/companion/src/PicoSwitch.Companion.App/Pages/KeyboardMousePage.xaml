@@ -193,10 +193,12 @@
                                 Margin="0,0,0,6"
                                 TextTrimming="CharacterEllipsis" />
 
-                            <!-- Editing commands, then library commands, split by
-                                 a rule: Save/Discard/Set Active act on what is
-                                 open, New/Rename/Delete act on the library. They
-                                 were one undifferentiated run of six. -->
+                            <!-- LOCAL commands only. Save writes to the app's
+                                 library and sends nothing to the adapter; the
+                                 adapter operations live in the bank card below,
+                                 where the user can see which position they act
+                                 on. Keeping them apart is what stops "Save"
+                                 from meaning "change what the console does". -->
                             <StackPanel
                                 Grid.Row="1" Grid.ColumnSpan="3"
                                 Orientation="Horizontal"
@@ -210,11 +212,11 @@
                                         MinWidth="96" Height="32" VerticalAlignment="Bottom" />
                                 <Button x:Name="DiscardButton" Content="Discard" Click="OnDiscardProfile"
                                         Style="{StaticResource PageButtonStyle}" />
-                                <Button x:Name="ApplyButton" Content="Set active" Click="OnApplyProfile"
-                                        Style="{StaticResource PageButtonStyle}" />
                                 <Border Width="1" Height="24" Margin="4,0" VerticalAlignment="Bottom"
                                         Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
                                 <Button x:Name="NewButton" Content="New" Click="OnNewProfile"
+                                        Style="{StaticResource PageButtonStyle}" />
+                                <Button x:Name="DuplicateButton" Content="Duplicate" Click="OnDuplicateProfile"
                                         Style="{StaticResource PageButtonStyle}" />
                                 <Button x:Name="RenameButton" Content="Rename" Click="OnRenameProfile"
                                         Style="{StaticResource PageButtonStyle}" />
@@ -306,6 +308,62 @@
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
                         </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- ON ADAPTER.
+
+                     The distinction the whole model turns on, made visible: the
+                     library above is the user's collection, this is the small
+                     working set the adapter can use with nothing connected. A
+                     position holds a COPY; editing the library profile does not
+                     touch it, and only the buttons here send anything.
+
+                     Rows are built in code because they are data — one per
+                     position, empty ones included, since "Profile 3 — Empty" is
+                     what tells a user they have somewhere to assign to. -->
+                <Border x:Name="BankCard" Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="12">
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Bottom">
+                                <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}"
+                                           Text="On adapter" />
+                                <TextBlock
+                                    x:Name="BankSummary"
+                                    Style="{StaticResource CaptionTextBlockStyle}"
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                            <Button Grid.Column="1" x:Name="AssignButton"
+                                    Content="Assign to adapter" Click="OnAssignToAdapter"
+                                    Style="{StaticResource PageButtonStyle}"
+                                    MinWidth="150" />
+                        </Grid>
+
+                        <StackPanel x:Name="BankHost" Spacing="6" />
+
+                        <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+                        <!-- SWITCH KEYS.
+
+                             One key per action, shared by both layouts: the key
+                             selects "Profile 1", and which profile that is comes
+                             from whichever layout is connected. That is why this
+                             sits below the bank rather than inside one of them. -->
+                        <StackPanel Spacing="2">
+                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}"
+                                       Text="Profile switch keys" />
+                            <TextBlock
+                                Style="{StaticResource CaptionTextBlockStyle}"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                TextWrapping="Wrap"
+                                Text="Change profile without the app. The same key works in both layouts and picks that layout's profile." />
+                        </StackPanel>
+                        <StackPanel x:Name="SwitchHost" Spacing="6" />
                     </StackPanel>
                 </Border>
 

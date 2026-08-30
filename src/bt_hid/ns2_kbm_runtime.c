@@ -938,18 +938,25 @@ void ns2_kbm_runtime_config_snapshot(ns2_kbm_config_t *out) {
 // The profile lifecycle, all in the same shape: mutate a SNAPSHOT, and publish
 // it only if the model accepted the change. A rejected operation must not leave
 // the live configuration half-edited, and core 1 may be resolving against it.
-uint8_t ns2_kbm_runtime_profile_create(ns2_kbm_layout_t layout,
-                                       const char *name,
-                                       const ns2_kbm_content_t *content) {
+uint8_t ns2_kbm_runtime_profile_create_at(ns2_kbm_layout_t layout,
+                                          uint8_t position, const char *name,
+                                          const ns2_kbm_content_t *content) {
     ns2_kbm_config_t candidate;
     uint32_t generation = 0;
     config_snapshot(&candidate, &generation);
-    uint8_t id = ns2_kbm_profile_create(&candidate, layout, name, content);
+    uint8_t id = ns2_kbm_profile_create_at(&candidate, layout, position, name,
+                                           content);
     if (id == NS2_KBM_PROFILE_ID_NONE) return (uint8_t)NS2_KBM_PROFILE_ID_NONE;
     config_write_begin();
     s_config = candidate;
     config_write_end();
     return id;
+}
+
+uint8_t ns2_kbm_runtime_profile_create(ns2_kbm_layout_t layout,
+                                       const char *name,
+                                       const ns2_kbm_content_t *content) {
+    return ns2_kbm_runtime_profile_create_at(layout, 0u, name, content);
 }
 
 uint16_t ns2_kbm_runtime_profile_save(uint8_t profile_id,

@@ -1122,6 +1122,9 @@ typedef struct {
     bool overflowed;   // an entry did not fit; commit must refuse
     bool creating;     // target is a new profile rather than an existing one
     ns2_kbm_layout_t layout;
+    // The bank position an explicit assignment asked for, or 0 for "wherever
+    // there is room" (an ordinary New).
+    uint8_t position;
     uint8_t profile_id;
     uint16_t expected_revision;
     char name[NS2_KBM_PROFILE_NAME_MAX];
@@ -1148,8 +1151,8 @@ static void cmd_kbm_draft(const char *arg) {
         char name[NS2_KBM_PROFILE_NAME_MAX] = {0};
         if (sscanf(rest, "%7s %11s %u %19[^\n]", layout_name, target, &revision,
                    name) != 4) {
-            reply("{\"error\":\"usage: kbm draft begin <kb|kbm> <id|new> "
-                  "<baseRevision> <name>\"}");
+            reply("{\"error\":\"usage: kbm draft begin <kb|kbm> "
+                  "<id|new|pos:N> <baseRevision> <name>\"}");
             return;
         }
         ns2_kbm_layout_t layout;
@@ -1162,8 +1165,29 @@ static void cmd_kbm_draft(const char *arg) {
         // over without a stuck transaction it cannot see or clear.
         kbm_draft_reset();
         kbm_draft.layout = layout;
+        unsigned wanted = 0;
         if (strcmp(target, "new") == 0) {
             kbm_draft.creating = true;
+        } else if (sscanf(target, "pos:%u", &wanted) == 1) {
+            // ASSIGN INTO A BANK POSITION. If that position already holds a
+            // profile the upload REPLACES its content, keeping its stable id so
+            // a switch key bound to the position keeps working; if it is empty
+            // the profile is created there. Either way the user's choice of
+            // position is honoured exactly.
+            if (wanted < 1u || wanted > NS2_KBM_POSITIONS_PER_LAYOUT) {
+                reply("{\"error\":\"position out of range\"}");
+                return;
+            }
+            ns2_kbm_config_t snapshot;
+            ns2_kbm_runtime_config_snapshot(&snapshot);
+            const ns2_kbm_profile_slot_t *occupant =
+                ns2_kbm_profile_at(&snapshot, layout, (uint8_t)wanted);
+            if (occupant) {
+                kbm_draft.profile_id = occupant->profile_id;
+            } else {
+                kbm_draft.creating = true;
+                kbm_draft.position = (uint8_t)wanted;
+            }
         } else if (!kbm_profile_arg(target, &kbm_draft.profile_id) ||
                    kbm_draft.profile_id == NS2_KBM_PROFILE_ID_DEFAULT) {
             // Default is a template. It has no stored content to overwrite, and
@@ -1247,8 +1271,9 @@ static void cmd_kbm_draft(const char *arg) {
         }
 
         if (kbm_draft.creating) {
-            uint8_t id = ns2_kbm_runtime_profile_create(
-                kbm_draft.layout, kbm_draft.name, &kbm_draft.content);
+            uint8_t id = ns2_kbm_runtime_profile_create_at(
+                kbm_draft.layout, kbm_draft.position, kbm_draft.name,
+                &kbm_draft.content);
             if (id == NS2_KBM_PROFILE_ID_NONE) {
                 kbm_draft_reset();
                 // Storage full and a duplicate name both land here; the client

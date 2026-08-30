@@ -443,6 +443,108 @@ public sealed class ManagementClient(
                                Max: max);
     }
 
+    /// <summary>The profile-switch key assignments.</summary>
+    public Task<ValueList<KbmSwitchBinding>> KbmSwitchesAsync(
+        CancellationToken ct = default) =>
+        ExchangeAsync(ManagementCommands.KbmSwitches, ManagementProtocol.KbmSwitches, ct);
+
+    /// <summary>
+    /// Assign or clear one profile-switch key, then read the table back.
+    /// </summary>
+    /// <remarks>
+    /// Re-read rather than assumed: assigning a key to an action that already
+    /// has one MOVES it, so the caller's model of the table is wrong the moment
+    /// it guesses.
+    /// </remarks>
+    public async Task<ValueList<KbmSwitchBinding>> BindKbmSwitchAsync(
+        KbmSource source, int? position, CancellationToken ct = default)
+    {
+        await AcknowledgeAsync(ManagementCommands.KbmSwitchBind(source, position), ct)
+            .ConfigureAwait(false);
+        return await KbmSwitchesAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// SET BOOT POSITION. The only profile selection that costs a flash write.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="ApplyKbmProfileAsync"/>, which is the runtime
+    /// change a switch key also makes. Conflating them would either erase a
+    /// config sector on every activation or make a hotkey press permanent.
+    /// </remarks>
+    public async Task<KbmProfiles> SetKbmBootPositionAsync(
+        KbmLayout layout, int position, CancellationToken ct = default)
+    {
+        await AcknowledgeAsync(ManagementCommands.KbmBoot(layout, position), ct)
+            .ConfigureAwait(false);
+        return await KbmProfilesAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// ASSIGN a mapping into a specific bank position, in one staged transaction.
+    /// </summary>
+    /// <remarks>
+    /// The upload half of the local-library model: content the user composed
+    /// locally is copied into the adapter's resident working set. Deliberately
+    /// does NOT change what the console is running — if that position is
+    /// currently active the realized snapshot is preserved until the user
+    /// activates it, so updating a stored copy cannot mutate gameplay mid-session.
+    ///
+    /// On any failure the draft is aborted, so a half-transferred mapping can
+    /// never be left staged for the next caller to commit by accident.
+    /// </remarks>
+    public async Task<(int Id, int Revision)> AssignKbmPositionAsync(
+        KbmLayout layout,
+        int position,
+        int baseRevision,
+        string name,
+        IReadOnlyList<KbmBinding> bindings,
+        KbmMouseConfig mouse,
+        CancellationToken ct = default)
+    {
+        await AcknowledgeAsync(
+                ManagementCommands.KbmDraftBeginAt(layout, position, baseRevision, name),
+                ct)
+            .ConfigureAwait(false);
+        try
+        {
+            foreach (var binding in bindings)
+            {
+                await AcknowledgeAsync(
+                        ManagementCommands.KbmDraftBind(binding.Source, binding.Destination),
+                        ct)
+                    .ConfigureAwait(false);
+            }
+
+            foreach (var (field, value) in KbmMouseFields.Values(mouse))
+            {
+                await AcknowledgeAsync(ManagementCommands.KbmDraftMouse(field, value), ct)
+                    .ConfigureAwait(false);
+            }
+
+            var reply = await RawAsync(ManagementCommands.KbmDraftCommit, ct)
+                .ConfigureAwait(false);
+            return ManagementProtocol.KbmDraftResult(
+                ManagementCommands.KbmDraftCommit, reply);
+        }
+        catch
+        {
+            // Best effort, as in SaveKbmProfileAsync: the adapter also discards
+            // staging on disconnect and on the next Begin.
+            try
+            {
+                await AcknowledgeAsync(ManagementCommands.KbmDraftAbort, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (ManagementException)
+            {
+                // The original failure is the one worth reporting.
+            }
+
+            throw;
+        }
+    }
+
     /// <summary>
     /// APPLY. The only call that changes what the console is doing.
     ///

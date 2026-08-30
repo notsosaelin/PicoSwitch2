@@ -234,7 +234,8 @@ internal sealed class KbmWireCorpus
         var protocol = ReadRepositoryFile("tools/fixtures/management/protocol-v1.json");
         using var document = JsonDocument.Parse(protocol);
         var vectors = document.RootElement.GetProperty("vectors");
-        foreach (var name in new[] { "kbmStatus", "kbmCounters", "kbmMouse" })
+        foreach (var name in new[] { "kbmStatus", "kbmCounters", "kbmMouse",
+                                     "kbmSwitches" })
         {
             var vector = vectors.GetProperty(name);
             transport.Replies[vector.GetProperty("command").GetString()!] =
