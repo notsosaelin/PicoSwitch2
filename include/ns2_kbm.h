@@ -169,13 +169,23 @@ ns2_kbm_discovery_action_t ns2_kbm_discovery_policy(bool pairing_window_open,
                                                     ns2_kbm_discovery_t timed);
 
 // ---------------------------------------------------------------------------
-// Mapping profiles
+// Mapping layouts
 // ---------------------------------------------------------------------------
+// The SHAPE of a mapping: which source inputs exist and which canonical
+// defaults apply. Derived from the admitted roles and never chosen -- which
+// roles are filled is a fact, and letting a user assert Keyboard + Mouse with no
+// mouse would silently drop the right stick.
+//
+// Deliberately NOT called a profile. A profile is a named set of overrides the
+// user selects WITHIN a layout; conflating the two is what let a binding be
+// saved into a mapping the adapter was not resolving, report success, and do
+// nothing at the console.
+// See docs/architecture/kbm-profile-system-hld.md.
 typedef enum {
-    NS2_KBM_PROFILE_KEYBOARD = 0,
-    NS2_KBM_PROFILE_KEYBOARD_MOUSE = 1,
-    NS2_KBM_PROFILE_COUNT
-} ns2_kbm_profile_t;
+    NS2_KBM_LAYOUT_KEYBOARD = 0,
+    NS2_KBM_LAYOUT_KEYBOARD_MOUSE = 1,
+    NS2_KBM_LAYOUT_COUNT
+} ns2_kbm_layout_t;
 
 // ---------------------------------------------------------------------------
 // Stable source-input identity
@@ -316,7 +326,7 @@ typedef struct {
 typedef struct {
     uint8_t mode;  // ns2_kbm_mode_t
     uint8_t reserved[3];
-    ns2_kbm_profile_overrides_t profiles[NS2_KBM_PROFILE_COUNT];
+    ns2_kbm_profile_overrides_t profiles[NS2_KBM_LAYOUT_COUNT];
     ns2_kbm_mouse_config_t mouse;
 } ns2_kbm_config_t;
 
@@ -325,7 +335,7 @@ void ns2_kbm_config_defaults(ns2_kbm_config_t *config);
 
 // Reset exactly one profile's overrides. Every other setting is untouched.
 void ns2_kbm_config_reset_profile(ns2_kbm_config_t *config,
-                                  ns2_kbm_profile_t profile);
+                                  ns2_kbm_layout_t profile);
 
 // Fail-closed validation of persisted or management-supplied configuration.
 // Returns true when `config` was already entirely usable. Returns false when
@@ -338,20 +348,20 @@ bool ns2_kbm_config_sanitize(ns2_kbm_config_t *config);
 // Effective binding for one source in one profile: the override if present,
 // otherwise the canonical default.
 uint8_t ns2_kbm_binding(const ns2_kbm_config_t *config,
-                        ns2_kbm_profile_t profile,
+                        ns2_kbm_layout_t profile,
                         ns2_kbm_source_t source);
 
 // Canonical default binding, ignoring user overrides.
-uint8_t ns2_kbm_default_binding(ns2_kbm_profile_t profile,
+uint8_t ns2_kbm_default_binding(ns2_kbm_layout_t profile,
                                 ns2_kbm_source_t source);
 
 // Set / clear / revert one binding.
 //   destination == NS2_DST_NONE  -> explicit unassign (stored as an override)
 //   ns2_kbm_clear_binding()      -> drop the override, restoring the default
 // Returns false when the identifiers are invalid or the override table is full.
-bool ns2_kbm_set_binding(ns2_kbm_config_t *config, ns2_kbm_profile_t profile,
+bool ns2_kbm_set_binding(ns2_kbm_config_t *config, ns2_kbm_layout_t profile,
                          ns2_kbm_source_t source, uint8_t destination);
-bool ns2_kbm_clear_binding(ns2_kbm_config_t *config, ns2_kbm_profile_t profile,
+bool ns2_kbm_clear_binding(ns2_kbm_config_t *config, ns2_kbm_layout_t profile,
                            ns2_kbm_source_t source);
 
 // Bounded enumeration of every source that currently has a non-NONE effective
@@ -364,7 +374,7 @@ typedef struct {
     uint8_t overridden;  // 1 when a user override supplied this destination
 } ns2_kbm_effective_t;
 uint16_t ns2_kbm_effective_bindings(const ns2_kbm_config_t *config,
-                                    ns2_kbm_profile_t profile,
+                                    ns2_kbm_layout_t profile,
                                     ns2_kbm_effective_t *out,
                                     uint16_t capacity);
 
@@ -484,12 +494,12 @@ void ns2_kbm_resolve(ns2_kbm_state_t *state, const ns2_kbm_config_t *config,
 // Profile a mode selects. Controller mode has no KB/M profile; it reports the
 // keyboard profile so callers never index out of range, but no KB/M input is
 // admitted in that mode at all.
-ns2_kbm_profile_t ns2_kbm_mode_profile(ns2_kbm_mode_t mode);
+ns2_kbm_layout_t ns2_kbm_mode_layout(ns2_kbm_mode_t mode);
 
 const char *ns2_kbm_mode_name(ns2_kbm_mode_t mode);
 bool ns2_kbm_mode_from_name(const char *name, ns2_kbm_mode_t *out);
-const char *ns2_kbm_profile_name(ns2_kbm_profile_t profile);
-bool ns2_kbm_profile_from_name(const char *name, ns2_kbm_profile_t *out);
+const char *ns2_kbm_layout_name(ns2_kbm_layout_t profile);
+bool ns2_kbm_layout_from_name(const char *name, ns2_kbm_layout_t *out);
 // Stable textual identifiers for the management/UX surface.
 const char *ns2_kbm_destination_name(uint8_t destination);
 bool ns2_kbm_destination_from_name(const char *name, uint8_t *out);

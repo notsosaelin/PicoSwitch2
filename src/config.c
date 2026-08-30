@@ -986,7 +986,7 @@ static void cmd_kbm_status(void) {
     reply(out);
 }
 
-static void cmd_kbm_map(ns2_kbm_profile_t profile, unsigned page) {
+static void cmd_kbm_map(ns2_kbm_layout_t profile, unsigned page) {
     ns2_kbm_config_t config;
     ns2_kbm_runtime_config_get(&config);
     static ns2_kbm_effective_t effective[NS2_KBM_MAX_EFFECTIVE];
@@ -996,7 +996,7 @@ static void cmd_kbm_map(ns2_kbm_profile_t profile, unsigned page) {
     int j = snprintf(out, sizeof(out),
                      "{\"profile\":\"%s\",\"page\":%u,\"pageSize\":%u,"
                      "\"total\":%u,\"bindings\":[",
-                     ns2_kbm_profile_name(profile), page,
+                     ns2_kbm_layout_name(profile), page,
                      (unsigned)KBM_MAP_PAGE_SIZE, (unsigned)total);
     for (uint16_t i = first;
          i < total && i < first + KBM_MAP_PAGE_SIZE && j < (int)sizeof(out) - 64;
@@ -1077,8 +1077,8 @@ static void cmd_kbm(char *arg) {
             reply("{\"error\":\"usage: kbm map <kb|kbm> [page]\"}");
             return;
         }
-        ns2_kbm_profile_t profile;
-        if (!ns2_kbm_profile_from_name(name, &profile) || page > 32u) {
+        ns2_kbm_layout_t profile;
+        if (!ns2_kbm_layout_from_name(name, &profile) || page > 32u) {
             reply("{\"error\":\"usage: kbm map <kb|kbm> [page]\"}");
             return;
         }
@@ -1095,9 +1095,9 @@ static void cmd_kbm(char *arg) {
                   "<dest|none|default>\"}");
             return;
         }
-        ns2_kbm_profile_t profile;
+        ns2_kbm_layout_t profile;
         ns2_kbm_source_t source;
-        if (!ns2_kbm_profile_from_name(name, &profile)) {
+        if (!ns2_kbm_layout_from_name(name, &profile)) {
             reply("{\"error\":\"unknown profile\"}");
             return;
         }
@@ -1122,7 +1122,7 @@ static void cmd_kbm(char *arg) {
         }
         snprintf(out, sizeof(out),
                  "{\"ok\":true,\"profile\":\"%s\",\"src\":\"%s\",\"dst\":\"%s\"}",
-                 ns2_kbm_profile_name(profile), source_text, dest_text);
+                 ns2_kbm_layout_name(profile), source_text, dest_text);
         reply(out);
         return;
     }
@@ -1134,14 +1134,14 @@ static void cmd_kbm(char *arg) {
             reply("{\"ok\":true,\"reset\":\"all\"}");
             return;
         }
-        ns2_kbm_profile_t profile;
-        if (!ns2_kbm_profile_from_name(what, &profile)) {
+        ns2_kbm_layout_t profile;
+        if (!ns2_kbm_layout_from_name(what, &profile)) {
             reply("{\"error\":\"usage: kbm reset kb|kbm|all\"}");
             return;
         }
         ns2_kbm_runtime_reset_profile(profile);
         snprintf(out, sizeof(out), "{\"ok\":true,\"reset\":\"%s\"}",
-                 ns2_kbm_profile_name(profile));
+                 ns2_kbm_layout_name(profile));
         reply(out);
         return;
     }

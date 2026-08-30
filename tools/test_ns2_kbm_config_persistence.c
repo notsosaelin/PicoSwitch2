@@ -48,7 +48,7 @@ static void test_defaults(void) {
     assert(record.version == CONFIG_PERSIST_VERSION);
     assert(record.body_color[0] == 0x23);
     assert(record.kbm.mode == NS2_KBM_MODE_AUTO);
-    assert(record.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD].count == 0);
+    assert(record.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD].count == 0);
     assert(record.kbm.mouse.sensitivity_x == NS2_KBM_MOUSE_SENS_DEFAULT);
     puts("  defaults");
 }
@@ -121,11 +121,11 @@ static void test_v10_migration(void) {
     // happened to follow the old record in flash.
     assert(record.version == CONFIG_PERSIST_VERSION);
     assert(record.kbm.mode == NS2_KBM_MODE_AUTO);
-    assert(record.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD].count == 0);
-    assert(record.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD_MOUSE].count == 0);
+    assert(record.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD].count == 0);
+    assert(record.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD_MOUSE].count == 0);
     assert(record.kbm.mouse.sensitivity_x == NS2_KBM_MOUSE_SENS_DEFAULT);
     assert(record.kbm.mouse.recenter_ms == NS2_KBM_MOUSE_RECENTER_DEFAULT_MS);
-    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_PROFILE_KEYBOARD, key(KEY_F)) ==
+    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            NS2_DST_A);
 
     // Migration is deterministic: the same stored bytes always produce the same
@@ -160,17 +160,17 @@ static void test_v11_migration(void) {
 
     // A user who had customized their KB/M setup on v11.
     old.kbm.mode = (uint8_t)NS2_KBM_MODE_KEYBOARD_MOUSE;
-    old.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD].count = 1u;
-    old.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD].entries[0].source.kind =
+    old.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD].count = 1u;
+    old.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[0].source.kind =
         NS2_KBM_SRC_KEY;
-    old.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD].entries[0].source.code = KEY_F;
-    old.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD].entries[0].destination =
+    old.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[0].source.code = KEY_F;
+    old.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[0].destination =
         NS2_DST_X;
-    old.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD_MOUSE].count = 1u;
-    old.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD_MOUSE].entries[0].source.kind =
+    old.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD_MOUSE].count = 1u;
+    old.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD_MOUSE].entries[0].source.kind =
         NS2_KBM_SRC_MOUSE;
-    old.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD_MOUSE].entries[0].source.code = 3u;
-    old.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD_MOUSE].entries[0].destination =
+    old.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD_MOUSE].entries[0].source.code = 3u;
+    old.kbm.profiles[NS2_KBM_LAYOUT_KEYBOARD_MOUSE].entries[0].destination =
         NS2_DST_B;
     old.kbm.mouse.sensitivity_x = 1024u;
     old.kbm.mouse.sensitivity_y = 1536u;
@@ -205,10 +205,10 @@ static void test_v11_migration(void) {
     // The whole KB/M block survives, mode, both mapping profiles and every
     // mouse setting alike.
     assert(record.kbm.mode == (uint8_t)NS2_KBM_MODE_KEYBOARD_MOUSE);
-    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_PROFILE_KEYBOARD, key(KEY_F)) ==
+    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            NS2_DST_X);
     ns2_kbm_source_t middle = {NS2_KBM_SRC_MOUSE, 3u};
-    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                            middle) == NS2_DST_B);
     assert(record.kbm.mouse.sensitivity_x == 1024u);
     assert(record.kbm.mouse.sensitivity_y == 1536u);
@@ -280,11 +280,11 @@ static void test_mapping_round_trip(void) {
     // A user customizes both profiles independently, plus the mode and the
     // mouse translation settings.
     stored.kbm.mode = (uint8_t)NS2_KBM_MODE_KEYBOARD_MOUSE;
-    assert(ns2_kbm_set_binding(&stored.kbm, NS2_KBM_PROFILE_KEYBOARD, key(KEY_F),
+    assert(ns2_kbm_set_binding(&stored.kbm, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F),
                                NS2_DST_X));
-    assert(ns2_kbm_set_binding(&stored.kbm, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+    assert(ns2_kbm_set_binding(&stored.kbm, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                                mouse_button(1), NS2_DST_A));
-    assert(ns2_kbm_set_binding(&stored.kbm, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+    assert(ns2_kbm_set_binding(&stored.kbm, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                                key(KEY_SPACE), NS2_DST_NONE));
     stored.kbm.mouse.sensitivity_x = 1024u;
     stored.kbm.mouse.invert_y = 1u;
@@ -295,17 +295,17 @@ static void test_mapping_round_trip(void) {
     assert(config_persist_load(&stored, sizeof(stored), &record) ==
            CONFIG_PERSIST_CURRENT);
     assert(record.kbm.mode == NS2_KBM_MODE_KEYBOARD_MOUSE);
-    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_PROFILE_KEYBOARD, key(KEY_F)) ==
+    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            NS2_DST_X);
-    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                            mouse_button(1)) == NS2_DST_A);
     // An explicit unassign survives as an unassign, not as "restore default".
-    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                            key(KEY_SPACE)) == NS2_DST_NONE);
     // The profiles stayed independent across the round trip.
-    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                            key(KEY_F)) == NS2_DST_A);
-    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_PROFILE_KEYBOARD,
+    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD,
                            key(KEY_SPACE)) == NS2_DST_B);
     assert(record.kbm.mouse.sensitivity_x == 1024u);
     assert(record.kbm.mouse.invert_y == 1u);
@@ -313,10 +313,10 @@ static void test_mapping_round_trip(void) {
 
     // Resetting one profile leaves the other, the mode, the mouse settings, and
     // unrelated adapter settings untouched.
-    ns2_kbm_config_reset_profile(&record.kbm, NS2_KBM_PROFILE_KEYBOARD);
-    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_PROFILE_KEYBOARD, key(KEY_F)) ==
+    ns2_kbm_config_reset_profile(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD);
+    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            NS2_DST_A);
-    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                            mouse_button(1)) == NS2_DST_A);
     assert(record.kbm.mode == NS2_KBM_MODE_KEYBOARD_MOUSE);
     assert(record.kbm.mouse.sensitivity_x == 1024u);
@@ -341,7 +341,7 @@ static void test_corrupt_mapping_fails_safe(void) {
     assert(record.wake_valid == 0xA5u);
     // And the mapping block is usable, with no arbitrary destinations.
     assert(record.kbm.mode < NS2_KBM_MODE_COUNT);
-    for (unsigned p = 0; p < NS2_KBM_PROFILE_COUNT; ++p) {
+    for (unsigned p = 0; p < NS2_KBM_LAYOUT_COUNT; ++p) {
         assert(record.kbm.profiles[p].count <= NS2_KBM_MAX_OVERRIDES);
         for (uint8_t i = 0; i < record.kbm.profiles[p].count; ++i) {
             assert(ns2_kbm_source_valid(record.kbm.profiles[p].entries[i].source));

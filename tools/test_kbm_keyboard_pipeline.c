@@ -93,9 +93,9 @@ static void test_keypress_becomes_a_button(void) {
     ns2_kbm_config_t config;
     ns2_kbm_config_defaults(&config);
     ns2_kbm_source_t key_b = {NS2_KBM_SRC_KEY, USAGE_B};
-    assert(ns2_kbm_set_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key_b,
+    assert(ns2_kbm_set_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key_b,
                                NS2_DST_B));
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key_b) ==
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key_b) ==
            NS2_DST_B);
 
     ns2_kbm_state_t state;
@@ -135,7 +135,7 @@ static void test_unbound_key_does_nothing(void) {
     ns2_kbm_config_t config;
     ns2_kbm_config_defaults(&config);
     ns2_kbm_source_t key_a = {NS2_KBM_SRC_KEY, USAGE_A};
-    (void)ns2_kbm_clear_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key_a);
+    (void)ns2_kbm_clear_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key_a);
 
     ns2_kbm_state_t state;
     ns2_kbm_state_init(&state);
@@ -186,7 +186,7 @@ static void test_composite_report_id_routing(void) {
     ns2_kbm_config_t config;
     ns2_kbm_config_defaults(&config);
     ns2_kbm_source_t key_b = {NS2_KBM_SRC_KEY, USAGE_B};
-    assert(ns2_kbm_set_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key_b,
+    assert(ns2_kbm_set_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key_b,
                                NS2_DST_B));
 
     ns2_kbm_state_t state;
@@ -216,7 +216,7 @@ static void test_binding_namespace_is_hid_usage(void) {
     assert(parsed.kind == NS2_KBM_SRC_KEY);
     assert(parsed.code == USAGE_B);
 
-    assert(ns2_kbm_set_binding(&config, NS2_KBM_PROFILE_KEYBOARD, parsed,
+    assert(ns2_kbm_set_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, parsed,
                                NS2_DST_B));
 
     // And the decoder sets exactly that bit for a report carrying usage 5.
@@ -248,16 +248,16 @@ static void test_profile_selection_follows_mode(void) {
     ns2_kbm_config_defaults(&config);
     ns2_kbm_source_t key_b = {NS2_KBM_SRC_KEY, USAGE_B};
 
-    assert(ns2_kbm_mode_profile(NS2_KBM_MODE_KEYBOARD) ==
-           NS2_KBM_PROFILE_KEYBOARD);
-    assert(ns2_kbm_mode_profile(NS2_KBM_MODE_KEYBOARD_MOUSE) ==
-           NS2_KBM_PROFILE_KEYBOARD_MOUSE);
+    assert(ns2_kbm_mode_layout(NS2_KBM_MODE_KEYBOARD) ==
+           NS2_KBM_LAYOUT_KEYBOARD);
+    assert(ns2_kbm_mode_layout(NS2_KBM_MODE_KEYBOARD_MOUSE) ==
+           NS2_KBM_LAYOUT_KEYBOARD_MOUSE);
 
     // Bound ONLY in the keyboard-and-mouse profile.
-    assert(ns2_kbm_clear_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key_b) ||
-           ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key_b) ==
+    assert(ns2_kbm_clear_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key_b) ||
+           ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key_b) ==
                NS2_DST_NONE);
-    assert(ns2_kbm_set_binding(&config, NS2_KBM_PROFILE_KEYBOARD_MOUSE, key_b,
+    assert(ns2_kbm_set_binding(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE, key_b,
                                NS2_DST_B));
 
     bthid_keyboard_report_map_t map;

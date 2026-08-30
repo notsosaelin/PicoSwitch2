@@ -161,51 +161,51 @@ static void test_canonical_defaults(void) {
     ns2_kbm_config_defaults(&config);
     // Auto by default: an ordinary HID device must work without a mode command.
     assert(config.mode == NS2_KBM_MODE_AUTO);
-    assert(config.profiles[NS2_KBM_PROFILE_KEYBOARD].count == 0);
+    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count == 0);
     assert(config.mouse.sensitivity_x == NS2_KBM_MOUSE_SENS_DEFAULT);
 
     // Keyboard profile: WASD walk, IJKL aim, the documented face layout.
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_W)) ==
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_W)) ==
            NS2_DST_LSTICK_UP);
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_I)) ==
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_I)) ==
            NS2_DST_RSTICK_UP);
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_SPACE)) ==
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_SPACE)) ==
            NS2_DST_B);
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_F)) ==
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            NS2_DST_A);
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_ESCAPE)) ==
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_ESCAPE)) ==
            NS2_DST_HOME);
 
     // Keyboard + Mouse profile: the mouse owns the right stick, so IJKL are
     // deliberately unassigned there and mouse buttons carry the triggers.
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD_MOUSE, key(KEY_W)) ==
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE, key(KEY_W)) ==
            NS2_DST_LSTICK_UP);
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD_MOUSE, key(KEY_I)) ==
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE, key(KEY_I)) ==
            NS2_DST_NONE);
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                            mouse_button(1)) == NS2_DST_ZR);
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                            mouse_button(2)) == NS2_DST_ZL);
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                            mouse_button(3)) == NS2_DST_R3);
     // The standard five-button mouse contract: all five are ordinary mouse
     // inputs and all five are bound. Back/Forward keep the destinations the
     // Controller-mode base map already gives them, so the same physical button
     // does the same thing in both modes.
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                            mouse_button(4)) == NS2_DST_Y);
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                            mouse_button(5)) == NS2_DST_B);
     for (uint8_t button = 1u; button <= NS2_KBM_MOUSE_BUTTONS; ++button) {
-        assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+        assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                                mouse_button(button)) != NS2_DST_NONE);
     }
 
     // Every canonical binding must name a legal destination.
     ns2_kbm_effective_t effective[NS2_KBM_MAX_EFFECTIVE];
-    for (unsigned p = 0; p < NS2_KBM_PROFILE_COUNT; ++p) {
+    for (unsigned p = 0; p < NS2_KBM_LAYOUT_COUNT; ++p) {
         uint16_t count = ns2_kbm_effective_bindings(
-            &config, (ns2_kbm_profile_t)p, effective, NS2_KBM_MAX_EFFECTIVE);
+            &config, (ns2_kbm_layout_t)p, effective, NS2_KBM_MAX_EFFECTIVE);
         assert(count > 0 && count < NS2_KBM_MAX_EFFECTIVE);
         for (uint16_t i = 0; i < count; ++i) {
             assert(ns2_kbm_source_valid(effective[i].source));
@@ -306,41 +306,41 @@ static void test_overrides_and_profile_independence(void) {
     ns2_kbm_config_defaults(&config);
 
     // Remap F -> X in the Keyboard profile only.
-    assert(ns2_kbm_set_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_F),
+    assert(ns2_kbm_set_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F),
                                NS2_DST_X));
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_F)) ==
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            NS2_DST_X);
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD_MOUSE, key(KEY_F)) ==
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE, key(KEY_F)) ==
            NS2_DST_A);
 
     // And the reverse direction.
-    assert(ns2_kbm_set_binding(&config, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+    assert(ns2_kbm_set_binding(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                                mouse_button(1), NS2_DST_A));
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_F)) ==
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            NS2_DST_X);
 
     // Clearing a binding makes it unassigned but keeps it distinct from
     // "restore the default".
-    assert(ns2_kbm_set_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_SPACE),
+    assert(ns2_kbm_set_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_SPACE),
                                NS2_DST_NONE));
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_SPACE)) ==
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_SPACE)) ==
            NS2_DST_NONE);
-    assert(ns2_kbm_clear_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_SPACE)));
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_SPACE)) ==
+    assert(ns2_kbm_clear_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_SPACE)));
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_SPACE)) ==
            NS2_DST_B);
 
     // Requesting exactly the default stores no override.
-    uint8_t before = config.profiles[NS2_KBM_PROFILE_KEYBOARD].count;
-    assert(ns2_kbm_set_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_E),
+    uint8_t before = config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count;
+    assert(ns2_kbm_set_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_E),
                                NS2_DST_X));
-    assert(config.profiles[NS2_KBM_PROFILE_KEYBOARD].count == before);
+    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count == before);
 
     // A new binding for a source with no canonical default shows up in the
     // effective listing, so a UI never has to guess it exists.
-    assert(ns2_kbm_set_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(0x2Bu),
+    assert(ns2_kbm_set_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(0x2Bu),
                                NS2_DST_GL));
     ns2_kbm_effective_t effective[NS2_KBM_MAX_EFFECTIVE];
-    uint16_t count = ns2_kbm_effective_bindings(&config, NS2_KBM_PROFILE_KEYBOARD,
+    uint16_t count = ns2_kbm_effective_bindings(&config, NS2_KBM_LAYOUT_KEYBOARD,
                                                 effective, NS2_KBM_MAX_EFFECTIVE);
     bool found_tab = false;
     bool found_f_override = false;
@@ -357,13 +357,13 @@ static void test_overrides_and_profile_independence(void) {
     assert(found_tab && found_f_override);
 
     // Resetting one profile leaves the other untouched.
-    ns2_kbm_config_reset_profile(&config, NS2_KBM_PROFILE_KEYBOARD);
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_F)) ==
+    ns2_kbm_config_reset_profile(&config, NS2_KBM_LAYOUT_KEYBOARD);
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            NS2_DST_A);
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                            mouse_button(1)) == NS2_DST_A);
-    ns2_kbm_config_reset_profile(&config, NS2_KBM_PROFILE_KEYBOARD_MOUSE);
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+    ns2_kbm_config_reset_profile(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE);
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                            mouse_button(1)) == NS2_DST_ZR);
 
     // Restoring defaults must reproduce the canonical profile exactly.
@@ -377,17 +377,17 @@ static void test_overrides_and_profile_independence(void) {
     unsigned added = 0;
     for (uint8_t usage = 0x04u; usage <= 0xE7u && added < NS2_KBM_MAX_OVERRIDES + 4u;
          ++usage) {
-        if (ns2_kbm_binding(&full, NS2_KBM_PROFILE_KEYBOARD, key(usage)) !=
+        if (ns2_kbm_binding(&full, NS2_KBM_LAYOUT_KEYBOARD, key(usage)) !=
             NS2_DST_NONE)
             continue;
-        if (ns2_kbm_set_binding(&full, NS2_KBM_PROFILE_KEYBOARD, key(usage),
+        if (ns2_kbm_set_binding(&full, NS2_KBM_LAYOUT_KEYBOARD, key(usage),
                                 NS2_DST_A))
             added++;
         else
             break;
     }
     assert(added == NS2_KBM_MAX_OVERRIDES);
-    assert(full.profiles[NS2_KBM_PROFILE_KEYBOARD].count == NS2_KBM_MAX_OVERRIDES);
+    assert(full.profiles[NS2_KBM_LAYOUT_KEYBOARD].count == NS2_KBM_MAX_OVERRIDES);
     puts("  overrides and profile independence");
 }
 
@@ -399,7 +399,7 @@ static void test_duplicate_destinations(void) {
     ns2_kbm_output_t out;
 
     // Two keyboard sources naming one destination.
-    assert(ns2_kbm_set_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_E),
+    assert(ns2_kbm_set_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_E),
                                NS2_DST_A));
     const uint8_t both[] = {KEY_F, KEY_E};
     press_keys(&state, both, 2);
@@ -460,7 +460,7 @@ static void test_remap_while_held(void) {
     ns2_kbm_resolve(&state, &config, NS2_KBM_MODE_KEYBOARD, false, &out);
     assert(out.buttons[0] & SWITCH_MASK_A);
 
-    assert(ns2_kbm_set_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_F),
+    assert(ns2_kbm_set_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F),
                                NS2_DST_X));
     ns2_kbm_resolve(&state, &config, NS2_KBM_MODE_KEYBOARD, false, &out);
     assert((out.buttons[0] & SWITCH_MASK_A) == 0);
@@ -800,7 +800,7 @@ static void test_mouse_digital_stick_precedence(void) {
     sim_init(&sim);
     // IJKL are deliberately unbound in the Keyboard + Mouse profile, so bind one
     // explicitly rather than relying on a default that does not exist.
-    assert(ns2_kbm_set_binding(&sim.config, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+    assert(ns2_kbm_set_binding(&sim.config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                                key(KEY_I), NS2_DST_RSTICK_UP));
     sim_run(&sim, 30, 30, 8u, 200u, 0u, NULL);
     assert(sim.state.stick_x > 500);
@@ -1116,7 +1116,7 @@ static void test_anti_deadzone_through_resolve(void) {
     // A held digital right-stick binding still wins outright.
     sim_init(&sim);
     sim.config.mouse.anti_deadzone = 20u;
-    assert(ns2_kbm_set_binding(&sim.config, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+    assert(ns2_kbm_set_binding(&sim.config, NS2_KBM_LAYOUT_KEYBOARD_MOUSE,
                                key(KEY_I), NS2_DST_RSTICK_UP));
     sim_run(&sim, 30, 0, 8u, 200u, 0u, NULL);
     const uint8_t aim_up[] = {KEY_I};
@@ -1348,37 +1348,37 @@ static void test_config_validation(void) {
     // An impossible override count discards the whole table rather than
     // reinterpreting whatever bytes survive.
     ns2_kbm_config_defaults(&config);
-    config.profiles[NS2_KBM_PROFILE_KEYBOARD].count = 200u;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count = 200u;
     assert(!ns2_kbm_config_sanitize(&config));
-    assert(config.profiles[NS2_KBM_PROFILE_KEYBOARD].count == 0);
+    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count == 0);
 
     // Individual bad entries are dropped, good ones survive.
     ns2_kbm_config_defaults(&config);
-    config.profiles[NS2_KBM_PROFILE_KEYBOARD].count = 3;
-    config.profiles[NS2_KBM_PROFILE_KEYBOARD].entries[0].source = key(KEY_F);
-    config.profiles[NS2_KBM_PROFILE_KEYBOARD].entries[0].destination = NS2_DST_X;
-    config.profiles[NS2_KBM_PROFILE_KEYBOARD].entries[1].source.kind = 99u;
-    config.profiles[NS2_KBM_PROFILE_KEYBOARD].entries[1].source.code = 5u;
-    config.profiles[NS2_KBM_PROFILE_KEYBOARD].entries[1].destination = NS2_DST_A;
-    config.profiles[NS2_KBM_PROFILE_KEYBOARD].entries[2].source = key(KEY_E);
-    config.profiles[NS2_KBM_PROFILE_KEYBOARD].entries[2].destination = 250u;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count = 3;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[0].source = key(KEY_F);
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[0].destination = NS2_DST_X;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[1].source.kind = 99u;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[1].source.code = 5u;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[1].destination = NS2_DST_A;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[2].source = key(KEY_E);
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[2].destination = 250u;
     assert(!ns2_kbm_config_sanitize(&config));
-    assert(config.profiles[NS2_KBM_PROFILE_KEYBOARD].count == 1);
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_F)) ==
+    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count == 1);
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            NS2_DST_X);
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_E)) ==
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_E)) ==
            NS2_DST_X);  // canonical default, not the rejected 250
 
     // Duplicate sources collapse to the first.
     ns2_kbm_config_defaults(&config);
-    config.profiles[NS2_KBM_PROFILE_KEYBOARD].count = 2;
-    config.profiles[NS2_KBM_PROFILE_KEYBOARD].entries[0].source = key(KEY_F);
-    config.profiles[NS2_KBM_PROFILE_KEYBOARD].entries[0].destination = NS2_DST_X;
-    config.profiles[NS2_KBM_PROFILE_KEYBOARD].entries[1].source = key(KEY_F);
-    config.profiles[NS2_KBM_PROFILE_KEYBOARD].entries[1].destination = NS2_DST_Y;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count = 2;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[0].source = key(KEY_F);
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[0].destination = NS2_DST_X;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[1].source = key(KEY_F);
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[1].destination = NS2_DST_Y;
     assert(!ns2_kbm_config_sanitize(&config));
-    assert(config.profiles[NS2_KBM_PROFILE_KEYBOARD].count == 1);
-    assert(ns2_kbm_binding(&config, NS2_KBM_PROFILE_KEYBOARD, key(KEY_F)) ==
+    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count == 1);
+    assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            NS2_DST_X);
 
     // Out-of-range mouse settings fall back to their canonical values.
@@ -1398,7 +1398,7 @@ static void test_config_validation(void) {
     memcpy(&config, noise, sizeof(config));
     (void)ns2_kbm_config_sanitize(&config);
     assert(config.mode < NS2_KBM_MODE_COUNT);
-    for (unsigned p = 0; p < NS2_KBM_PROFILE_COUNT; ++p) {
+    for (unsigned p = 0; p < NS2_KBM_LAYOUT_COUNT; ++p) {
         assert(config.profiles[p].count <= NS2_KBM_MAX_OVERRIDES);
         for (uint8_t i = 0; i < config.profiles[p].count; ++i) {
             assert(ns2_kbm_source_valid(config.profiles[p].entries[i].source));

@@ -148,9 +148,9 @@ static const kbm_default_binding_t KBM_DEFAULT_KEYBOARD_MOUSE[] = {
     {NS2_KBM_SRC_MOUSE, 5u, NS2_DST_B},
 };
 
-static const kbm_default_binding_t *default_table(ns2_kbm_profile_t profile,
+static const kbm_default_binding_t *default_table(ns2_kbm_layout_t profile,
                                                   uint16_t *count) {
-    if (profile == NS2_KBM_PROFILE_KEYBOARD_MOUSE) {
+    if (profile == NS2_KBM_LAYOUT_KEYBOARD_MOUSE) {
         *count = (uint16_t)(sizeof(KBM_DEFAULT_KEYBOARD_MOUSE) /
                             sizeof(KBM_DEFAULT_KEYBOARD_MOUSE[0]));
         return KBM_DEFAULT_KEYBOARD_MOUSE;
@@ -240,8 +240,8 @@ void ns2_kbm_config_defaults(ns2_kbm_config_t *config) {
 }
 
 void ns2_kbm_config_reset_profile(ns2_kbm_config_t *config,
-                                  ns2_kbm_profile_t profile) {
-    if (!config || profile >= NS2_KBM_PROFILE_COUNT) return;
+                                  ns2_kbm_layout_t profile) {
+    if (!config || profile >= NS2_KBM_LAYOUT_COUNT) return;
     memset(&config->profiles[profile], 0, sizeof(config->profiles[profile]));
 }
 
@@ -302,7 +302,7 @@ bool ns2_kbm_config_sanitize(ns2_kbm_config_t *config) {
     }
     config->reserved[0] = config->reserved[1] = config->reserved[2] = 0;
 
-    for (unsigned p = 0; p < NS2_KBM_PROFILE_COUNT; ++p) {
+    for (unsigned p = 0; p < NS2_KBM_LAYOUT_COUNT; ++p) {
         if (!sanitize_profile(&config->profiles[p])) clean = false;
     }
 
@@ -330,9 +330,9 @@ bool ns2_kbm_config_sanitize(ns2_kbm_config_t *config) {
     return clean;
 }
 
-uint8_t ns2_kbm_default_binding(ns2_kbm_profile_t profile,
+uint8_t ns2_kbm_default_binding(ns2_kbm_layout_t profile,
                                 ns2_kbm_source_t source) {
-    if (profile >= NS2_KBM_PROFILE_COUNT) return NS2_DST_NONE;
+    if (profile >= NS2_KBM_LAYOUT_COUNT) return NS2_DST_NONE;
     uint16_t count = 0;
     const kbm_default_binding_t *table = default_table(profile, &count);
     for (uint16_t i = 0; i < count; ++i) {
@@ -343,8 +343,8 @@ uint8_t ns2_kbm_default_binding(ns2_kbm_profile_t profile,
 }
 
 uint8_t ns2_kbm_binding(const ns2_kbm_config_t *config,
-                        ns2_kbm_profile_t profile, ns2_kbm_source_t source) {
-    if (!config || profile >= NS2_KBM_PROFILE_COUNT) return NS2_DST_NONE;
+                        ns2_kbm_layout_t profile, ns2_kbm_source_t source) {
+    if (!config || profile >= NS2_KBM_LAYOUT_COUNT) return NS2_DST_NONE;
     const ns2_kbm_profile_overrides_t *overrides = &config->profiles[profile];
     uint8_t count = overrides->count <= NS2_KBM_MAX_OVERRIDES
                         ? overrides->count : 0u;
@@ -355,9 +355,9 @@ uint8_t ns2_kbm_binding(const ns2_kbm_config_t *config,
     return ns2_kbm_default_binding(profile, source);
 }
 
-bool ns2_kbm_set_binding(ns2_kbm_config_t *config, ns2_kbm_profile_t profile,
+bool ns2_kbm_set_binding(ns2_kbm_config_t *config, ns2_kbm_layout_t profile,
                          ns2_kbm_source_t source, uint8_t destination) {
-    if (!config || profile >= NS2_KBM_PROFILE_COUNT) return false;
+    if (!config || profile >= NS2_KBM_LAYOUT_COUNT) return false;
     if (!ns2_kbm_source_valid(source)) return false;
     if (!ns2_kbm_destination_valid(destination)) return false;
 
@@ -383,9 +383,9 @@ bool ns2_kbm_set_binding(ns2_kbm_config_t *config, ns2_kbm_profile_t profile,
     return true;
 }
 
-bool ns2_kbm_clear_binding(ns2_kbm_config_t *config, ns2_kbm_profile_t profile,
+bool ns2_kbm_clear_binding(ns2_kbm_config_t *config, ns2_kbm_layout_t profile,
                            ns2_kbm_source_t source) {
-    if (!config || profile >= NS2_KBM_PROFILE_COUNT) return false;
+    if (!config || profile >= NS2_KBM_LAYOUT_COUNT) return false;
     if (!ns2_kbm_source_valid(source)) return false;
     ns2_kbm_profile_overrides_t *overrides = &config->profiles[profile];
     if (overrides->count > NS2_KBM_MAX_OVERRIDES) return false;
@@ -403,10 +403,10 @@ bool ns2_kbm_clear_binding(ns2_kbm_config_t *config, ns2_kbm_profile_t profile,
 }
 
 uint16_t ns2_kbm_effective_bindings(const ns2_kbm_config_t *config,
-                                    ns2_kbm_profile_t profile,
+                                    ns2_kbm_layout_t profile,
                                     ns2_kbm_effective_t *out,
                                     uint16_t capacity) {
-    if (!config || !out || profile >= NS2_KBM_PROFILE_COUNT) return 0;
+    if (!config || !out || profile >= NS2_KBM_LAYOUT_COUNT) return 0;
     uint16_t written = 0;
     uint16_t default_count = 0;
     const kbm_default_binding_t *table = default_table(profile, &default_count);
@@ -760,11 +760,11 @@ void ns2_kbm_state_mouse_report(ns2_kbm_state_t *state, uint16_t buttons,
 // Resolve
 // ---------------------------------------------------------------------------
 
-ns2_kbm_profile_t ns2_kbm_mode_profile(ns2_kbm_mode_t mode) {
+ns2_kbm_layout_t ns2_kbm_mode_layout(ns2_kbm_mode_t mode) {
     // Callers pass an EFFECTIVE mode; AUTO has no profile of its own and is
     // mapped to the keyboard profile only so an index can never go out of range.
-    return mode == NS2_KBM_MODE_KEYBOARD_MOUSE ? NS2_KBM_PROFILE_KEYBOARD_MOUSE
-                                               : NS2_KBM_PROFILE_KEYBOARD;
+    return mode == NS2_KBM_MODE_KEYBOARD_MOUSE ? NS2_KBM_LAYOUT_KEYBOARD_MOUSE
+                                               : NS2_KBM_LAYOUT_KEYBOARD;
 }
 
 // Opposing digital directions neutralize. This is the simplest rule that is
@@ -792,7 +792,7 @@ void ns2_kbm_resolve(ns2_kbm_state_t *state, const ns2_kbm_config_t *config,
         mode == NS2_KBM_MODE_AUTO || mode >= NS2_KBM_MODE_COUNT)
         return;
 
-    ns2_kbm_profile_t profile = ns2_kbm_mode_profile(mode);
+    ns2_kbm_layout_t profile = ns2_kbm_mode_layout(mode);
     bool held[NS2_DST_COUNT];
     memset(held, 0, sizeof(held));
 
@@ -914,14 +914,14 @@ bool ns2_kbm_mode_from_name(const char *name, ns2_kbm_mode_t *out) {
     return false;
 }
 
-const char *ns2_kbm_profile_name(ns2_kbm_profile_t profile) {
-    return profile == NS2_KBM_PROFILE_KEYBOARD_MOUSE ? "kbm" : "kb";
+const char *ns2_kbm_layout_name(ns2_kbm_layout_t profile) {
+    return profile == NS2_KBM_LAYOUT_KEYBOARD_MOUSE ? "kbm" : "kb";
 }
 
-bool ns2_kbm_profile_from_name(const char *name, ns2_kbm_profile_t *out) {
+bool ns2_kbm_layout_from_name(const char *name, ns2_kbm_layout_t *out) {
     if (!name || !out) return false;
-    if (strcmp(name, "kb") == 0) { *out = NS2_KBM_PROFILE_KEYBOARD; return true; }
-    if (strcmp(name, "kbm") == 0) { *out = NS2_KBM_PROFILE_KEYBOARD_MOUSE; return true; }
+    if (strcmp(name, "kb") == 0) { *out = NS2_KBM_LAYOUT_KEYBOARD; return true; }
+    if (strcmp(name, "kbm") == 0) { *out = NS2_KBM_LAYOUT_KEYBOARD_MOUSE; return true; }
     return false;
 }
 
