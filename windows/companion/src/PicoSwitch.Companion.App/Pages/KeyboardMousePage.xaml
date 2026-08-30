@@ -12,6 +12,22 @@
             <Setter Property="CornerRadius" Value="8" />
             <Setter Property="Padding" Value="16" />
         </Style>
+
+        <!-- One height and one minimum width for every command button on this
+             page. Buttons were previously sized by their own text, so a row of
+             them stepped in width and sat at three different baselines depending
+             on whether the control beside them carried a Header. -->
+        <Style x:Key="PageButtonStyle" TargetType="Button">
+            <Setter Property="MinWidth" Value="96" />
+            <Setter Property="Height" Value="32" />
+            <Setter Property="VerticalAlignment" Value="Bottom" />
+        </Style>
+
+        <!-- Section headings inside a card. One style so every section starts at
+             the same weight and the same distance from what precedes it. -->
+        <Style x:Key="SectionHeadingStyle" TargetType="TextBlock" BasedOn="{StaticResource BodyStrongTextBlockStyle}">
+            <Setter Property="Margin" Value="0,4,0,0" />
+        </Style>
     </Page.Resources>
 
     <ScrollViewer Padding="24">
@@ -24,7 +40,7 @@
                     Style="{StaticResource BodyTextBlockStyle}"
                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                     TextWrapping="Wrap"
-                    Text="Map a USB keyboard and mouse plugged into the adapter onto controller buttons. Click a key to change what it does." />
+                    Text="Map a keyboard and mouse onto controller buttons. Click a key to change it, middle-click to clear it." />
             </StackPanel>
 
             <!-- The page's non-Ready state, stated plainly.
@@ -50,7 +66,10 @@
                         x:Name="NotReadyRetry"
                         Content="Reload"
                         Click="OnRefresh"
-                        HorizontalAlignment="Left" />
+                        MinWidth="96"
+                        Height="32"
+                        HorizontalAlignment="Left"
+                        Margin="0,4,0,0" />
                 </StackPanel>
             </Border>
 
@@ -90,35 +109,21 @@
                                 VerticalAlignment="Top" />
                         </Grid>
 
+                        <!-- Bottom-aligned so the combo box (which carries a
+                             Header, and is therefore taller) and the buttons
+                             share one baseline. -->
                         <StackPanel Orientation="Horizontal" Spacing="8">
-                            <ComboBox x:Name="ModeBox" Header="Mode" MinWidth="220">
+                            <ComboBox x:Name="ModeBox" Header="Mode" MinWidth="220" VerticalAlignment="Bottom">
                                 <ComboBoxItem Content="Automatic" />
                                 <ComboBoxItem Content="Controller only" />
                                 <ComboBoxItem Content="Keyboard" />
                                 <ComboBoxItem Content="Keyboard and mouse" />
                             </ComboBox>
-                            <Button x:Name="ModeApply" Content="Set mode" Click="OnSetMode" VerticalAlignment="Bottom" />
-                            <Button x:Name="RefreshButton" Content="Reload" Click="OnRefresh" VerticalAlignment="Bottom" />
+                            <Button x:Name="ModeApply" Content="Set mode" Click="OnSetMode"
+                                    Style="{StaticResource PageButtonStyle}" />
+                            <Button x:Name="RefreshButton" Content="Reload" Click="OnRefresh"
+                                    Style="{StaticResource PageButtonStyle}" />
                         </StackPanel>
-
-                        <!-- Ingress counters. Collapsed by default: this is
-                             diagnostic detail, not something the ordinary user
-                             needs, but a keyboard producing nothing at the
-                             console is invisible without it. Selectable so it
-                             can be pasted into a report verbatim. -->
-                        <muxc:Expander
-                            x:Name="CountersExpander"
-                            HorizontalAlignment="Stretch"
-                            Header="Runtime counters"
-                            IsExpanded="False"
-                            Visibility="Collapsed">
-                            <TextBlock
-                                x:Name="CountersText"
-                                FontFamily="Consolas"
-                                IsTextSelectionEnabled="True"
-                                Style="{StaticResource CaptionTextBlockStyle}"
-                                TextWrapping="Wrap" />
-                        </muxc:Expander>
 
                         <TextBlock
                             x:Name="DisabledReason"
@@ -132,26 +137,6 @@
                 <!-- The mapping grid. Shown ONLY in the Ready state. -->
                 <Border x:Name="EditorCard" Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="12">
-                        <Grid ColumnSpacing="12">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <StackPanel Grid.Column="0" Spacing="2">
-                                <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Key mapping" />
-                                <TextBlock
-                                    x:Name="MappingSummary"
-                                    Style="{StaticResource CaptionTextBlockStyle}"
-                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            </StackPanel>
-                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                                <ComboBox x:Name="ProfileBox" MinWidth="220" Header="Layout" SelectionChanged="OnProfileChanged">
-                                    <ComboBoxItem Content="Keyboard" />
-                                    <ComboBoxItem Content="Keyboard and mouse" />
-                                </ComboBox>
-                                <Button x:Name="ResetProfile" Content="Reset mapping" Click="OnResetProfile" />
-                            </StackPanel>
-                        </Grid>
 
                         <!-- Profiles.
 
@@ -159,39 +144,89 @@
                              a list selection must never change what the console
                              is doing. Save writes to the adapter's library;
                              Set Active is what changes the console. Keeping
-                             those two apart is the point of the whole row. -->
-                        <Grid x:Name="ProfileRow" ColumnSpacing="8" Visibility="Collapsed">
+                             those two apart is the point of the whole row.
+
+                             Two rows, not one. Six buttons plus two combo boxes
+                             plus a status line on a single row could not fit
+                             without squeezing, so the selectors sit above the
+                             commands and the commands align right against them.
+                             The profile controls come FIRST because choosing the
+                             profile is the first thing a user does; the mapping
+                             grid below is what they then edit. -->
+                        <Grid x:Name="ProfileRow" ColumnSpacing="12" Visibility="Collapsed">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
 
                             <ComboBox
-                                Grid.Column="0"
+                                Grid.Row="0" Grid.Column="0"
                                 x:Name="ProfileSelector"
                                 MinWidth="220"
                                 Header="Profile"
+                                VerticalAlignment="Bottom"
                                 SelectionChanged="OnSelectedProfileChanged" />
 
-                            <StackPanel Grid.Column="1" VerticalAlignment="Bottom" Spacing="2">
-                                <TextBlock
-                                    x:Name="ProfileStatus"
-                                    Style="{StaticResource BodyStrongTextBlockStyle}" />
-                            </StackPanel>
+                            <ComboBox
+                                Grid.Row="0" Grid.Column="1"
+                                x:Name="ProfileBox"
+                                MinWidth="200"
+                                Header="Layout"
+                                VerticalAlignment="Bottom"
+                                SelectionChanged="OnProfileChanged">
+                                <ComboBoxItem Content="Keyboard" />
+                                <ComboBoxItem Content="Keyboard and mouse" />
+                            </ComboBox>
 
-                            <StackPanel Grid.Column="2" Orientation="Horizontal"
-                                        Spacing="8" VerticalAlignment="Bottom">
+                            <!-- Sits on the selectors' baseline rather than
+                                 floating between them. -->
+                            <TextBlock
+                                Grid.Row="0" Grid.Column="2"
+                                x:Name="ProfileStatus"
+                                Style="{StaticResource BodyStrongTextBlockStyle}"
+                                VerticalAlignment="Bottom"
+                                Margin="0,0,0,6"
+                                TextTrimming="CharacterEllipsis" />
+
+                            <!-- Editing commands, then library commands, split by
+                                 a rule: Save/Discard/Set Active act on what is
+                                 open, New/Rename/Delete act on the library. They
+                                 were one undifferentiated run of six. -->
+                            <StackPanel
+                                Grid.Row="1" Grid.ColumnSpan="3"
+                                Orientation="Horizontal"
+                                Spacing="8"
+                                Margin="0,12,0,0">
+                                <!-- Accent style is applied in code-behind, as it
+                                     is for a changed key: a Page.Resources style
+                                     with BasedOn on a framework theme style does
+                                     not resolve at markup-compile time. -->
                                 <Button x:Name="SaveButton" Content="Save" Click="OnSaveProfile"
-                                        Style="{StaticResource AccentButtonStyle}" />
-                                <Button x:Name="DiscardButton" Content="Discard" Click="OnDiscardProfile" />
-                                <Button x:Name="ApplyButton" Content="Set Active" Click="OnApplyProfile" />
-                                <Button x:Name="NewButton" Content="New" Click="OnNewProfile" />
-                                <Button x:Name="RenameButton" Content="Rename" Click="OnRenameProfile" />
-                                <Button x:Name="DeleteButton" Content="Delete" Click="OnDeleteProfile" />
+                                        MinWidth="96" Height="32" VerticalAlignment="Bottom" />
+                                <Button x:Name="DiscardButton" Content="Discard" Click="OnDiscardProfile"
+                                        Style="{StaticResource PageButtonStyle}" />
+                                <Button x:Name="ApplyButton" Content="Set active" Click="OnApplyProfile"
+                                        Style="{StaticResource PageButtonStyle}" />
+                                <Border Width="1" Height="24" Margin="4,0" VerticalAlignment="Bottom"
+                                        Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                                <Button x:Name="NewButton" Content="New" Click="OnNewProfile"
+                                        Style="{StaticResource PageButtonStyle}" />
+                                <Button x:Name="RenameButton" Content="Rename" Click="OnRenameProfile"
+                                        Style="{StaticResource PageButtonStyle}" />
+                                <Button x:Name="DeleteButton" Content="Delete" Click="OnDeleteProfile"
+                                        Style="{StaticResource PageButtonStyle}" />
                             </StackPanel>
                         </Grid>
 
+                        <!-- Directly under the controls they describe. These
+                             report the state of the OPEN PROFILE, so putting
+                             them below the mapping heading separated a message
+                             from the thing it was about. -->
                         <muxc:InfoBar
                             x:Name="DraftBar"
                             IsOpen="False"
@@ -205,6 +240,23 @@
                             Severity="Warning"
                             Title="Not the profile in use" />
 
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Bottom">
+                                <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Key mapping" />
+                                <TextBlock
+                                    x:Name="MappingSummary"
+                                    Style="{StaticResource CaptionTextBlockStyle}"
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+                            <Button Grid.Column="1" x:Name="ResetProfile" Content="Reset mapping"
+                                    Click="OnResetProfile"
+                                    Style="{StaticResource PageButtonStyle}" />
+                        </Grid>
+
                         <!-- The keyboard itself. Built in code because the layout is
                              geometry, not markup. Scrolls in its own container so a
                              narrow window never scrolls the page sideways. -->
@@ -215,43 +267,40 @@
                             <StackPanel x:Name="KeyboardHost" Orientation="Horizontal" Spacing="20" />
                         </ScrollViewer>
 
-                        <StackPanel x:Name="OtherKeysSection" Spacing="4">
-                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="ISO and international keys" />
-                            <TextBlock
-                                Style="{StaticResource CaptionTextBlockStyle}"
-                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                TextWrapping="Wrap"
-                                Text="Keys on European and Japanese keyboards that a US layout has no place for. Bind them here if your keyboard has them." />
+                        <!-- These three rows hold variable-length labels
+                             ("Muhenkan", "Katakana/Hiragana"), so their buttons
+                             size to their content instead of to a key-grid unit.
+                             They are laid out with the same 8px rhythm as the
+                             grid above rather than the 4px they used to use. -->
+                        <StackPanel x:Name="OtherKeysSection" Spacing="6">
+                            <TextBlock Style="{StaticResource SectionHeadingStyle}" Text="ISO and international keys" />
                             <ScrollViewer
                                 HorizontalScrollBarVisibility="Auto"
                                 HorizontalScrollMode="Auto"
                                 VerticalScrollMode="Disabled">
-                                <StackPanel x:Name="OtherKeysHost" Orientation="Horizontal" Spacing="4" />
+                                <StackPanel x:Name="OtherKeysHost" Orientation="Horizontal" Spacing="8" />
                             </ScrollViewer>
                         </StackPanel>
 
-                        <StackPanel x:Name="MouseButtonSection" Spacing="4">
-                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Mouse buttons" />
-                            <StackPanel x:Name="MouseButtonHost" Orientation="Horizontal" Spacing="4" />
+                        <StackPanel x:Name="MouseButtonSection" Spacing="6">
+                            <TextBlock Style="{StaticResource SectionHeadingStyle}" Text="Mouse buttons" />
+                            <StackPanel x:Name="MouseButtonHost" Orientation="Horizontal" Spacing="8" />
                         </StackPanel>
 
-                        <StackPanel x:Name="UndrawnSection" Spacing="4" Visibility="Collapsed">
-                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Other bound keys" />
-                            <TextBlock
-                                Style="{StaticResource CaptionTextBlockStyle}"
-                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                TextWrapping="Wrap"
-                                Text="Keys the adapter has bound that this app does not draw. They still work, and can be changed here." />
+                        <StackPanel x:Name="UndrawnSection" Spacing="6" Visibility="Collapsed">
+                            <TextBlock Style="{StaticResource SectionHeadingStyle}" Text="Other bound keys" />
                             <ItemsControl x:Name="UndrawnList">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <Grid Margin="0,4,0,4" ColumnSpacing="12">
+                                        <Grid Margin="0,2" ColumnSpacing="12">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" VerticalAlignment="Center" Text="{Binding AccessibleName}" />
-                                            <Button Grid.Column="1" Content="Change" Click="OnEditUndrawn" Tag="{Binding Cap.Usage}" />
+                                            <TextBlock Grid.Column="0" VerticalAlignment="Center"
+                                                       TextWrapping="Wrap" Text="{Binding AccessibleName}" />
+                                            <Button Grid.Column="1" Content="Change" Click="OnEditUndrawn"
+                                                    MinWidth="96" Height="32" Tag="{Binding Cap.Usage}" />
                                         </Grid>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
@@ -260,36 +309,74 @@
                     </StackPanel>
                 </Border>
 
-                <!-- Mouse tuning -->
-                <Border x:Name="MouseCard" Style="{StaticResource CardStyle}">
-                    <StackPanel Spacing="12">
-                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Mouse tuning" />
-                        <TextBlock
-                            Style="{StaticResource CaptionTextBlockStyle}"
-                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                            TextWrapping="Wrap"
-                            Text="Ranges come from the adapter, so they match the firmware you are running." />
-                        <StackPanel x:Name="SliderHost" Spacing="12" />
+                <!-- Mouse tuning.
 
-                        <StackPanel Orientation="Horizontal" Spacing="16">
-                            <CheckBox x:Name="InvertXBox" Content="Invert horizontal" Click="OnInvertX" />
-                            <CheckBox x:Name="InvertYBox" Content="Invert vertical" Click="OnInvertY" />
-                        </StackPanel>
+                     The one section on this page that earns explanatory copy: a
+                     key with a controller button written on it explains itself,
+                     but "smoothing window" and "anti-deadzone" describe an
+                     analogue-stick emulation the user cannot see. Sliders, values
+                     and descriptions are built in code from MouseSliders so the
+                     wording lives in the presentation layer and is testable. -->
+                <Border x:Name="MouseCard" Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="16">
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Mouse tuning" />
+                        <StackPanel x:Name="SliderHost" Spacing="16" />
+                        <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                        <StackPanel x:Name="ToggleHost" Spacing="12" />
                     </StackPanel>
                 </Border>
 
                 <!-- Reset everything -->
                 <Border x:Name="ResetCard" Style="{StaticResource CardStyle}">
-                    <StackPanel Spacing="8">
-                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Reset" />
-                        <TextBlock
-                            Style="{StaticResource CaptionTextBlockStyle}"
-                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                            TextWrapping="Wrap"
-                            Text="Restore the adapter's own defaults for both profiles and the mouse tuning." />
-                        <Button x:Name="ResetAll" Content="Reset everything" Click="OnResetAll" />
-                    </StackPanel>
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
+                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Reset" />
+                            <TextBlock
+                                Style="{StaticResource CaptionTextBlockStyle}"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                TextWrapping="Wrap"
+                                Text="Restores the adapter's defaults for both layouts and the mouse tuning." />
+                        </StackPanel>
+                        <Button Grid.Column="1" x:Name="ResetAll" Content="Reset everything"
+                                Click="OnResetAll" MinWidth="140" Height="32"
+                                VerticalAlignment="Center" />
+                    </Grid>
                 </Border>
+
+                <!-- Diagnostics.
+
+                     LAST on the page, outside the card system, collapsed, and in
+                     secondary text. These counters are how a keyboard that
+                     produces nothing at the console becomes visible at all, so
+                     they stay reachable. They used to sit inside the status card
+                     directly above the editing workflow, which gave a debugging
+                     aid the same visual weight as choosing a profile. -->
+                <muxc:Expander
+                    x:Name="CountersExpander"
+                    HorizontalAlignment="Stretch"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    IsExpanded="False"
+                    Visibility="Collapsed"
+                    Margin="0,4,0,0">
+                    <muxc:Expander.Header>
+                        <TextBlock
+                            Text="Diagnostics: runtime counters"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </muxc:Expander.Header>
+                    <TextBlock
+                        x:Name="CountersText"
+                        FontFamily="Consolas"
+                        IsTextSelectionEnabled="True"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextWrapping="Wrap" />
+                </muxc:Expander>
             </StackPanel>
             </StackPanel>
         </Grid>
