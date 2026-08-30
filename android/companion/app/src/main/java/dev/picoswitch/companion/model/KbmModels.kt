@@ -335,6 +335,41 @@ object SensitivityScale {
  * definition rather than by inference, and the UI never claims a value is
  * stored merely because it took effect.
  */
+/**
+ * The Keyboard and Mouse screen's top-level state. Exactly one is true at a time.
+ *
+ * Explicit because the implicit version shipped a bad failure: the screen
+ * inferred readiness from flags and quietly degraded to a pre-profile editor
+ * whenever the profile contract did not answer. When a protocol defect made the
+ * read fail, the user saw the old half-working mapping page with no profile
+ * controls and no statement that anything had gone wrong — indistinguishable
+ * from the feature not having been built.
+ *
+ * There is no legacy fallback. This companion targets ONE firmware contract.
+ */
+enum class KbmReadiness {
+    /** Never read this session. */
+    NotRead,
+
+    /** Read in progress. */
+    Loading,
+
+    /** The current contract loaded. The only state with a usable screen. */
+    Ready,
+
+    /**
+     * The adapter answered, but does not implement a command the current
+     * contract requires. Its firmware predates the profile system.
+     */
+    FirmwareUpdateRequired,
+
+    /**
+     * The adapter implements the contract but returned data this build could not
+     * use — malformed, incomplete or inconsistent. A defect, not a version gap.
+     */
+    Error,
+}
+
 data class KbmState(
     val status: KbmStatus = KbmStatus(),
     val mouse: KbmMouseConfig = KbmMouseConfig(),
@@ -344,10 +379,19 @@ data class KbmState(
     val saving: Boolean = false,
     val loading: Boolean = false,
 
+    val readiness: KbmReadiness = KbmReadiness.NotRead,
+
     /**
-     * The adapter's profile library and both realized mappings. Empty on
-     * firmware that predates them, which is not an error: that adapter has
-     * exactly one mapping per layout and the profile controls are not offered.
+     * Why the screen is not Ready, in developer terms. Shown on the screen and
+     * copyable; the generic banner it replaces cost a hardware round trip to turn
+     * into a diagnosis.
+     */
+    val fault: String = "",
+
+    /**
+     * The adapter's profile library and both realized mappings. Required by the
+     * current contract: an adapter that cannot list them is reported as needing a
+     * firmware update, never silently treated as having none.
      */
     val profiles: KbmProfiles = KbmProfiles(),
 

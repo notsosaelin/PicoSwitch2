@@ -215,7 +215,11 @@ object ManagementProtocol {
     fun kbmProfilePage(command: String, response: String): KbmProfilePage =
         decode(command, response) { value ->
             val entries = value["profiles"] as? JsonArray
-            requireShape(entries != null && value.containsKey("max"), command)
+            requireShape(
+                entries != null && value.containsKey("max") &&
+                    value.containsKey("cursor") && value.containsKey("next"),
+                command,
+            )
             val rows = entries!!.mapNotNull { element ->
                 val item = element.jsonObject
                 val layout = KbmProfile.fromWire(item.string("layout"))
@@ -238,12 +242,18 @@ object ManagementProtocol {
                     )
                 }
             }
+            val cursor = value.int("cursor")
+            val next = value.optionalInt("next")
+            // A row this build skipped still occupies a logical slot, so `next`
+            // is checked against what the ADAPTER sent. Deriving it from the
+            // surviving rows would turn one unparsed row into a permanent gap.
+            requireShape(cursor >= 0 && (next == null || next > cursor), command)
             KbmProfilePage(
                 profiles = rows,
-                page = value.int("page"),
+                cursor = cursor,
                 total = value.int("total"),
                 max = value.int("max"),
-                more = value.bool("more"),
+                next = next,
             )
         }
 
@@ -278,11 +288,15 @@ object ManagementProtocol {
     fun kbmMapPage(command: String, response: String): KbmMapPage = decode(command, response) { value ->
         val profile = KbmProfile.fromWire(value.string("profile"))
         val entries = value["bindings"] as? JsonArray
-        requireShape(profile != null && entries != null && value.containsKey("total") && value.containsKey("more"), command)
-        val page = value.int("page")
-        val pageSize = value.int("pageSize")
+        requireShape(
+            profile != null && entries != null && value.containsKey("total") &&
+                value.containsKey("cursor") && value.containsKey("next"),
+            command,
+        )
+        val cursor = value.int("cursor")
         val total = value.int("total")
-        requireShape(page >= 0 && pageSize > 0 && total >= 0, command)
+        val next = value.optionalInt("next")
+        requireShape(cursor >= 0 && total >= 0, command)
         val bindings = entries!!.map { element ->
             val item = element.jsonObject
             val source = KbmSource.parse(item.string("src"))
@@ -290,8 +304,15 @@ object ManagementProtocol {
             requireShape(source != null && destination != null, command)
             KbmBinding(source!!, destination!!, item.bool("custom"))
         }
-        requireShape(bindings.size <= pageSize && bindings.size <= total, command)
-        KbmMapPage(profile!!, page, pageSize, total, bindings, value.bool("more"))
+        requireShape(bindings.size <= total, command)
+        // The adapter's own claim about where it stopped must be internally
+        // consistent before a client builds on it: `next` names the first item
+        // NOT in this reply, so it is exactly cursor + rows. Anything else is a
+        // gap or an overlap, and accepting it is how a short page became a
+        // silently incomplete mapping on hardware.
+        requireShape(next == null || next == cursor + bindings.size, command)
+        requireShape(next == null || bindings.isNotEmpty(), command)
+        KbmMapPage(profile!!, value.int("profileId"), cursor, total, bindings, next)
     }
 
     fun kbmMouse(command: String, response: String): KbmMouseConfig = decode(command, response) { value ->
@@ -729,9 +750,15 @@ object ManagementCommands {
 
     private val PEER_ID = Regex("p_[0-9A-F]{8}")
 
-    fun kbmMap(profile: KbmProfile, page: Int): String {
-        require(page in 0..32)
-        return "kbm map ${profile.wire} $page"
+    /**
+     * One slice of a layout's REALIZED mapping, from logical item [cursor].
+     *
+     * A cursor, not a page index: rows are variable width, so no fixed page size
+     * is both safe for the worst-case row and complete for the common one.
+     */
+    fun kbmMap(profile: KbmProfile, cursor: Int): String {
+        require(cursor in 0..KbmLimits.MAX_MAPPING_ITEMS)
+        return "kbm map ${profile.wire} $cursor"
     }
 
     fun kbmMode(mode: KbmMode) = "kbm mode ${mode.wire}"
@@ -755,9 +782,9 @@ object ManagementCommands {
      * One page of the profile library. Paginated against the WIRE limit, not a
      * local buffer: six rows do not fit one 512-byte reply.
      */
-    fun kbmProfilePage(page: Int): String {
-        require(page in 0..32)
-        return "kbm profiles $page"
+    fun kbmProfilePage(cursor: Int): String {
+        require(cursor in 0..KbmLimits.MAX_PROFILES)
+        return "kbm profiles $cursor"
     }
 
     /** The realized mapping of each layout, and its divergence state. */
@@ -782,9 +809,9 @@ object ManagementCommands {
     fun kbmProfileDelete(id: Int) = "kbm profile delete $id"
 
     /** Read one STORED profile's mapping, not the realized one. */
-    fun kbmProfileMap(id: Int, page: Int): String {
-        require(page in 0..32)
-        return "kbm pmap $id $page"
+    fun kbmProfileMap(id: Int, cursor: Int): String {
+        require(cursor in 0..KbmLimits.MAX_MAPPING_ITEMS)
+        return "kbm pmap $id $cursor"
     }
 
     // --- staged profile write -------------------------------------------------

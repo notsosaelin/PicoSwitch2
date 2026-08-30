@@ -10,8 +10,8 @@ import org.junit.Test
 class ManagementWorkflowTest {
     @Test fun `KBM pagination assembles one complete mapping`() = runTest {
         val channel = ScriptedChannel(
-            "kbm map kb 0" to """{"profile":"kb","page":0,"pageSize":1,"total":2,"bindings":[{"src":"key:04","dst":"a","custom":false}],"more":true}""",
-            "kbm map kb 1" to """{"profile":"kb","page":1,"pageSize":1,"total":2,"bindings":[{"src":"key:05","dst":"b","custom":true}],"more":false}""",
+            "kbm map kb 0" to """{"profile":"kb","profileId":1,"cursor":0,"total":2,"bindings":[{"src":"key:04","dst":"a","custom":false}],"next":1}""",
+            "kbm map kb 1" to """{"profile":"kb","profileId":1,"cursor":1,"total":2,"bindings":[{"src":"key:05","dst":"b","custom":true}],"next":null}""",
         )
         val mapping = ManagementClient(channel).loadKbmMapping(KbmProfile.Keyboard)
         assertEquals(2, mapping.bindings.size)
@@ -21,8 +21,8 @@ class ManagementWorkflowTest {
 
     @Test fun `KBM pagination rejects a changing total`() = runTest {
         val channel = ScriptedChannel(
-            "kbm map kb 0" to """{"profile":"kb","page":0,"pageSize":1,"total":2,"bindings":[{"src":"key:04","dst":"a","custom":false}],"more":true}""",
-            "kbm map kb 1" to """{"profile":"kb","page":1,"pageSize":1,"total":3,"bindings":[{"src":"key:05","dst":"b","custom":false}],"more":false}""",
+            "kbm map kb 0" to """{"profile":"kb","profileId":1,"cursor":0,"total":2,"bindings":[{"src":"key:04","dst":"a","custom":false}],"next":1}""",
+            "kbm map kb 1" to """{"profile":"kb","profileId":1,"cursor":1,"total":3,"bindings":[{"src":"key:05","dst":"b","custom":false}],"next":null}""",
         )
         val error = runCatching { ManagementClient(channel).loadKbmMapping(KbmProfile.Keyboard) }.exceptionOrNull()
         assertTrue(error is ManagementPaginationException)

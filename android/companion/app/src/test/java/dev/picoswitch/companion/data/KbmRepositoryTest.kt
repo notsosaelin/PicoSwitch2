@@ -250,9 +250,9 @@ private class KbmTransport(
             // Only CUSTOM profiles are stored; Default is a template the client
             // synthesises, which is what keeps all six adapter slots for the user.
             command == "kbm profiles 0" -> """
-                {"page":0,"total":1,"max":6,"profiles":[
+                {"cursor":0,"total":1,"max":6,"profiles":[
                   {"id":2,"layout":"kb","name":"Work","revision":3,"overrides":3,"fingerprint":111}
-                ],"more":false}
+                ],"next":null}
             """.trimIndent()
             // What each layout is REALLY running.
             command == "kbm active" -> """
@@ -291,14 +291,17 @@ private class KbmTransport(
          "recenterMaxMs":2000,"antiDeadzoneMax":50}
     """.trimIndent().replace("\n", "")
 
+    // Cursor pagination: one row per reply, and `next` is the index of the first
+    // item NOT in this reply -- null exactly at the end. A fixed page stride is
+    // what silently dropped a row per page on hardware.
     private fun mapPage(command: String): String {
         val parts = command.removePrefix("kbm map ").split(" ")
         val profile = mapProfileOverride ?: parts[0]
-        val page = parts.getOrNull(1)?.toIntOrNull() ?: 0
-        val total = if (shiftTotalOnPage == page) mapPages + 5 else mapPages
-        val more = page < mapPages - 1
-        return """{"profile":"$profile","page":$page,"pageSize":1,"total":$total,""" +
-            """"bindings":[{"src":"key:%02X","dst":"a","custom":false}],"more":$more}"""
-                .format(0x04 + page)
+        val cursor = parts.getOrNull(1)?.toIntOrNull() ?: 0
+        val total = if (shiftTotalOnPage == cursor) mapPages + 5 else mapPages
+        val next = if (cursor < mapPages - 1) "${cursor + 1}" else "null"
+        return """{"profile":"$profile","profileId":1,"cursor":$cursor,"total":$total,""" +
+            """"bindings":[{"src":"key:%02X","dst":"a","custom":false}],"next":$next}"""
+                .format(0x04 + cursor)
     }
 }

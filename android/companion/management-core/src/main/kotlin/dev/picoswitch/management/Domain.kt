@@ -432,13 +432,32 @@ data class KbmCounters(
 )
 
 /** One page of the profile library. */
+/**
+ * One slice of the profile library, starting at logical item [cursor]. Same
+ * cursor contract as [KbmMapPage], for the same reason.
+ */
 data class KbmProfilePage(
     val profiles: List<KbmProfileInfo>,
-    val page: Int,
+    val cursor: Int,
     val total: Int,
     val max: Int,
-    val more: Boolean,
+    val next: Int?,
 )
+
+/**
+ * Bounds the firmware enforces, restated once so a client can reject a
+ * nonsensical request before spending a round trip and can bound its own
+ * pagination loops.
+ *
+ * Mirrors `NS2_KBM_MAX_EFFECTIVE` and `NS2_KBM_MAX_PROFILES` in
+ * include/ns2_kbm.h. Not a second authority: the adapter still refuses anything
+ * out of range, and the reply's own `total` is what a client reconstructs
+ * against. These exist so a runaway walk terminates.
+ */
+object KbmLimits {
+    const val MAX_MAPPING_ITEMS = 96
+    const val MAX_PROFILES = 6
+}
 
 /** Reserved profile identities. Custom profiles are numbered from 2. */
 object KbmProfileIds {
@@ -629,13 +648,23 @@ data class KbmMapping(
     val customCount: Int get() = bindings.count { it.custom }
 }
 
+/**
+ * One slice of a mapping, starting at logical item [cursor].
+ *
+ * CURSOR, NOT PAGE INDEX. Rows are variable width, so the number that fits one
+ * reply is not a constant. The firmware previously answered a fixed
+ * `page * PAGE_SIZE` offset while emitting however many rows its byte budget
+ * allowed, which silently dropped the difference on every page and surfaced only
+ * as an incomplete reconstruction. [next] is the index the adapter actually
+ * reached, and it is null exactly when the walk is complete.
+ */
 data class KbmMapPage(
     val profile: KbmProfile,
-    val page: Int,
-    val pageSize: Int,
+    val profileId: Int,
+    val cursor: Int,
     val total: Int,
     val bindings: List<KbmBinding>,
-    val more: Boolean,
+    val next: Int?,
 )
 
 data class KbmMouseConfig(
