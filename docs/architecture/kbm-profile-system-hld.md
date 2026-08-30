@@ -198,38 +198,107 @@ existing limitation of the single-bank, non-CRC record.
 
 | Command | Purpose |
 |---|---|
-| `kbm profiles [page]` | The library, 3 rows per page against the wire budget |
+| `kbm profiles [cursor]` | The library, walked by cursor |
 | `kbm active` | Both realized mappings, with `matchesSaved` |
 | `kbm apply <kb\|kbm> <id\|default>` | **The only command that changes console behaviour** |
-| `kbm pmap <id> [page]` | One STORED profile's mapping |
+| `kbm map <kb\|kbm> [cursor]` | One layout's REALIZED mapping, walked by cursor |
+| `kbm pmap <id> [cursor]` | One STORED profile's mapping, same walk |
 | `kbm profile rename\|dup\|delete` | Library metadata |
 | `kbm draft …` | The staged save above |
 | `kbm status` | Product state only. Gains `activeProfile`, `activeProfileName`, `activeRevision`, `activeFingerprint`, `activeMatchesSaved` |
 | `kbm counters` | The 15 ingress counters, split out of `kbm status` |
 
-### The 512-byte wire budget
+### The wire budget
 
-`CONFIG_WIRELESS_RESPONSE_CAPACITY` is **512 bytes**. A longer reply is not
-truncated — the bridge substitutes `{"error":"response_too_large","code":413}`
-and the caller loses the *whole* read, so one oversized reply takes down every
-value the page needed, not just the field that overflowed.
+`CONFIG_WIRELESS_RESPONSE_MAX_JSON` is **511 bytes** — the 512-byte slot minus
+the newline the bridge appends. That constant is the single authority; deriving
+from it rather than restating 512 matters, because a formatter budgeted against
+the raw capacity is off by one exactly at the boundary.
+
+A longer reply is **not truncated**. The bridge substitutes
+`{"error":"response_too_large","code":413}` and the caller loses the *whole*
+read, so one oversized reply takes down every value the page needed.
 
 This was not theoretical. Adding the active-mapping identity to `kbm status`
 pushed it to **729 bytes worst case** (559 measured live), which made the entire
-Keyboard & Mouse page fail to load on hardware. Hence:
+Keyboard & Mouse page fail to load on hardware. Hence: **product state and
+counters are two commands** (318 B and 414 B worst case), merged by the client.
 
-- **Product state and counters are two commands.** 318 B and 414 B worst case.
-  A client merges them; an adapter that answers `unknown command` to
-  `kbm counters` degrades to zeroed counters rather than failing the read.
-- **Every list reply pages against `NS2_KBM_REPLY_MAX_BYTES`, never against its
-  local `char out[]`.** The UART console's buffer is 4096; budgeting against it
-  is precisely the mistake that produced the overflow. `more` is computed from
-  what was actually emitted, so a wire-truncated page still paginates instead of
-  silently dropping rows.
-- `tools/test_ns2_kbm_status.c` saturates every field and asserts both replies
-  stay under the wire limit. The earlier version of that test asserted against
-  2048 (a firmware-local buffer), which is why it passed while the adapter was
-  broken.
+### Cursor pagination — and why not page indices
+
+**A fixed page size is unsafe here, and its failure mode is silent data loss.**
+
+Rows are variable width (a 6–7 character source, a 4–12 character destination),
+so the number that fits one 511-byte reply is not a constant. The first
+implementation asked for `page N`, answered from `first = N * PAGE_SIZE`, and
+then stopped early when the byte budget ran out. Those two rules contradict:
+emitting 7 rows for a nominal page size of 8 and answering the next request from
+index 8 skips index 7 entirely.
+
+Measured against the Default template that ships on an adapter: the Keyboard
+layout has **26** bindings and a client received **25** — index 7,
+`key:0F → rstick_right`, never sent. `rstick_right` is the longest destination
+name, so it was the row the budget cut. Every reply was individually valid and
+under the limit; `more` was true; progress looked fine. The only symptom was
+`Adapter returned an incomplete KB/M binding list`, and the page never loaded.
+
+No constant rescues this: any page size is either unsafe for the worst-case row
+or wasteful for the common one, and guessing wrong loses rows without a trace.
+
+So the request carries a **cursor** — the index of the next logical item — and
+the firmware, the only party that knows how many rows it actually serialized,
+answers with where to resume:
+
+```
+-> kbm map kb 0
+<- {"profile":"kb","profileId":1,"cursor":0,"total":26,"bindings":[…],"next":8}
+-> kbm map kb 8
+<- {…,"cursor":8,"total":26,"bindings":[…],"next":null}
+```
+
+`next` is null exactly when the walk is complete — the same shape `bonds list v2`
+already uses here. Guaranteed properties, each pinned by a host test:
+
+1. every reply ≤ `NS2_KBM_REPLY_MAX_BYTES`, for worst-case content;
+2. every logical item appears exactly once — no boundary gaps, no duplicates;
+3. a reply with non-null `next` always advanced, so a client cannot loop;
+4. `next` is null if and only if the walk is complete;
+5. at least one item per reply while any remain, so (3) does not hold by luck.
+
+Clients reject a reply whose `next ≠ cursor + rows` at the **decoder**: that is
+an internally inconsistent reply, and catching it there names the real problem
+instead of a downstream short mapping.
+
+### Where these formatters live, and why
+
+The read formatters are in **`src/ns2_kbm_commands.c`**, not `src/config.c`.
+`config.c` is bound to TinyUSB, BTstack and the flash driver, so it does not
+compile on the host — which meant its pagination was covered only by
+hand-written client fixtures, written from the same misunderstanding that
+produced the bug. Both C# and Kotlin fixtures agreed with the broken firmware.
+
+`tools/test_ns2_kbm_commands.c` drives the real formatter across every layout,
+profile and cursor under worst-case content, and **generates
+`tools/fixtures/management/kbm-wire-corpus.json`** — the exact firmware bytes,
+which the Windows and Android integration tests replay through their real
+clients. Three implementations now check against one authority.
+
+`tools/test_ns2_kbm_status.c` saturates every field and asserts the **wire**
+limit. Its earlier version asserted against 2048 — a firmware-local buffer —
+which is why it passed while the adapter was refusing the reply.
+
+### Diagnosing this on the bench
+
+`cfg <command>` on the UART console runs any management command and reports the
+size the wireless bridge would see:
+
+```
+cfg kbm map kb 0   ->  {"bytes":488,"limit":511,"fits":true,"reply":{…}}
+```
+
+It exists because both defects above had to be diagnosed from source: the UART
+dispatcher knows only a few `kbm` verbs, and everything else was reachable only
+over BLE or the CDC Config personality. UART-only, off the BLE allowlist.
 
 Error strings are stable and specific: `profile storage full or name in use`,
 `profile not found`, `profile not found for that layout`, `stale revision`,
@@ -285,13 +354,43 @@ Windows keeps its section-scoped busy ring rather than disabling the page, and
 business rules stay in Services/Presentation. Android keeps rules in the
 repository and ViewModel; the composable reads state and raises events.
 
-## 10. Older firmware
+## 10. Older firmware — ONE contract, no fallback
 
-`kbm profiles` answering `unknown command` is not a degraded state to apologise
-for: that adapter has exactly one mapping per layout and behaves as the app
-always did. The profile controls are not offered, and per-binding writes remain —
-because that is genuinely the only mapping surface such an adapter has. Detected
-by capability probe, never by version-string comparison.
+**The companions do not support pre-profile firmware.** This is a deliberate
+product decision, taken because the alternative shipped a worse failure than the
+one it was meant to soften.
+
+The earlier design probed each family and degraded: `kbm profiles` unsupported
+meant "show the pre-profile editor", `kbm counters` unsupported meant "show
+zeroed counters". So when a genuine protocol defect made the read fail, the user
+was left looking at an old half-working mapping page with no profile controls and
+no statement that anything had gone wrong — indistinguishable from a feature that
+had never been built, and it cost a hardware round trip to tell the two apart.
+Zeroed counters are worse still: they read as a healthy adapter receiving no
+input, which is precisely the condition that display exists to diagnose.
+
+`kbm status`, `kbm counters`, `kbm profiles`, `kbm active` and `kbm map` are all
+**required**. A missing one is reported as **Firmware update required**, naming
+the command. There is no legacy editor behind that screen.
+
+Both companions expose the page's state explicitly
+(`KeyboardMouseReadiness` / `KbmReadiness`):
+
+| State | Meaning |
+|---|---|
+| NotRead | Never read this session |
+| Loading | Read in progress |
+| **Ready** | The contract loaded. **The only state with a usable editor** |
+| FirmwareUpdateRequired | A required command is missing — update the adapter |
+| Error | Current firmware, unusable answer. A defect to chase, not a version gap |
+
+Separating the last two matters: they send the user to different remedies, and
+collapsing them was part of what made the pagination defect unreadable.
+
+What is *kept* is **firmware config migration**. Real adapters hold real
+persisted state; v11/v12/v13 → v14 migration stays supported, including the
+durable management-companion table. Old *storage* is supported; old *protocol* is
+not.
 
 ## 11. Config durability — stated plainly
 
