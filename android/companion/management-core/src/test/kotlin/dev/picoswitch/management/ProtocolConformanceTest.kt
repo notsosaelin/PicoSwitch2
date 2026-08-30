@@ -106,8 +106,22 @@ class ProtocolConformanceTest {
                 item["reply"]!!.toString(),
             )
         }
-        assertEquals(listOf(true, false), kbm.map { it.more })
-        assertEquals(2, kbm.sumOf { it.bindings.size })
+        // Cursor pagination: `next` is the index of the first item NOT in the
+        // reply, and null exactly at the end. Summing to `total` is the property
+        // the shipped page-stride bug violated.
+        assertEquals(listOf(1, null), kbm.map { it.next })
+        assertEquals(listOf(0, 1), kbm.map { it.cursor })
+        assertEquals(kbm[0].total, kbm.sumOf { it.bindings.size })
+
+        val profilePages = paging["kbmProfiles"]!!.jsonArray.map { value ->
+            val item = value.jsonObject
+            ManagementProtocol.kbmProfilePage(
+                item["command"]!!.jsonPrimitive.content,
+                item["reply"]!!.toString(),
+            )
+        }
+        assertEquals(listOf(1, null), profilePages.map { it.next })
+        assertEquals(profilePages[0].total, profilePages.sumOf { it.profiles.size })
     }
 
     @Test fun `logical framing is newline terminated and byte bounded`() {
@@ -313,7 +327,9 @@ class ProtocolConformanceTest {
             ManagementCommands.personality(Personality.Config)
         }
         assertThrows(IllegalArgumentException::class.java) {
-            ManagementCommands.kbmMap(KbmProfile.Keyboard, 33)
+            // A cursor beyond the firmware's own maximum item count is refused
+            // locally rather than spending a round trip to be told no.
+            ManagementCommands.kbmMap(KbmProfile.Keyboard, KbmLimits.MAX_MAPPING_ITEMS + 1)
         }
         assertThrows(IllegalArgumentException::class.java) {
             ManagementCommands.bondsPage(-1)

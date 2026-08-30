@@ -111,10 +111,31 @@ fun KeyboardMouseScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
                     Modifier.fillMaxSize(),
                 )
 
-                kbm.available == CapabilityState.Unsupported -> EmptyStateBlock(
+                // TOP-LEVEL STATE FIRST, and no legacy editor behind it. When the
+                // profile contract could not be loaded the screen used to fall
+                // through to a pre-profile mapping page, which looked like a
+                // half-built feature rather than a failed read.
+                kbm.readiness == KbmReadiness.FirmwareUpdateRequired -> EmptyStateBlock(
                     Icons.Default.Keyboard,
-                    "Not available on this firmware",
-                    "This adapter's firmware does not expose keyboard and mouse configuration. Update the adapter to manage it here.",
+                    "Firmware update required",
+                    "This adapter's firmware predates the keyboard and mouse profile " +
+                        "system, so this screen cannot configure it. Update the adapter, " +
+                        "then reload. ${kbm.fault}",
+                    Modifier.fillMaxSize(),
+                )
+
+                kbm.readiness == KbmReadiness.Error -> EmptyStateBlock(
+                    Icons.Default.Keyboard,
+                    "The adapter's reply could not be used",
+                    "The adapter implements this feature but returned data this app " +
+                        "could not read completely. ${kbm.fault}",
+                    Modifier.fillMaxSize(),
+                )
+
+                kbm.readiness != KbmReadiness.Ready -> EmptyStateBlock(
+                    Icons.Default.Keyboard,
+                    "Not read yet",
+                    "Reload to read this adapter's keyboard and mouse settings.",
                     Modifier.fillMaxSize(),
                 )
 
@@ -457,14 +478,18 @@ private fun ProfilesCard(
     onRename: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    // Firmware without a profile library is not degraded: it has exactly one
-    // mapping per layout and the controls are simply not offered.
-    if (!kbm.profiles.supported) return
-
+    // Only ever composed in the Ready state, where the library is loaded and
+    // Default always exists. An adapter without a profile library does not reach
+    // this screen at all: it is reported as needing a firmware update.
     val rows = kbm.profiles.forLayout(layout)
+    if (rows.isEmpty()) return
+
     val draft = kbm.draft?.takeIf { it.layout == layout }
     val state = kbm.draftState(connected)
+    // With a draft open the selection is what the draft is editing; without one
+    // it is the profile the console is actually running, never nothing.
     val selected = rows.firstOrNull { it.id == draft?.profileId }
+        ?: rows.firstOrNull { it.id == kbm.profiles.activeFor(layout)?.sourceId }
 
     SectionCard(title = "Profile", icon = Icons.Default.Tune) {
         SegmentedSelector(

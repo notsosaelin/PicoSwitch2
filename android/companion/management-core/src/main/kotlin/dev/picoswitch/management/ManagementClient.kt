@@ -26,21 +26,20 @@ class ManagementClient(
     /**
      * KB/M status, with the ingress counters merged in.
      *
-     * Two commands, because the combined reply outgrew the 512-byte wireless
-     * response slot and the bridge answered `response_too_large` — which failed
-     * the whole Keyboard & Mouse read rather than one field. The split is a wire
-     * detail, so it is hidden here and every caller is unchanged.
+     * Two commands, because the combined reply outgrew the wireless response
+     * slot and the bridge answered `response_too_large` — which failed the whole
+     * Keyboard & Mouse read rather than one field. The split is a wire detail, so
+     * it is hidden here and every caller is unchanged.
      *
-     * Counters are tolerated as absent: firmware that predates the split still
-     * returns them inside `kbm status`, and the merge leaves those values alone.
+     * `kbm counters` is REQUIRED, not probed. This companion targets one firmware
+     * contract; an adapter that does not answer it is running firmware from
+     * before the profile system, and the honest response is to say so rather than
+     * to synthesize zeroed counters that read as a healthy adapter receiving no
+     * input — which is precisely the condition this display exists to diagnose.
      */
     suspend fun kbmStatus(): KbmStatus {
         val status = exchange(ManagementCommands.KBM_STATUS, ManagementProtocol::kbmStatus)
-        val counters = try {
-            exchange(ManagementCommands.KBM_COUNTERS, ManagementProtocol::kbmCounters)
-        } catch (error: AdapterCommandException) {
-            if (error.isUnsupported()) return status else throw error
-        }
+        val counters = exchange(ManagementCommands.KBM_COUNTERS, ManagementProtocol::kbmCounters)
         return status.copy(
             keyboardReports = counters.keyboardReports,
             mouseReports = counters.mouseReports,
@@ -154,63 +153,91 @@ class ManagementClient(
         return status
     }
 
-    suspend fun loadKbmMapping(profile: KbmProfile): KbmMapping {
-        val bindings = mutableListOf<KbmBinding>()
-        var pageNumber = 0
-        var expectedTotal: Int? = null
-        while (true) {
-            val command = ManagementCommands.kbmMap(profile, pageNumber)
-            val page = exchange(command, ManagementProtocol::kbmMapPage)
-            if (page.profile != profile || page.page != pageNumber) {
-                throw ManagementPaginationException("Adapter returned a different KB/M profile or page")
-            }
-            if (expectedTotal == null) expectedTotal = page.total
-            if (expectedTotal != page.total || bindings.size + page.bindings.size > page.total) {
-                throw ManagementPaginationException("Adapter changed the KB/M binding total during pagination")
-            }
-            bindings += page.bindings
-            if (!page.more) break
-            if (page.bindings.isEmpty() || ++pageNumber > MAX_KBM_MAP_PAGES) {
-                throw ManagementPaginationException("Adapter returned a non-progressing KB/M binding list")
-            }
+    suspend fun loadKbmMapping(profile: KbmProfile): KbmMapping =
+        walkKbmMapping(profile, "the realized ${profile.wire} mapping") { cursor ->
+            ManagementCommands.kbmMap(profile, cursor)
         }
-        if (bindings.size != expectedTotal) {
-            throw ManagementPaginationException("Adapter returned an incomplete KB/M binding list")
-        }
-        return KbmMapping(profile, bindings, loaded = true)
-    }
 
     /**
      * One STORED profile's mapping, as opposed to the layout's realized one.
      *
-     * Shares the pagination guards above by construction: the same page-shape,
-     * total-stability and progress checks apply, because the same class of
-     * adapter bug would be just as invisible here.
+     * Shares the walk below by construction rather than by resemblance: the two
+     * had duplicate loops, and the pagination defect was present in both.
      */
-    suspend fun loadKbmProfileMapping(profile: KbmProfileInfo): KbmMapping {
+    suspend fun loadKbmProfileMapping(profile: KbmProfileInfo): KbmMapping =
+        walkKbmMapping(profile.layout, "stored profile ${profile.id} (${profile.name})") { cursor ->
+            ManagementCommands.kbmProfileMap(profile.id, cursor)
+        }
+
+    /**
+     * Walks a mapping to completion under the cursor contract, and reports what
+     * is actually wrong when it cannot.
+     *
+     * The failure this replaces said only "incomplete", which was true and
+     * useless: it named neither the layout, nor how far the walk got, nor which
+     * items never arrived. That cost a full diagnostic round trip on hardware to
+     * establish something the client already knew.
+     */
+    private suspend fun walkKbmMapping(
+        layout: KbmProfile,
+        what: String,
+        command: (Int) -> String,
+    ): KbmMapping {
         val bindings = mutableListOf<KbmBinding>()
-        var pageNumber = 0
+        val visited = mutableListOf<Int>()
+        var cursor = 0
         var expectedTotal: Int? = null
+
         while (true) {
-            val command = ManagementCommands.kbmProfileMap(profile.id, pageNumber)
-            val page = exchange(command, ManagementProtocol::kbmMapPage)
-            if (page.page != pageNumber) {
-                throw ManagementPaginationException("Adapter returned a different KB/M page")
+            val page = exchange(command(cursor), ManagementProtocol::kbmMapPage)
+            visited += cursor
+
+            // The reply must be about the mapping that was asked for, or the
+            // other layout's bindings would be assembled under this one's name.
+            if (page.profile != layout) {
+                throw ManagementPaginationException(
+                    "Adapter answered for layout ${page.profile.wire} when $what was requested",
+                )
+            }
+            if (page.cursor != cursor) {
+                throw ManagementPaginationException(
+                    "Adapter answered cursor ${page.cursor} for $what when $cursor was requested",
+                )
             }
             if (expectedTotal == null) expectedTotal = page.total
-            if (expectedTotal != page.total || bindings.size + page.bindings.size > page.total) {
-                throw ManagementPaginationException("Adapter changed the KB/M binding total during pagination")
+            if (expectedTotal != page.total) {
+                throw ManagementPaginationException(
+                    "Adapter changed the item count of $what mid-walk: $expectedTotal then ${page.total}",
+                )
             }
+            // The cursor is a logical index, so the accumulator length and the
+            // cursor must stay equal. They diverge only if a reply was parsed
+            // into fewer rows than the adapter counted -- the exact shape of the
+            // defect that shipped, seen from this side.
+            if (bindings.size != cursor) {
+                throw ManagementPaginationException(
+                    "Reconstruction of $what desynchronized: ${bindings.size} bindings held at cursor $cursor",
+                )
+            }
+
             bindings += page.bindings
-            if (!page.more) break
-            if (page.bindings.isEmpty() || ++pageNumber > MAX_KBM_MAP_PAGES) {
-                throw ManagementPaginationException("Adapter returned a non-progressing KB/M binding list")
+            val next = page.next ?: break
+            if (next <= cursor || visited.size > KbmLimits.MAX_MAPPING_ITEMS) {
+                throw ManagementPaginationException(
+                    "Adapter did not advance while reading $what: cursors ${visited.joinToString("->")}, next $next",
+                )
             }
+            cursor = next
         }
+
         if (bindings.size != expectedTotal) {
-            throw ManagementPaginationException("Adapter returned an incomplete KB/M binding list")
+            throw ManagementPaginationException(
+                "Adapter returned an incomplete KB/M binding list for $what: " +
+                    "${bindings.size} of $expectedTotal bindings after ${visited.size} replies " +
+                    "(cursors ${visited.joinToString("->")})",
+            )
         }
-        return KbmMapping(profile.layout, bindings, loaded = true)
+        return KbmMapping(layout, bindings, loaded = true)
     }
 
     /**
@@ -224,25 +251,35 @@ class ManagementClient(
      */
     suspend fun kbmProfiles(): KbmProfiles {
         val profiles = mutableListOf<KbmProfileInfo>()
-        var pageNumber = 0
+        val visited = mutableListOf<Int>()
+        var cursor = 0
         var expectedTotal: Int? = null
         var max = 0
         while (true) {
-            val command = ManagementCommands.kbmProfilePage(pageNumber)
-            val page = exchange(command, ManagementProtocol::kbmProfilePage)
-            if (page.page != pageNumber) {
-                throw ManagementPaginationException("Adapter returned a different KB/M profile page")
+            val page = exchange(ManagementCommands.kbmProfilePage(cursor),
+                                ManagementProtocol::kbmProfilePage)
+            visited += cursor
+            if (page.cursor != cursor) {
+                throw ManagementPaginationException(
+                    "Adapter answered profile cursor ${page.cursor} when $cursor was requested",
+                )
             }
             if (expectedTotal == null) expectedTotal = page.total
-            if (expectedTotal != page.total || profiles.size + page.profiles.size > page.total) {
-                throw ManagementPaginationException("Adapter changed the KB/M profile total during pagination")
+            if (expectedTotal != page.total) {
+                throw ManagementPaginationException(
+                    "Adapter changed the profile count mid-walk: $expectedTotal then ${page.total}",
+                )
             }
             max = page.max
             profiles += page.profiles
-            if (!page.more) break
-            if (page.profiles.isEmpty() || ++pageNumber > MAX_KBM_MAP_PAGES) {
-                throw ManagementPaginationException("Adapter returned a non-progressing KB/M profile list")
+            val next = page.next ?: break
+            if (next <= cursor || visited.size > KbmLimits.MAX_PROFILES + 1) {
+                throw ManagementPaginationException(
+                    "Adapter did not advance while reading the profile library: " +
+                        "cursors ${visited.joinToString("->")}, next $next",
+                )
             }
+            cursor = next
         }
         val active = exchange(ManagementCommands.KBM_ACTIVE, ManagementProtocol::kbmActive)
         return KbmProfiles(profiles, active, max = max)

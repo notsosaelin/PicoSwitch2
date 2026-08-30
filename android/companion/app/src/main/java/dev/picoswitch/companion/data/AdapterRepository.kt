@@ -6,6 +6,7 @@ import dev.picoswitch.management.KbmDraft
 import dev.picoswitch.management.KbmProfileInfo
 import dev.picoswitch.management.KbmProfiles
 import dev.picoswitch.management.ManagementClient
+import dev.picoswitch.management.ManagementProtocolException
 import dev.picoswitch.management.WakeStatus
 import dev.picoswitch.management.isUnsupported
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -259,40 +260,56 @@ class AdapterRepository(private val transport: ManagementTransport) {
 
     /** Live roles, effective mode, and mouse translation settings. */
     suspend fun refreshKbm(): KbmState {
-        _kbm.value = _kbm.value.copy(loading = true)
+        _kbm.value = _kbm.value.copy(loading = true, readiness = KbmReadiness.Loading)
+        // ONE contract, read as a unit. Every command below is required: there is
+        // no partial success and no degraded mode.
+        //
+        // The previous version probed each family and fell back -- profiles
+        // absent meant "show the old editor", counters absent meant "show zeros".
+        // That turned a protocol defect into a screen that looked merely
+        // unfinished, and it is why a broken adapter presented as an app that had
+        // not been updated.
         return try {
             val status = client.kbmStatus()
             val mouse = client.kbmMouse()
-            // The profile library is newer than the rest of the KB/M surface. An
-            // adapter without it is not degraded -- it has exactly one mapping
-            // per layout, which is what this app did for its whole life until
-            // now -- so its absence must not fail the whole read.
-            val profiles = try {
-                client.kbmProfiles()
-            } catch (error: AdapterCommandException) {
-                if (error.isUnsupported()) KbmProfiles() else throw error
-            }
+            val profiles = client.kbmProfiles()
             _kbm.value = _kbm.value.copy(
                 status = status,
                 mouse = mouse,
                 profiles = profiles,
                 available = CapabilityState.Available,
+                readiness = KbmReadiness.Ready,
+                fault = "",
                 loading = false,
             )
             _kbm.value
         } catch (error: AdapterCommandException) {
-            // Firmware without the KB/M surface: report it as unsupported so the
-            // page can say so, rather than showing an empty configuration that
-            // looks like a connected keyboard with nothing bound.
             if (error.isUnsupported()) {
-                _kbm.value = KbmState(available = CapabilityState.Unsupported)
+                // A command the contract requires is missing: older firmware.
+                _kbm.value = KbmState(
+                    available = CapabilityState.Unsupported,
+                    readiness = KbmReadiness.FirmwareUpdateRequired,
+                    fault = "The adapter does not implement '${error.command}'.",
+                )
                 _kbm.value
             } else {
-                _kbm.value = _kbm.value.copy(loading = false)
+                _kbm.value = _kbm.value.copy(loading = false, readiness = KbmReadiness.Error,
+                                             fault = error.message ?: "")
                 throw error
             }
+        } catch (error: ManagementProtocolException) {
+            // Current firmware, unusable answer. Distinct from the case above:
+            // this is a defect to chase, not a version to upgrade past.
+            _kbm.value = _kbm.value.copy(
+                available = CapabilityState.Available,
+                readiness = KbmReadiness.Error,
+                fault = error.message ?: "",
+                loading = false,
+            )
+            _kbm.value
         } catch (error: Throwable) {
-            _kbm.value = _kbm.value.copy(loading = false)
+            _kbm.value = _kbm.value.copy(loading = false, readiness = KbmReadiness.Error,
+                                         fault = error.message ?: "")
             throw error
         }
     }

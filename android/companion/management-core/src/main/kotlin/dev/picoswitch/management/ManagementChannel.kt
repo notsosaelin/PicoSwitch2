@@ -28,10 +28,19 @@ class AdapterCommandException(
     val adapterMessage: String,
 ) : ManagementException(adapterMessage)
 
-class ManagementProtocolException(message: String, cause: Throwable? = null) :
+/** The adapter answered, but with something this build cannot use. */
+open class ManagementProtocolException(message: String, cause: Throwable? = null) :
     ManagementException(message, cause)
 
-class ManagementPaginationException(message: String) : ManagementException(message)
+/**
+ * A multi-reply read did not reconstruct a complete, consistent result.
+ *
+ * Derives from [ManagementProtocolException] because that is what it is: the
+ * adapter said something unusable. They were siblings, so a handler that meant
+ * "the adapter's answer was bad" had to name both, and one that named only the
+ * base type let a pagination failure escape as an unhandled transport error.
+ */
+class ManagementPaginationException(message: String) : ManagementProtocolException(message)
 
 fun AdapterCommandException.isUnsupported(): Boolean =
     adapterMessage.equals("unknown command", ignoreCase = true) ||
