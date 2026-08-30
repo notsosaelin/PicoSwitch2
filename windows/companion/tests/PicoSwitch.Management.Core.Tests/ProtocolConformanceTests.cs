@@ -118,8 +118,20 @@ public sealed class ProtocolConformanceTests
                 item.GetProperty("command").GetString()!,
                 item.GetProperty("reply").GetRawText()))
             .ToList();
-        Assert.Equal([true, false], kbm.Select(page => page.More).ToList());
-        Assert.Equal(2, kbm.Sum(page => page.Bindings.Count));
+        // Cursor pagination: `next` is the index of the first item NOT in the
+        // reply, and null exactly at the end. Summing to `total` is the property
+        // the shipped page-stride bug violated.
+        Assert.Equal([1, null], kbm.Select(page => page.Next).ToList());
+        Assert.Equal([0, 1], kbm.Select(page => page.Cursor).ToList());
+        Assert.Equal(kbm[0].Total, kbm.Sum(page => page.Bindings.Count));
+
+        var profiles = paging.GetProperty("kbmProfiles").EnumerateArray()
+            .Select(item => ManagementProtocol.KbmProfileList(
+                item.GetProperty("command").GetString()!,
+                item.GetProperty("reply").GetRawText()))
+            .ToList();
+        Assert.Equal([1, null], profiles.Select(page => page.Next).ToList());
+        Assert.Equal(profiles[0].Total, profiles.Sum(page => page.Profiles.Count));
     }
 
     [Fact]
@@ -192,37 +204,39 @@ public sealed class ProtocolConformanceTests
         var page = ManagementProtocol.KbmProfileList(
             "kbm profiles 0",
             """
-            {"page":0,"total":5,"max":6,"profiles":[
+            {"cursor":0,"total":5,"max":6,"profiles":[
               {"id":2,"layout":"kb","name":"Splatoon","revision":3,"overrides":3,"fingerprint":123},
               {"id":3,"layout":"kbm","name":"Zelda","revision":1,"overrides":9,"fingerprint":456}
-            ],"more":true}
+            ],"next":2}
             """);
 
         Assert.Equal(2, page.Profiles.Count);
         Assert.Equal(3, page.Profiles[0].Revision);
         Assert.Equal(123, page.Profiles[0].Fingerprint);
-        // The library is paged because the wireless reply slot is 512 bytes;
-        // `total` is the library size, not the page size, so a client knows to
+        // The library is walked by cursor because it does not fit one reply;
+        // `total` is the library size, not the slice size, so a client knows to
         // keep reading rather than silently showing two of five profiles.
         Assert.Equal(5, page.Total);
         Assert.Equal(6, page.Max);
-        Assert.True(page.More);
+        Assert.Equal(2, page.Next);
         // Default is NOT in the adapter's list: it is a template that consumes
         // no slot, and the client synthesises it.
         Assert.DoesNotContain(page.Profiles, p => p.Builtin);
 
         // A row this build cannot make sense of is skipped, not shown as a
         // selectable profile the adapter would refuse. An id colliding with the
-        // reserved Default is refused for the same reason.
+        // reserved Default is refused for the same reason. The skipped rows still
+        // occupied logical slots, which is why the walk follows the adapter's
+        // `next` rather than counting the rows it managed to keep.
         var partial = ManagementProtocol.KbmProfileList(
             "kbm profiles 0",
             """
-            {"page":0,"total":4,"max":6,"profiles":[
+            {"cursor":0,"total":4,"max":6,"profiles":[
               {"id":2,"layout":"kb","name":"Real","revision":1,"overrides":0,"fingerprint":1},
               {"id":4,"layout":"future","name":"Nope","revision":1,"overrides":0,"fingerprint":2},
               {"id":5,"layout":"kb","name":"","revision":1,"overrides":0,"fingerprint":3},
               {"id":1,"layout":"kb","name":"Impostor","revision":1,"overrides":0,"fingerprint":4}
-            ],"more":false}
+            ],"next":null}
             """);
         Assert.Equal("Real", Assert.Single(partial.Profiles).Name);
     }
@@ -499,7 +513,10 @@ public sealed class ProtocolConformanceTests
         Assert.Throws<ArgumentOutOfRangeException>(
             () => ManagementCommands.SetPersonality(Personality.Config));
         Assert.Throws<ArgumentOutOfRangeException>(
-            () => ManagementCommands.KbmMap(KbmLayout.Keyboard, 33));
+            // A cursor beyond the firmware's own maximum item count is refused
+            // locally rather than spending a round trip to be told no.
+            () => ManagementCommands.KbmMap(KbmLayout.Keyboard,
+                                            KbmLimits.MaxMappingItems + 1));
         Assert.Throws<ArgumentOutOfRangeException>(() => ManagementCommands.BondsPage(-1));
         Assert.Throws<ArgumentOutOfRangeException>(
             () => ManagementCommands.AmiiboBegin(541, "12345678"));

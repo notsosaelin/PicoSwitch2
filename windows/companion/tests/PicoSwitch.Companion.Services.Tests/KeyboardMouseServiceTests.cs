@@ -28,11 +28,14 @@ public sealed class KeyboardMouseServiceTests
 
     // Only CUSTOM profiles are stored; Default is a template the client
     // synthesises, which is what keeps all six adapter slots for the user.
+    // Cursor pagination: `next` is the index of the first item NOT in this reply,
+    // and null exactly when the walk is complete. A fixed page stride is what
+    // silently dropped rows on hardware.
     private const string Profiles =
         """
-        {"page":0,"total":1,"max":6,"profiles":[
+        {"cursor":0,"total":1,"max":6,"profiles":[
           {"id":2,"layout":"kb","name":"Splatoon","revision":3,"overrides":3,"fingerprint":111}
-        ],"more":false}
+        ],"next":null}
         """;
 
     // What each layout is REALLY running. The Keyboard layout is running the
@@ -46,7 +49,7 @@ public sealed class KeyboardMouseServiceTests
         """;
 
     private static string Page(string profile, string source, string destination) =>
-        $$"""{"ok":true,"profile":"{{profile}}","page":0,"pageSize":1,"total":1,"bindings":[{"src":"{{source}}","dst":"{{destination}}","custom":true}],"more":false}""";
+        $$"""{"ok":true,"profile":"{{profile}}","profileId":1,"cursor":0,"total":1,"bindings":[{"src":"{{source}}","dst":"{{destination}}","custom":true}],"next":null}""";
 
     private static void ScriptFullRead(ConnectionServiceFixture fixture)
     {
@@ -171,7 +174,7 @@ public sealed class KeyboardMouseServiceTests
 
         fixture.Transport.Replies["kbm bind kb key:04 none"] = """{"ok":true}""";
         fixture.Transport.Replies["kbm map kb 0"] =
-            """{"ok":true,"profile":"kb","page":0,"pageSize":1,"total":0,"bindings":[],"more":false}""";
+            """{"ok":true,"profile":"kb","profileId":1,"cursor":0,"total":0,"bindings":[],"next":null}""";
 
         await fixture.Service.BindAsync(
             KbmLayout.Keyboard,
@@ -235,7 +238,7 @@ public sealed class KeyboardMouseServiceTests
 
         fixture.Transport.Replies["kbm reset kb"] = """{"ok":true}""";
         fixture.Transport.Replies["kbm map kb 0"] =
-            """{"ok":true,"profile":"kb","page":0,"pageSize":1,"total":0,"bindings":[],"more":false}""";
+            """{"ok":true,"profile":"kb","profileId":1,"cursor":0,"total":0,"bindings":[],"next":null}""";
 
         await fixture.Service.ResetProfileAsync(KbmLayout.Keyboard);
 
@@ -431,10 +434,12 @@ public sealed class KeyboardMouseServiceTests
     }
 
     [Fact]
-    public async Task AnAdapterWithoutAProfileLibraryStillLoads()
+    public async Task AnAdapterWithoutAProfileLibraryIsOutOfDateNotDegraded()
     {
-        // Older firmware answers "unknown command" and must degrade to the
-        // single-mapping behaviour rather than failing the whole read.
+        // This companion targets ONE firmware contract. Older firmware used to
+        // fall through to a pre-profile editor, which turned "your adapter needs
+        // updating" into "this app looks half-built" — and hid a genuine protocol
+        // failure behind the same screen.
         using var fixture = new ConnectionServiceFixture();
         await fixture.RememberAdapterAsync(Address);
         ScriptFullRead(fixture);
@@ -444,9 +449,28 @@ public sealed class KeyboardMouseServiceTests
 
         var state = await fixture.Service.RefreshKeyboardMouseAsync();
 
-        Assert.True(state.Loaded);
-        Assert.False(state.Profiles.Supported);
-        Assert.Equal(CapabilityState.Available, state.Capability);
+        Assert.Equal(KeyboardMouseReadiness.FirmwareUpdateRequired, state.Readiness);
+        Assert.False(state.Loaded);
+        Assert.Contains("kbm profiles 0", state.Fault);
+    }
+
+    [Fact]
+    public async Task CountersAreRequiredRatherThanSynthesizedAsZero()
+    {
+        // Zeroed counters read as a healthy adapter receiving no input, which is
+        // the single most misleading thing this page can say — it is the display
+        // that exists to diagnose exactly that condition.
+        using var fixture = new ConnectionServiceFixture();
+        await fixture.RememberAdapterAsync(Address);
+        ScriptFullRead(fixture);
+        fixture.Transport.Replies.Remove("kbm counters");
+        fixture.Transport.Failures["kbm counters"] =
+            new AdapterCommandException("kbm counters", null, "unknown command");
+
+        var state = await fixture.Service.RefreshKeyboardMouseAsync();
+
+        Assert.Equal(KeyboardMouseReadiness.FirmwareUpdateRequired, state.Readiness);
+        Assert.Contains("kbm counters", state.Fault);
     }
 
     private const string Ok = """{"ok":true}""";

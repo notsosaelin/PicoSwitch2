@@ -134,15 +134,9 @@ public sealed partial class KeyboardMousePage : Page
 
     private void RenderProfileSelector(KeyboardMouseView view)
     {
-        // Firmware without a profile library hides the whole row and behaves as
-        // it always did: one mapping per layout, edited in place.
-        if (!view.ProfilesSupported)
-        {
-            ProfileRow.Visibility = Visibility.Collapsed;
-            DraftBar.IsOpen = false;
-            return;
-        }
-
+        // Only ever called in the Ready state, where the library is loaded and
+        // Default always exists. The row has no hidden variant any more: an
+        // adapter without a profile library does not reach this page at all.
         ProfileRow.Visibility = Visibility.Visible;
         populatingProfiles = true;
         try
@@ -606,17 +600,37 @@ public sealed partial class KeyboardMousePage : Page
 
         view = KeyboardMouse.Project(state, profile, connected, draft);
 
-        UnsupportedBar.IsOpen = !view.Visible;
-        UnsupportedBar.Message = view.HiddenReason ?? string.Empty;
-        Body.Visibility = view.Visible ? Visibility.Visible : Visibility.Collapsed;
-        if (!view.Visible)
-        {
-            return;
-        }
+        // TOP-LEVEL STATE FIRST. The editor exists only in Ready; every other
+        // state says so and offers a reload. There is no legacy page behind this
+        // to fall through to, deliberately: the profile workflow is the product,
+        // and a mapping grid without it is the fallback that made a failed read
+        // look like an unfinished app.
+        var ready = view.ShowEditor;
+        NotReadyCard.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
+        NotReadyTitle.Text = view.NotReadyTitle;
+        NotReadyDetail.Text = view.NotReadyDetail;
+        NotReadyRetry.IsEnabled = view.Availability.Enabled &&
+                                  !adapters.KeyboardMouseBusy.Value;
+
+        EditorCard.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
+        MouseCard.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
+        ResetCard.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
 
         BusyRing.IsActive = adapters.KeyboardMouseBusy.Value;
-        ModeText.Text = view.Loaded ? view.ModeText : "Not read yet";
-        DevicesText.Text = view.Loaded ? view.DevicesText : string.Empty;
+        ModeText.Text = ready ? view.ModeText : view.NotReadyTitle;
+        DevicesText.Text = ready ? view.DevicesText : string.Empty;
+        if (!ready)
+        {
+            // Mode is a real product control, but it is not meaningful against an
+            // adapter whose state was never read.
+            ModeBox.IsEnabled = false;
+            ModeApply.IsEnabled = false;
+            RefreshButton.IsEnabled = NotReadyRetry.IsEnabled;
+            CountersExpander.Visibility = Visibility.Collapsed;
+            DraftBar.IsOpen = false;
+            InactiveProfileBar.IsOpen = false;
+            return;
+        }
 
         suppressSelection = true;
         ModeBox.SelectedIndex = (int)view.ModeOverride;
@@ -636,12 +650,12 @@ public sealed partial class KeyboardMousePage : Page
         // The keys and sliders are deliberately NOT gated this way: the whole point
         // of a section-scoped flag is that live tuning stays usable, and a slider
         // already coalesces to its settled value.
-        var ready = enabled && !adapters.KeyboardMouseBusy.Value;
-        ModeBox.IsEnabled = ready;
-        ModeApply.IsEnabled = ready;
-        RefreshButton.IsEnabled = ready;
-        ResetProfile.IsEnabled = ready;
-        ResetAll.IsEnabled = ready;
+        var interactive = enabled && !adapters.KeyboardMouseBusy.Value;
+        ModeBox.IsEnabled = interactive;
+        ModeApply.IsEnabled = interactive;
+        RefreshButton.IsEnabled = interactive;
+        ResetProfile.IsEnabled = interactive;
+        ResetAll.IsEnabled = interactive;
         InvertXBox.IsEnabled = enabled;
         InvertYBox.IsEnabled = enabled;
 

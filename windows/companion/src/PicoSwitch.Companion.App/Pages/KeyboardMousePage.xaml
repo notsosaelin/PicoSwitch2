@@ -27,12 +27,32 @@
                     Text="Map a USB keyboard and mouse plugged into the adapter onto controller buttons. Click a key to change what it does." />
             </StackPanel>
 
-            <muxc:InfoBar
-                x:Name="UnsupportedBar"
-                IsOpen="False"
-                IsClosable="False"
-                Severity="Informational"
-                Title="Not available on this adapter" />
+            <!-- The page's non-Ready state, stated plainly.
+
+                 There is deliberately no legacy editor behind this. When the
+                 profile contract could not be loaded, the page used to fall
+                 through to a pre-profile mapping grid, which looked like a
+                 half-built feature rather than a failed read and cost a
+                 hardware round trip to diagnose. One firmware contract, one
+                 page: either it loaded, or this card says why it did not. -->
+            <Border x:Name="NotReadyCard" Style="{StaticResource CardStyle}" Visibility="Collapsed">
+                <StackPanel Spacing="8">
+                    <TextBlock
+                        x:Name="NotReadyTitle"
+                        Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <TextBlock
+                        x:Name="NotReadyDetail"
+                        Style="{StaticResource BodyTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        IsTextSelectionEnabled="True"
+                        TextWrapping="Wrap" />
+                    <Button
+                        x:Name="NotReadyRetry"
+                        Content="Reload"
+                        Click="OnRefresh"
+                        HorizontalAlignment="Left" />
+                </StackPanel>
+            </Border>
 
             <muxc:InfoBar
                 x:Name="OperationBar"
@@ -109,8 +129,8 @@
                     </StackPanel>
                 </Border>
 
-                <!-- The mapping grid -->
-                <Border Style="{StaticResource CardStyle}">
+                <!-- The mapping grid. Shown ONLY in the Ready state. -->
+                <Border x:Name="EditorCard" Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="12">
                         <Grid ColumnSpacing="12">
                             <Grid.ColumnDefinitions>
@@ -241,7 +261,7 @@
                 </Border>
 
                 <!-- Mouse tuning -->
-                <Border Style="{StaticResource CardStyle}">
+                <Border x:Name="MouseCard" Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="12">
                         <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Mouse tuning" />
                         <TextBlock
@@ -259,7 +279,7 @@
                 </Border>
 
                 <!-- Reset everything -->
-                <Border Style="{StaticResource CardStyle}">
+                <Border x:Name="ResetCard" Style="{StaticResource CardStyle}">
                     <StackPanel Spacing="8">
                         <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Reset" />
                         <TextBlock

@@ -15,14 +15,14 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "config_wireless_bridge.h"
 #include "ns2_kbm_runtime.h"
 
-// Every management reply must fit the wireless bridge's response slot
-// (CONFIG_WIRELESS_RESPONSE_CAPACITY, 512 bytes) or the bridge refuses it and
-// the client sees `response_too_large` -- which fails a whole page read, not one
-// field. Pinned here so a formatter change is checked against the WIRE limit
-// rather than against whatever local buffer a test happened to use.
-#define NS2_KBM_REPLY_MAX_BYTES 512u
+// Every management reply must fit the wireless bridge's response slot or the
+// bridge refuses it and the client sees `response_too_large` -- which fails a
+// whole page read, not one field. Derived from the bridge's own constant rather
+// than restating 512, so there is exactly one place where the wire limit lives.
+#define NS2_KBM_REPLY_MAX_BYTES CONFIG_WIRELESS_RESPONSE_MAX_JSON
 
 // Render `status` as a single JSON object into `out`. Returns the number of
 // characters that WOULD have been written (snprintf semantics), so a caller can

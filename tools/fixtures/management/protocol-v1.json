@@ -40,7 +40,7 @@
     },
     "kbmMap": {
       "command": "kbm map kbm 0",
-      "reply": {"profile":"kbm","page":0,"pageSize":8,"total":2,"bindings":[{"src":"key:1A","dst":"lstick_up","custom":false},{"src":"mouse:1","dst":"zr","custom":true}],"more":false}
+      "reply": {"profile":"kbm","profileId":1,"cursor":0,"total":2,"bindings":[{"src":"key:1A","dst":"lstick_up","custom":false},{"src":"mouse:1","dst":"zr","custom":true}],"next":null}
     },
     "kbmMouse": {
       "command": "kbm mouse",
@@ -119,8 +119,12 @@
       {"command":"peers list 2","reply":{"v":1,"total":3,"peers":[{"id":"p_9C0D1E2F","addr":"112233445566","tr":2,"role":"unknown","bonded":true,"conn":false}],"next":null}}
     ],
     "kbm": [
-      {"command":"kbm map kb 0","reply":{"profile":"kb","page":0,"pageSize":1,"total":2,"bindings":[{"src":"key:1A","dst":"lstick_up","custom":false}],"more":true}},
-      {"command":"kbm map kb 1","reply":{"profile":"kb","page":1,"pageSize":1,"total":2,"bindings":[{"src":"key:16","dst":"lstick_down","custom":false}],"more":false}}
+      {"command":"kbm map kb 0","reply":{"profile":"kb","profileId":1,"cursor":0,"total":2,"bindings":[{"src":"key:1A","dst":"lstick_up","custom":false}],"next":1}},
+      {"command":"kbm map kb 1","reply":{"profile":"kb","profileId":1,"cursor":1,"total":2,"bindings":[{"src":"key:16","dst":"lstick_down","custom":false}],"next":null}}
+    ],
+    "kbmProfiles": [
+      {"command":"kbm profiles 0","reply":{"cursor":0,"total":2,"max":6,"profiles":[{"id":2,"layout":"kb","name":"Splatoon","revision":3,"overrides":3,"fingerprint":111}],"next":1}},
+      {"command":"kbm profiles 1","reply":{"cursor":1,"total":2,"max":6,"profiles":[{"id":3,"layout":"kbm","name":"Zelda","revision":1,"overrides":9,"fingerprint":222}],"next":null}}
     ]
   },
   "errors": [

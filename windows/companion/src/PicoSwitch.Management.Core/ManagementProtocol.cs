@@ -294,13 +294,17 @@ public static class ManagementProtocol
             Publishes: value.Long("publishes"),
             Recenters: value.Long("recenters")));
 
-    /// <summary>One page of the profile library.</summary>
+    /// <summary>
+    /// One slice of the profile library, starting at logical item
+    /// <paramref name="Cursor"/>. Same cursor contract as
+    /// <see cref="Management.KbmMapPage"/>, for the same reason.
+    /// </summary>
     public sealed record KbmProfilePage(
         ValueList<KbmProfileInfo> Profiles,
-        int Page,
+        int Cursor,
         int Total,
         int Max,
-        bool More);
+        int? Next);
 
     public static KbmProfilePage KbmProfileList(string command, string response) =>
         Decode(command, response, value =>
@@ -308,7 +312,9 @@ public static class ManagementProtocol
             var hasList =
                 value.TryGetProperty("profiles", out var entries) &&
                 entries.ValueKind == JsonValueKind.Array;
-            RequireShape(hasList && value.TryGetProperty("max", out _), command);
+            RequireShape(hasList && value.TryGetProperty("max", out _) &&
+                         value.TryGetProperty("cursor", out _) &&
+                         value.TryGetProperty("next", out _), command);
 
             var profiles = new List<KbmProfileInfo>();
             foreach (var entry in entries.EnumerateArray())
@@ -335,12 +341,20 @@ public static class ManagementProtocol
                     Fingerprint: entry.Long("fingerprint")));
             }
 
+            var cursor = value.Int("cursor");
+            var next = value.OptionalInt("next");
+            // A row this build skipped (unknown layout, reserved id) still
+            // occupies a logical slot, so `next` is checked against the rows the
+            // ADAPTER sent, which is what `next - cursor` states. Deriving it
+            // from the surviving rows instead would turn one unparsed row into a
+            // permanent gap.
+            RequireShape(cursor >= 0 && (next is null || next > cursor), command);
             return new KbmProfilePage(
                 new ValueList<KbmProfileInfo>(profiles),
-                Page: value.Int("page"),
+                Cursor: cursor,
                 Total: value.Int("total"),
                 Max: value.Int("max"),
-                More: value.Bool("more"));
+                Next: next);
         });
 
     public static ValueList<KbmActiveMapping> KbmActive(string command,
@@ -396,13 +410,14 @@ public static class ManagementProtocol
             RequireShape(
                 profile is not null && hasEntries &&
                 value.TryGetProperty("total", out _) &&
-                value.TryGetProperty("more", out _),
+                value.TryGetProperty("cursor", out _) &&
+                value.TryGetProperty("next", out _),
                 command);
 
-            var page = value.Int("page");
-            var pageSize = value.Int("pageSize");
+            var cursor = value.Int("cursor");
             var total = value.Int("total");
-            RequireShape(page >= 0 && pageSize > 0 && total >= 0, command);
+            var next = value.OptionalInt("next");
+            RequireShape(cursor >= 0 && total >= 0, command);
 
             var bindings = new List<KbmBinding>();
             foreach (var element in entries.EnumerateArray())
@@ -418,14 +433,21 @@ public static class ManagementProtocol
                 bindings.Add(new KbmBinding(source!, destination!.Value, element.Bool("custom")));
             }
 
-            RequireShape(bindings.Count <= pageSize && bindings.Count <= total, command);
+            RequireShape(bindings.Count <= total, command);
+            // The adapter's own claim about where it stopped must be internally
+            // consistent before the client builds on it: `next` names the first
+            // item NOT in this reply, so it is exactly cursor + rows. Anything
+            // else is a gap or an overlap, and accepting it is how a short page
+            // became a silently incomplete mapping.
+            RequireShape(next is null || next == cursor + bindings.Count, command);
+            RequireShape(next is null || bindings.Count > 0, command);
             return new Management.KbmMapPage(
                 profile!.Value,
-                page,
-                pageSize,
+                value.Int("profileId"),
+                cursor,
                 total,
                 new ValueList<KbmBinding>(bindings),
-                value.Bool("more"));
+                next);
         });
 
     public static KbmMouseConfig KbmMouse(string command, string response) =>

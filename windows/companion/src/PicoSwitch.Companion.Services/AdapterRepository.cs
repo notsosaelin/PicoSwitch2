@@ -573,37 +573,58 @@ public sealed class AdapterRepository(IManagementTransport transport)
     public async Task<KeyboardMouseState> RefreshKeyboardMouseAsync(
         CancellationToken cancellationToken = default)
     {
+        // ONE contract, read as a unit. Every command below is required: there is
+        // no partial success and no degraded mode.
+        //
+        // The previous version probed each family and fell back — profiles absent
+        // meant "show the old editor", counters absent meant "show zeros". That
+        // turned a protocol defect into a page that looked merely unfinished, and
+        // it is why a broken adapter presented as an app that had not been
+        // updated. An adapter that cannot answer is now named as such.
         KbmStatus status;
+        KbmMouseConfig mouse;
+        KbmProfiles profiles;
+        var mappings = new List<KbmMapping>();
         try
         {
             status = await client.KbmStatusAsync(cancellationToken).ConfigureAwait(false);
+            mouse = await client.KbmMouseAsync(cancellationToken).ConfigureAwait(false);
+            profiles = await client.KbmProfilesAsync(cancellationToken).ConfigureAwait(false);
+            foreach (var profile in KbmLayouts.All)
+            {
+                mappings.Add(await client.LoadKbmMappingAsync(profile, cancellationToken)
+                    .ConfigureAwait(false));
+            }
         }
         catch (AdapterCommandException error) when (error.IsUnsupported())
         {
-            keyboardMouse.Set(new KeyboardMouseState { Capability = CapabilityState.Unsupported });
+            // A command the contract requires is missing: older firmware.
+            keyboardMouse.Set(new KeyboardMouseState
+            {
+                Readiness = KeyboardMouseReadiness.FirmwareUpdateRequired,
+                Fault = $"The adapter does not implement '{error.Command}'.",
+                Capability = CapabilityState.Unsupported,
+            });
+            snapshot.Set(snapshot.Value with
+            {
+                Capabilities = snapshot.Value.Capabilities with
+                {
+                    Kbm = CapabilityState.Unsupported,
+                },
+            });
             return keyboardMouse.Value;
         }
-
-        var mouse = await client.KbmMouseAsync(cancellationToken).ConfigureAwait(false);
-
-        // Named profiles are newer than the rest of the KB/M surface. An adapter
-        // without them is not degraded — it has exactly one mapping per layout,
-        // which is what this app did for its whole life until now.
-        KbmProfiles profiles;
-        try
+        catch (ManagementProtocolException error)
         {
-            profiles = await client.KbmProfilesAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (AdapterCommandException error) when (error.IsUnsupported())
-        {
-            profiles = KbmProfiles.Empty;
-        }
-
-        var mappings = new List<KbmMapping>();
-        foreach (var profile in KbmLayouts.All)
-        {
-            mappings.Add(await client.LoadKbmMappingAsync(profile, cancellationToken)
-                .ConfigureAwait(false));
+            // Current firmware, unusable answer. Distinct from the case above:
+            // this is a defect to chase, not a version to upgrade past.
+            keyboardMouse.Set(new KeyboardMouseState
+            {
+                Readiness = KeyboardMouseReadiness.Error,
+                Fault = error.Message,
+                Capability = CapabilityState.Available,
+            });
+            return keyboardMouse.Value;
         }
 
         keyboardMouse.Set(new KeyboardMouseState
@@ -612,7 +633,7 @@ public sealed class AdapterRepository(IManagementTransport transport)
             Mouse = mouse,
             Mappings = new ValueList<KbmMapping>(mappings),
             Profiles = profiles,
-            Loaded = true,
+            Readiness = KeyboardMouseReadiness.Ready,
             Capability = CapabilityState.Available,
         });
 
@@ -627,7 +648,11 @@ public sealed class AdapterRepository(IManagementTransport transport)
     public async Task<KbmStatus> SetKbmModeAsync(KbmMode mode, CancellationToken cancellationToken = default)
     {
         var status = await client.SetKbmModeAsync(mode, cancellationToken).ConfigureAwait(false);
-        keyboardMouse.Set(keyboardMouse.Value with { Status = status, Loaded = true });
+        // Readiness is NOT promoted here. A mode change proves the adapter is
+        // answering; it does not mean the mapping and profile library were read.
+        // Promoting on a partial read is how the page came to claim it was ready
+        // while holding nothing to show.
+        keyboardMouse.Set(keyboardMouse.Value with { Status = status });
         return status;
     }
 
@@ -788,7 +813,10 @@ public sealed class AdapterRepository(IManagementTransport transport)
             Status = status,
             Mouse = mouse,
             Mappings = new ValueList<KbmMapping>(mappings.Values.OrderBy(mapping => mapping.Profile)),
-            Loaded = true,
+            // A full reset re-reads status, mouse and both mappings, but not the
+            // profile library, so the page re-reads before claiming Ready.
+            Profiles = keyboardMouse.Value.Profiles,
+            Readiness = KeyboardMouseReadiness.Ready,
             Capability = CapabilityState.Available,
         });
 
@@ -808,7 +836,7 @@ public sealed class AdapterRepository(IManagementTransport transport)
         CancellationToken cancellationToken = default)
     {
         var mouse = await client.SetKbmMouseAsync(field, value, cancellationToken).ConfigureAwait(false);
-        keyboardMouse.Set(keyboardMouse.Value with { Mouse = mouse, Loaded = true });
+        keyboardMouse.Set(keyboardMouse.Value with { Mouse = mouse });
         return mouse;
     }
 

@@ -94,6 +94,13 @@ $tests = @(
     # management and UART surfaces. Both previously had their own printf, and a
     # format/argument mismatch silently corrupted every field of the diagnostic.
     @{ g='management'; n='test_ns2_kbm_status';                     src='tools/test_ns2_kbm_status.c src/ns2_kbm_status.c src/ns2_kbm.c';               flags='-Isrc/bt_hid -Wno-unused-parameter' }
+    # The KB/M READ surface (mapping pages, profile library, active mappings).
+    # These formatters used to live in src/config.c, which does not compile on
+    # the host, so their pagination was covered only by hand-written client
+    # fixtures -- and a page-index bug shipped and reached hardware. This drives
+    # the real formatter and also GENERATES tools/fixtures/management/
+    # kbm-wire-corpus.json, which the Windows and Android tests replay.
+    @{ g='management'; n='test_ns2_kbm_commands';                   src='tools/test_ns2_kbm_commands.c src/ns2_kbm_commands.c src/ns2_kbm.c';           flags='-Isrc/bt_hid -Wno-unused-parameter' }
     @{ g='input';     n='test_bthid_mouse_report';                  src='tools/test_bthid_mouse_report.c src/bt_hid/bt/bthid/devices/generic/bthid_mouse_report.c src/bt_hid/usb/usbh/hid/devices/generic/hid_parser.c'; flags='-Isrc/bt_hid' }
 
     # -- Controller drivers / quirks ------------------------------------------

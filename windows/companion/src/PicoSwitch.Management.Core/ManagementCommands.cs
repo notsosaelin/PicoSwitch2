@@ -120,31 +120,40 @@ public static partial class ManagementCommands
         return $"peers forget {peerId}";
     }
 
-    public static string KbmMap(KbmLayout profile, int page)
+    /// <summary>
+    /// One slice of a layout's REALIZED mapping, from logical item
+    /// <paramref name="cursor"/>.
+    /// </summary>
+    /// <remarks>
+    /// A cursor, not a page index: rows are variable width, so no fixed page
+    /// size is both safe for the worst-case row and complete for the common one.
+    /// The adapter answers with the cursor to resume from.
+    /// </remarks>
+    public static string KbmMap(KbmLayout profile, int cursor)
     {
-        if (page is < 0 or > 32)
+        if (cursor is < 0 or > KbmLimits.MaxMappingItems)
         {
-            throw new ArgumentOutOfRangeException(nameof(page));
+            throw new ArgumentOutOfRangeException(nameof(cursor));
         }
 
-        return $"kbm map {profile.Wire()} {page}";
+        return $"kbm map {profile.Wire()} {cursor}";
     }
 
     public static string KbmMode(KbmMode mode) => $"kbm mode {mode.Wire()}";
 
     /// <summary>
     /// The ingress counters, split out of <c>kbm status</c> because the two
-    /// together outgrew the 512-byte wireless response slot.
+    /// together outgrew the wireless response slot.
     /// </summary>
     public const string KbmCounters = "kbm counters";
 
     public const string KbmProfileList = "kbm profiles";
 
     /// <summary>
-    /// One page of the profile library. Paginated against the WIRE limit, not a
-    /// local buffer: six rows do not fit one 512-byte reply.
+    /// One slice of the profile library, from logical item
+    /// <paramref name="cursor"/>. Six rows do not fit one reply.
     /// </summary>
-    public static string KbmProfilePage(int page) => $"kbm profiles {page}";
+    public static string KbmProfilePage(int cursor) => $"kbm profiles {cursor}";
 
     /// <summary>The realized mapping of each layout, and its divergence state.</summary>
     public const string KbmActive = "kbm active";
@@ -174,8 +183,8 @@ public static partial class ManagementCommands
     public static string KbmProfileDelete(int id) => $"kbm profile delete {id}";
 
     /// <summary>Read one STORED profile's mapping, not the realized one.</summary>
-    public static string KbmProfileMap(int id, int page) =>
-        $"kbm pmap {id} {page}";
+    public static string KbmProfileMap(int id, int cursor) =>
+        $"kbm pmap {id} {cursor}";
 
     // --- staged profile write -------------------------------------------------
     // A profile does not fit one management frame, and a loop of per-binding

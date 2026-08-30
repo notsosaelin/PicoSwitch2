@@ -14,6 +14,17 @@
 #define CONFIG_WIRELESS_COMMAND_CAPACITY 128u
 #define CONFIG_WIRELESS_RESPONSE_CAPACITY 512u
 
+// THE authoritative limit for a BLE-reachable reply body.
+//
+// config_wireless_bridge_publish_response() stores the response AND a trailing
+// newline in the slot, so a reply of exactly CAPACITY bytes is refused: the
+// usable JSON payload is one byte shorter. Formatters and their tests must
+// derive from this rather than restating 512, because a formatter that budgets
+// against the raw capacity is off by one exactly at the boundary -- and an
+// over-long reply is not truncated, it is replaced wholesale with
+// `response_too_large`, which fails an entire page read rather than one field.
+#define CONFIG_WIRELESS_RESPONSE_MAX_JSON (CONFIG_WIRELESS_RESPONSE_CAPACITY - 1u)
+
 typedef enum {
     CONFIG_WIRELESS_RX_OK = 0,
     CONFIG_WIRELESS_RX_COMMAND_READY,
