@@ -66,6 +66,25 @@ the one still connected keeps working throughout. See
 
 ### Fixed
 
+- **The Windows companion showed the wrong adapter colours until you pressed Refresh.** Body and
+  the two Joy-Con accents were read only by the manual Refresh, and the app's placeholder for an
+  unread colour is black — so a freshly connected adapter presented three black swatches as if they
+  were its real appearance, with the Appearance controls disabled. All three are now read on
+  connect, alongside the personality and controller rows, and the section is usable immediately.
+  The Android companion already did this; the two clients now agree.
+- **A KB/M profile assigned to an adapter position could kill the management session, and the app
+  then needed to be force-closed.** The adapter stopped answering the companion for as long as it
+  was trying to connect to a controller, which is what an adapter with no controller paired does
+  continuously. A staged upload would stall on one binding, time out, and take the connection with
+  it; the app went on believing it was connected, so Reconnect did nothing. One run went further
+  and reported the adapter's identity had changed, offering to repair a pairing that was in fact
+  perfectly good. The adapter now answers while it is looking for a controller, the app recovers
+  with an ordinary Reconnect, and a repair is only offered when the adapter genuinely no longer
+  recognises the pairing. **Requires a firmware reflash.**
+- **An assignment could report success while the adapter position stayed empty.** The success
+  message was printed whether or not the upload finished, on top of the error it had just raised.
+  It now appears only after the adapter has committed the profile and read it back with matching
+  content.
 - **Controller Link A/B and X/Y were reversed on the console after the Touch Gamepad fix below.**
   The two sets of face buttons need OPPOSITE corrections — an on-screen button sends the letter it
   draws, while a physical key has to be interpreted against the plastic the handheld actually

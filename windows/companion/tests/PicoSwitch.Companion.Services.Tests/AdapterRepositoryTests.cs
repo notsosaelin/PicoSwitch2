@@ -20,6 +20,10 @@ public sealed class AdapterRepositoryTests
     private const string Info = """{"id":"picoswitch","version":"2.0","bridge_contract":4}""";
     private const string NotAPico = """{"id":"something-else","version":"1.0"}""";
 
+    /// <summary>What `get` reports: body plus the two Joy-Con accents.</summary>
+    private const string Colors =
+        """{"body_color":[244,255,255],"joycon2_left_accent":[155,0,230],"joycon2_right_accent":[56,255,85],"lightbar":[[244,255,255],[244,255,255],[244,255,255],[244,255,255]]}""";
+
     [Fact]
     public async Task ConnectedRequiresOneRealProtocolExchangeNotJustALink()
     {
@@ -114,22 +118,63 @@ public sealed class AdapterRepositoryTests
     }
 
     [Fact]
-    public async Task PersonalityAndControllerAreReadOnceAfterValidation()
+    public async Task PersonalityControllerAndAppearanceAreReadOnceAfterValidation()
     {
-        // Both are adapter truth and both used to be read only by the manual
-        // Refresh button, so a freshly connected session showed "Acting as
-        // Unknown" with no controller until the user pressed Refresh.
+        // All three are adapter truth and all three used to be read only by the
+        // manual Refresh button, so a freshly connected session showed "Acting as
+        // Unknown" with no controller until the user pressed it.
         var transport = new FakeTransport();
         transport.Replies["info"] = Info;
         transport.Replies["personality"] = """{"current":"pro2","available":["pro2","gc"]}""";
         transport.Replies["device"] = """{"name":"DualSense","vid":1356,"pid":3302}""";
+        transport.Replies["get"] = Colors;
 
         var repository = new AdapterRepository(transport);
         await repository.ConnectKnownAsync("AA:BB:CC:DD:EE:01");
 
         Assert.Equal(Personality.Pro2, repository.Snapshot.Value.Personality.Current);
         Assert.Equal("DualSense", repository.Snapshot.Value.Controller.Name);
-        Assert.Equal(["info", "personality", "device"], transport.Sent);
+        Assert.Equal(["info", "personality", "device", "get"], transport.Sent);
+    }
+
+    [Fact]
+    public async Task TheAdaptersColoursAreKnownOnFirstConnect()
+    {
+        // AdapterConfig defaults every channel to Black, so a connect that never
+        // read `get` did not show "unknown" -- it confidently showed three black
+        // swatches, and the Appearance section stayed disabled because the Colors
+        // capability was still Unknown. The user saw the wrong colours with no
+        // sign they were placeholders.
+        var transport = new FakeTransport();
+        transport.Replies["info"] = Info;
+        transport.Replies["get"] = Colors;
+
+        var repository = new AdapterRepository(transport);
+        await repository.ConnectKnownAsync("AA:BB:CC:DD:EE:01");
+
+        var snapshot = repository.Snapshot.Value;
+        Assert.Equal("244 255 255", snapshot.Config.BodyColor.Wire());
+        Assert.Equal("155 0 230", snapshot.Config.LeftAccent.Wire());
+        Assert.Equal("56 255 85", snapshot.Config.RightAccent.Wire());
+        Assert.Equal(CapabilityState.Available, snapshot.Capabilities.Colors);
+    }
+
+    [Fact]
+    public async Task AnAppearanceReadThatFailsCannotRejectAHealthyCarrierOrClaimTheCapability()
+    {
+        // Same boundary as personality and controller: identity hinges on `info`
+        // alone. And a failed read must leave Colors Unknown rather than
+        // Available -- enabling a colour picker whose writes have nothing to read
+        // back against is worse than leaving the section gated.
+        var transport = new FakeTransport();
+        transport.Replies["info"] = Info;
+        transport.Failures["get"] = new ManagementException("timed out");
+
+        var repository = new AdapterRepository(transport);
+        await repository.ConnectKnownAsync("AA:BB:CC:DD:EE:01");
+
+        Assert.True(transport.Validated);
+        Assert.Equal(CapabilityState.Unknown, repository.Snapshot.Value.Capabilities.Colors);
     }
 
     [Fact]

@@ -271,6 +271,36 @@ public sealed class AdapterRepository(IManagementTransport transport)
         {
             snapshot.Set(snapshot.Value with { Controller = controller });
         }
+
+        // The adapter's APPEARANCE, for the same reason and on the same terms.
+        //
+        // Body and the two Joy-Con accents are adapter truth that only `get`
+        // reports, and it was read only by the manual Refresh. AdapterConfig
+        // defaults every channel to Black, so a freshly connected session did not
+        // show "unknown" — it confidently showed three black swatches, and the
+        // Appearance section stayed disabled because Capabilities.Colors was still
+        // Unknown. A user comparing the app against the adapter in front of them
+        // saw the wrong colours with no indication they were placeholders.
+        //
+        // Optional, and after validation, exactly like the two reads above:
+        // identity still hinges on `info` alone, so a slow or unsupported `get`
+        // can never reject a healthy carrier. Colors is marked Available only
+        // when the read actually answered — claiming the capability on a failed
+        // read would enable a colour picker whose writes have nothing to read
+        // back against.
+        var config = await OptionalAsync(() => client.ConfigAsync(cancellationToken))
+            .ConfigureAwait(false);
+        if (config is not null)
+        {
+            snapshot.Set(snapshot.Value with
+            {
+                Config = config,
+                Capabilities = snapshot.Value.Capabilities with
+                {
+                    Colors = CapabilityState.Available,
+                },
+            });
+        }
     }
 
     public async Task DisconnectAsync()
