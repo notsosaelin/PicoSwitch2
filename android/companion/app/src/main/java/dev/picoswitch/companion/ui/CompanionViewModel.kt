@@ -159,6 +159,17 @@ data class CompanionUiState(
     val selectedAmiiboCatalog: AmiiboCatalogEntry? = null,
     val selectedAmiiboTitleGame: String? = null,
     val amiiboCatalogLoading: Boolean = false,
+    /**
+     * The Amiibo library's search, filters, sort and view.
+     *
+     * HELD HERE RATHER THAN IN THE COMPOSABLE. As Compose locals these reset
+     * whenever the screen left composition, and — more importantly — the item
+     * list would be rebuilt from a state the selection could reach. Selection is
+     * deliberately NOT part of this record, so no projection can depend on it
+     * and a LazyGrid cannot lose its scroll position to a click.
+     */
+    val amiiboFilters: AmiiboGalleryFilters = AmiiboGalleryFilters(),
+
     /** Catalog enrichment for the active adapter tag, even without a local backup. */
     val adapterAmiiboCatalog: AmiiboCatalogEntry? = null,
     val adapterAmiiboCatalogState: AmiiboCatalogState = AmiiboCatalogState.Idle,
@@ -375,6 +386,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     val theme: StateFlow<ThemeSelection> = _theme.asStateFlow()
     private val amiiboKeyStore = AmiiboKeyStore(File(application.filesDir, "amiibo-private"))
     private val amiiboCatalog = AmiiboCatalogStore(File(application.filesDir, "amiibo-private"))
+    private val amiiboViewStore = AmiiboViewPreferenceStore(application)
     private var selectedDetailsJob: Job? = null
     private var adapterCatalogJob: Job? = null
     private var adapterCatalogFigureId: String? = null
@@ -386,6 +398,10 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             section = initialSection,
             selectedAmiiboId = savedState[KEY_AMIIBO],
             amiiboKeysLoaded = amiiboKeyStore.read() != null,
+            // Only the view mode is restored. Search and filters are
+            // per-session: returning to a library silently narrowed by a filter
+            // set days ago is confusing rather than helpful.
+            amiiboFilters = AmiiboGalleryFilters(view = amiiboViewStore.load()),
             selectedSourceDescriptor = savedState[KEY_SOURCE],
             adapterRelationship = activeRelationship(),
             adapters = registry.records,
@@ -602,7 +618,16 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     fun setThemeMode(mode: ThemeMode) = updateTheme { it.copy(mode = mode) }
     fun setAccentPalette(palette: AccentPalette) = updateTheme { it.copy(palette = palette) }
     fun consumeMessage() { _ui.update { it.copy(message = null) } }
-    fun selectAmiibo(id: String) {
+    /**
+     * Select an Amiibo, or clear the selection with null.
+     *
+     * Touches ONLY the selection and the details it drives. The library's query
+     * state is untouched, which is what keeps the browser's scroll position: on
+     * Windows the equivalent path rebuilt the whole item list and sent a
+     * 1000-entry library back to the top on every click.
+     */
+    fun selectAmiibo(id: String?) {
+        if (_ui.value.selectedAmiiboId == id) return
         savedState[KEY_AMIIBO] = id
         _ui.update { it.copy(selectedAmiiboId = id) }
         refreshSelectedAmiiboDetails()
@@ -2039,6 +2064,50 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         notice("Exported ${_ui.value.library.size} Amiibo backups as a private ZIP")
     }
 
+    // ------------------------------------------------- Amiibo library browsing
+    //
+    // Every one of these updates the QUERY and nothing else. None of them touch
+    // the selection, and the selection is not part of the query record, so
+    // browsing state and selection cannot interfere with one another.
+
+    fun setAmiiboSearch(value: String) = updateAmiiboFilters { it.copy(search = value) }
+
+    fun setAmiiboSort(sort: AmiiboSort) = updateAmiiboFilters { it.copy(sort = sort) }
+
+    fun toggleAmiiboSortDirection() =
+        updateAmiiboFilters { it.copy(descending = !it.descending) }
+
+    fun setAmiiboGameSeries(value: String) = updateAmiiboFilters { it.copy(gameSeries = value) }
+
+    fun setAmiiboSeries(value: String) = updateAmiiboFilters { it.copy(amiiboSeries = value) }
+
+    fun setAmiiboType(value: String) = updateAmiiboFilters { it.copy(type = value) }
+
+    /**
+     * Change how the library is presented. Never what it contains.
+     *
+     * The query is untouched, so search, filters, sort and selection all
+     * survive. Persisted, because which view someone prefers is stable.
+     */
+    fun setAmiiboView(view: AmiiboViewMode) {
+        amiiboViewStore.save(view)
+        updateAmiiboFilters { it.copy(view = view) }
+    }
+
+    /**
+     * Clear what is NARROWING the library, and only that.
+     *
+     * Sort and view survive: they are preferences, and resetting them would be
+     * an unasked-for change.
+     */
+    fun clearAmiiboFilters() = updateAmiiboFilters {
+        AmiiboGalleryFilters(sort = it.sort, descending = it.descending, view = it.view)
+    }
+
+    private fun updateAmiiboFilters(transform: (AmiiboGalleryFilters) -> AmiiboGalleryFilters) {
+        _ui.update { it.copy(amiiboFilters = transform(it.amiiboFilters)) }
+    }
+
     /**
      * Import any number of picked files: dumps, ZIPs, or a mix.
      *
@@ -2299,6 +2368,19 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         _ui.update { it.copy(amiiboKeysLoaded = true) }
         refreshSelectedAmiiboDetails()
         notice("Amiibo keys imported to this phone only; they are never sent to the adapter or included in diagnostics.")
+    }
+
+    /**
+     * Remove the imported key from this phone.
+     *
+     * The library is untouched: the dumps are stored as they were read, and the
+     * key only ever decorated them with owner and registration fields at display
+     * time. Forgetting it makes those fields unreadable again, nothing more.
+     */
+    fun forgetAmiiboKeys() = launch("Forgetting Amiibo keys") {
+        amiiboKeyStore.clear()
+        _ui.update { it.copy(amiiboKeysLoaded = false, selectedAmiiboDetails = null) }
+        notice("Amiibo keys removed from this phone; your backups were not changed")
     }
 
     fun loadSelectedAmiibo() = launch("Uploading Amiibo") {
