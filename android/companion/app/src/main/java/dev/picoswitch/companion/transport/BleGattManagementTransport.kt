@@ -618,11 +618,30 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
                     "sinceReadyMs=${elapsedOrNone(now, owner.readyAtElapsedMillis)} " +
                     "sinceReplyMs=${elapsedOrNone(now, owner.lastReplyAtElapsedMillis)}",
             )
+            // A DROPPED COMMAND IS A HICCUP, NOT THE END OF THE SESSION. See
+            // ManagementRetryPolicy: the adapter discards a command that arrives
+            // while its one-slot bridge is busy, and says nothing, so the only
+            // symptom is this timeout. Repeating a command that cannot change
+            // its own outcome is far cheaper than invalidating the connection
+            // and losing an upload half way through.
+            var attempt = 0
+            while (true) {
             try {
-                withTimeout(timeoutMillis) {
+                return@exchange withTimeout(timeoutMillis) {
+                    // THE NEGOTIATED MTU, NOT THE DEFAULT ONE. This asked for
+                    // 517 at connect and recorded what it got, then fragmented
+                    // every command to 20 bytes regardless — so an 81-byte
+                    // "amiibo chunk" command was five sequential ATT writes,
+                    // each awaiting its own callback, when one would do.
+                    //
+                    // Safe because the firmware does not parse fragments at all:
+                    // config_wireless_bridge_receive() accumulates bytes into a
+                    // 128-byte line buffer and acts on the newline, so where the
+                    // boundaries fall cannot change what it reads. Falls back to
+                    // the 20-byte default when negotiation did not raise it.
                     val chunks = BleManagementContract.commandChunks(
                         command,
-                        BleManagementContract.ATT_PAYLOAD_WITH_DEFAULT_MTU,
+                        BleManagementContract.attPayloadFor(owner.negotiatedMtu),
                     )
                     for ((index, part) in chunks.withIndex()) {
                         owner.writeReady = CompletableDeferred()
@@ -679,8 +698,28 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
                 log(
                     owner,
                     "request.timeout",
-                    "seq=${trace.sequence} type=${trace.type} source=${trace.source} timeoutMs=$timeoutMillis",
+                    "seq=${trace.sequence} type=${trace.type} source=${trace.source} timeoutMs=$timeoutMillis " +
+                        "repeatable=${ManagementRetryPolicy.isRepeatable(command)}",
                 )
+                if (ManagementRetryPolicy.isRepeatable(command) &&
+                    attempt < ManagementRetryPolicy.MAX_RETRIES
+                ) {
+                    attempt++
+                    // Anything the adapter sends late belongs to the attempt
+                    // that gave up; it must not be mistaken for this one's
+                    // reply, and the carrier gets its turnaround before the
+                    // command goes out again.
+                    while (notifications.tryReceive().isSuccess) Unit
+                    delay(ManagementTurnaroundPolicy.MIN_MILLIS)
+                    log(
+                        owner,
+                        "request.retry",
+                        "seq=${trace.sequence} type=${trace.type} source=${trace.source} " +
+                            "attempt=${attempt + 1}/${ManagementRetryPolicy.MAX_RETRIES + 1}",
+                    )
+                    continue
+                }
+
                 logTerminal(owner, trace, error)
                 invalidate(owner, "Adapter did not reply. Reconnect to start a clean management session.")
                 diagnostics?.error("management", DiagnosticLog.commandType(command), error)
@@ -706,6 +745,10 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
                 )
                 if (owner.commandTrace === trace) owner.commandTrace = null
             }
+            }
+            // The loop only leaves through a return or a throw; this is here so
+            // the lambda's type is String rather than Unit.
+            @Suppress("UNREACHABLE_CODE") ""
         } }
     }
 

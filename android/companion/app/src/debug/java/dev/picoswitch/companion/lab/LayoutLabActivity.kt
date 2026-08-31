@@ -279,9 +279,19 @@ private fun sampleCatalog(library: List<AmiiboLibraryItem>): Map<String, AmiiboC
             amiiboSeries = "Super Smash Bros.",
             type = "Figure",
             releaseDate = "2015-01-01",
-            // Deliberately empty: the lab has no network, and the placeholder
-            // is the state the grid has to look right in anyway.
-            imageUrl = "",
+            // A REAL, REACHABLE AmiiboAPI address, the same one for every entry.
+            //
+            // The lab used to leave this empty, so every tile drew a placeholder
+            // and the artwork path was never exercised here at all -- which is
+            // how a cache that was quietly doing nothing survived a review. One
+            // shared URL also puts maximum pressure on request coalescing: with
+            // sixty tiles appearing at once, anything less than one download is
+            // sixty.
+            imageUrl = LAB_ARTWORK_URL,
             name = name,
         )
     }.toMap()
+
+/** Mario's icon: a small, stable, publicly reachable image. */
+private const val LAB_ARTWORK_URL =
+    "https://raw.githubusercontent.com/N3evin/AmiiboAPI/master/images/icon_00000000-00000002.png"
