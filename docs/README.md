@@ -14,6 +14,8 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Current project state | [`../STATUS.md`](../STATUS.md) |
 | Forward roadmap | [`../PLAN.md`](../PLAN.md) |
 | Runtime architecture | [`architecture/overview.md`](architecture/overview.md) |
+| Proposed Device Appearance customization architecture | [`architecture/device-appearance-customization-hld.md`](architecture/device-appearance-customization-hld.md) |
+| Proposed composable Amiibo, extraction, acquisition, and UID-alias architecture | [`architecture/amiibo-composable-library-hld.md`](architecture/amiibo-composable-library-hld.md) |
 | Management architecture, protocol, clients, and conformance | [`management/README.md`](management/README.md) |
 | USB Serial and bonded/encrypted in-band BLE carrier history/details | [`architecture/config-transports.md`](architecture/config-transports.md) |
 | Compatibility results | [`status/compatibility-matrix.md`](status/compatibility-matrix.md) |
@@ -42,6 +44,7 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Controller Link input published to a slot nothing reads | [`experiments/controller-link-console-slot-misroute-2026-08-21.md`](experiments/controller-link-console-slot-misroute-2026-08-21.md) |
 | Explicit Controller Link versus standalone Touch differential | [`experiments/controller-link-explicit-vs-touch-differential-2026-08-25.md`](experiments/controller-link-explicit-vs-touch-differential-2026-08-25.md) |
 | KB/M wire-size and pagination data loss (why the page would not load) | [`experiments/kbm-wire-pagination-data-loss-2026-08-30.md`](experiments/kbm-wire-pagination-data-loss-2026-08-30.md) |
+| KB/M resident upload stall: the reply was published but never notified | [`experiments/kbm-resident-upload-notify-stall-2026-08-31.md`](experiments/kbm-resident-upload-notify-stall-2026-08-31.md) |
 | Retro Fighters BattlerGC Pro | [`bluetooth/retrofighters-battlergc-pro.md`](bluetooth/retrofighters-battlergc-pro.md) |
 | 8BitDo Ultimate Bluetooth paddles | [`../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md`](../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md) |
 | Pro Controller 2 USB protocol | [`switch2/usb-spec.md`](switch2/usb-spec.md) |
