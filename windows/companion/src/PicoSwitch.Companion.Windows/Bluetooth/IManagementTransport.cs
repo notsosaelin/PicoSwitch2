@@ -143,9 +143,32 @@ public interface IManagementTransport : IManagementChannel, IAsyncDisposable
 /// How many separately resolved <c>BluetoothLEDevice</c> objects failed with
 /// <c>Unreachable</c> at or after service discovery. One is noise; two is the
 /// direct connect and the fresh scan-resolved connect agreeing.
+///
+/// Counted only for failures reaching the GATT SERVER for the first time —
+/// service discovery, characteristic resolution and the CCC write. A command on
+/// an already-subscribed session is deliberately excluded: by then the bond has
+/// already been proven (see <paramref name="BondProven"/>), so a failure there
+/// is a mid-session link event and cannot corroborate a bond mismatch.
+/// </param>
+/// <param name="BondProven">
+/// This attempt completed service discovery, characteristic resolution AND the
+/// CCC write against the adapter.
+///
+/// **This is positive evidence, and it is decisive.** Every one of those handles
+/// is declared <c>ATT_SECURITY_ENCRYPTED</c> in the firmware's ATT database, so
+/// reaching the end of that sequence means Windows and the adapter agreed on a
+/// key. A stale bond cannot get there — it fails below the attribute layer,
+/// which is the entire premise of <c>AdapterResetSignature</c>.
+///
+/// It exists because the signature was reachable without it. A management
+/// command that failed <c>Unreachable</c> mid-session fed the same counter as a
+/// connect-time failure, so a working, correctly bonded adapter that went
+/// briefly unreachable during an upload could be diagnosed as reset and offered
+/// a Repair that would have destroyed a good pairing. Observed 2026-08-31.
 /// </param>
 public readonly record struct TransportTrustSnapshot(
     bool WindowsPaired,
     bool PeerObserved,
     bool PeerAnsweredGatt = false,
-    int LinkFailuresAfterResolve = 0);
+    int LinkFailuresAfterResolve = 0,
+    bool BondProven = false);

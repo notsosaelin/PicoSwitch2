@@ -311,6 +311,24 @@ public static class GattRecoveryPolicy
 /// Fact 4 is why the recovery ladder deliberately does NOT short-circuit on this
 /// shape: the fallback scan is what PRODUCES the corroboration. Shape 1 still
 /// ends the ladder immediately, because it is conclusive at the first failure.
+///
+/// ## The disqualifier, and why it was needed
+///
+/// Both shapes reason from an ANSWER THAT DID NOT ARRIVE. That reasoning is only
+/// available while no answer has arrived. Once an attempt has completed service
+/// discovery, characteristic resolution and the CCC write — all against handles
+/// the firmware declares <c>ATT_SECURITY_ENCRYPTED</c> — the two ends have
+/// demonstrably agreed on a key, and no later failure in that attempt can mean
+/// the adapter forgot the pairing. <c>TransportTrustSnapshot.BondProven</c>
+/// records that, and it short-circuits everything below.
+///
+/// Without it the signature was reachable from a live, healthy session. On
+/// 2026-08-31 a KB/M resident upload stalled (a firmware notification-pump
+/// defect, since fixed), the command timed out, and the reconnect that followed
+/// produced two <c>Unreachable</c> results against an adapter that was present
+/// and correctly bonded. The app offered to destroy that pairing; a power cycle
+/// and an ordinary reconnect proved it had been valid all along. A transient
+/// carrier failure must never be laundered into an identity claim.
 /// </summary>
 public static class AdapterResetSignature
 {
@@ -335,6 +353,21 @@ public static class AdapterResetSignature
         {
             // Without a held pairing this is simply "not paired": a different
             // message, a different flow, and nothing to repair.
+            return false;
+        }
+
+        if (trust.BondProven)
+        {
+            // THIS ATTEMPT ALREADY AUTHENTICATED AGAINST THE ADAPTER. Service
+            // discovery, characteristic resolution and the CCC write all
+            // completed over encrypted handles, so the key both sides hold
+            // matches. Whatever failed afterwards, "the adapter was reset and no
+            // longer recognises this pairing" is not a description of it.
+            //
+            // Every remaining clause below weighs the ABSENCE of an answer, and
+            // absence stops being evidence once the answer has been received. A
+            // management command that times out or goes unreachable mid-session
+            // is a link event; recovery is a reconnect, never a repair.
             return false;
         }
 
@@ -387,7 +420,7 @@ public static class AdapterResetSignature
                 : "not a bond mismatch";
 
         return $"paired={trust.WindowsPaired} observed={trust.PeerObserved} " +
-            $"answeredGatt={trust.PeerAnsweredGatt} " +
+            $"answeredGatt={trust.PeerAnsweredGatt} bondProven={trust.BondProven} " +
             $"linkFailures={trust.LinkFailuresAfterResolve}/{CorroboratingLinkFailures} " +
             $"-> {verdict}";
     }

@@ -318,12 +318,38 @@ public sealed class TrustingTransport : FakeTransportBase
 
     public int LinkFailuresAfterResolve { get; set; }
 
+    /// <summary>
+    /// This attempt authenticated: services, characteristics and the CCC write
+    /// all completed. Set by a successful connect, cleared when a new logical
+    /// attempt begins — the real transport clears it in <c>PrepareConnection</c>.
+    /// </summary>
+    public bool BondProven { get; set; }
+
     public override TransportTrustSnapshot Trust =>
-        new(WindowsPaired, PeerObserved, PeerAnsweredGatt, LinkFailuresAfterResolve);
+        new(WindowsPaired, PeerObserved, PeerAnsweredGatt, LinkFailuresAfterResolve,
+            BondProven);
+
+    private long evidenceAttempt = long.MinValue;
+
+    /// <summary>
+    /// A NEW logical attempt starts with no evidence, exactly as the real
+    /// transport clears it. Without this, proof from the connect that seeded the
+    /// fixture would vouch for an adapter that has since been reflashed.
+    /// </summary>
+    public override void PrepareConnection(ManagementConnectionContext context)
+    {
+        base.PrepareConnection(context);
+        if (context.LogicalAttempt != evidenceAttempt)
+        {
+            evidenceAttempt = context.LogicalAttempt;
+            BondProven = false;
+        }
+    }
 
     public override Task ConnectKnownAsync(string address, CancellationToken cancellationToken = default)
     {
         Count(FailDirectConnect);
+        Prove(FailDirectConnect);
         return base.ConnectKnownAsync(address, cancellationToken);
     }
 
@@ -332,7 +358,20 @@ public sealed class TrustingTransport : FakeTransportBase
         CancellationToken cancellationToken = default)
     {
         Count(FailScanConnect);
+        Prove(FailScanConnect);
         return base.ScanAndConnectAsync(expectedAddress, cancellationToken);
+    }
+
+    /// <summary>
+    /// A connect that got all the way through the CCC write proves the bond, as
+    /// the real transport records it at the same point.
+    /// </summary>
+    private void Prove(Exception? failure)
+    {
+        if (failure is null)
+        {
+            BondProven = true;
+        }
     }
 
     private void Count(Exception? failure)
