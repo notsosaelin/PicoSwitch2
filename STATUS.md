@@ -7,6 +7,53 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **The management carrier stopped answering while the adapter looked for a controller. Fixed
+  2026-08-31; REQUIRES A REFLASH; hardware smoke test pending.** A KB/M resident upload died on
+  `kbm draft bind key:1D a` after 10 000 ms, the app could not reconnect without being
+  force-closed, and one run escalated to "identity changed / repair dongle" on a pairing that a
+  power cycle then proved was fine.
+  **The tell was `reply-timeout` rather than `command-failed`.** Windows writes with response and
+  turns any ATT error into a retired session, so the write had SUCCEEDED and no answer came — which
+  eliminates the one-slot bridge's BUSY drop, the obvious suspect, because that returns an ATT
+  error the client can see. Replaying the entire staged transaction through the real dispatcher over
+  the UART `cfg` bridge cleared the firmware half in one pass: begin, four binds, six mouse fields,
+  commit and readback, ~10 ms each, profile correctly resident. So the command was fine and the
+  ANSWER was missing.
+  **`att_server_request_to_send_notification` had one call site, and it sat below
+  `if (hid_state.state == BLE_STATE_CONNECTING) return;`** — a guard whose own comment says it
+  exists to avoid perturbing advertiser arbitration. `BLE_CONNECT_TIMEOUT_MS` is 10 000 and the
+  companion's per-command budget is 10 000, so a single overlapping controller connect attempt was
+  sufficient to guarantee a timeout, and `btstack_host.c` already documents a ~50 s worst-case
+  cascade. `config_ble_start_advertising()` sits below the same return and `config_ble_handle_disconnect()`
+  deliberately does not advertise itself, so the SAME return also left the adapter undiscoverable
+  after the link dropped — which is what produced two `Unreachable` results and the false repair
+  diagnosis. **One defect, three symptoms, and it can only happen with no controller connected**,
+  which is exactly the state the failure log reported (`controller=No controller peers=0`).
+  `config_ble_pump_response()` now runs BEFORE that return and is the sole arming site; the
+  advertiser arbitration is deliberately unchanged. `cble.tx_wait_max_ms` in `btstate` now measures
+  publish-to-notified latency, because nothing previously distinguished "the command never arrived"
+  from "the answer was never sent".
+  **Three client defects made it worse and are fixed with regressions.** The relationship stayed
+  `Connected` with no carrier beneath it and `RequestReconnect` is inert while Connected, so only
+  killing the process cleared it — `ReconcileCarrierLoss()` returns it to Idle, touching neither
+  registry, pairing nor local library. `AdapterResetSignature` counted an `Unreachable` at any stage
+  but `Connect`, including a command on a session whose CCC write had already succeeded over
+  encrypted handles — `TransportTrustSnapshot.BondProven` now disqualifies the signature outright,
+  and the genuine stale-bond path is untouched because a stale bond fails below the attribute layer
+  and can never set it. And the page printed "'X' is now Profile 1 on the adapter" over the error
+  banner, because Assign used the void `SafeAsync` overload; it now returns early on failure, and
+  the repository verifies the readback by CONTENT FINGERPRINT before returning at all.
+  `kbm draft bind`/`mouse` joined the repeatable allowlist on both clients — absolute writes into a
+  RAM draft — as defence against the BUSY drop, explicitly not as the fix.
+  **New end-to-end coverage.** `KbmResidentUploadTests` drives the real service, repository and
+  client for a realistic 12-override profile and pins the ORDERED command sequence in full, so a
+  transaction that gains, loses or reorders a command fails and names the difference. That is the
+  gap the 2026-08-30 pagination defect escaped through: every builder was unit-tested and each was
+  right about a contract that was wrong.
+  Host suite 79/79; 4 Windows suites green (123/161/55/524); Android green; parity, closeout-wiring
+  and BTstack contract green; both boards build clean.
+  [`docs/experiments/kbm-resident-upload-notify-stall-2026-08-31.md`](docs/experiments/kbm-resident-upload-notify-stall-2026-08-31.md)
+
 - **Virtual Amiibo (Phase 5) complete 2026-08-31. Android transfer hardware-confirmed; the
   console-facing half is not.** The library gained a shared interaction model, and the Amiibo
   transport gained four fixes that between them turned a transfer that stalled and dropped the
@@ -24,9 +71,12 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   client-side: transactions ran on `Dispatchers.Main`, so a command's 10 s budget measured how busy
   the UI was; commands were fragmented to 20 bytes although the negotiated MTU was 517 and the
   firmware accumulates to a newline regardless, making an 81-byte chunk five writes instead of one;
-  a command dropped by the adapter's one-slot bridge — which it discards silently when busy — was
-  never retried, and the timeout path invalidates the session, so one drop ended a transfer and
-  disconnected the adapter; and every visible library tile recomposed on every progress tick,
+  a command dropped by the adapter's one-slot bridge when busy was never retried, and the timeout
+  path invalidates the session, so one drop ended a transfer and disconnected the adapter
+  (**corrected 2026-08-31:** that drop is not silent — the ATT write returns
+  `INSUFFICIENT_RESOURCES` and both clients write with response, so it surfaces as a GATT
+  protocol error, not a timeout. The distinction is load-bearing: it is what excluded this
+  mechanism as the cause of the resident-upload stall below); and every visible library tile recomposed on every progress tick,
   because the tiles took a parameter Compose could not treat as stable. Windows had the same
   fragmentation and retry defects **plus no turnaround policy at all**, which is consistent with it
   stalling more often than Android. The carrier policies now live in `Management.Core` as mirrors of
