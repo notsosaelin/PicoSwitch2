@@ -338,6 +338,11 @@ typedef struct {
     bool cble_closing;
     bool cble_notifications;
     bool cble_fresh_bond_admitted;
+    // Worst observed delay, in ms, between core 0 publishing a management
+    // reply and core 1 finishing its notification. The client-visible
+    // symptom of a stalled pump is a plain command timeout, which says
+    // nothing about which side stalled; this says it directly.
+    uint32_t cble_tx_wait_max_ms;
     // Ring + counters
     uint16_t event_count;
     uint32_t event_dropped;
