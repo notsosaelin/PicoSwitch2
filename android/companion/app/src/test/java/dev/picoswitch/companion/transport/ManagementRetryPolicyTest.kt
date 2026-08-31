@@ -29,6 +29,22 @@ class ManagementRetryPolicyTest {
         assertTrue(ManagementRetryPolicy.isRepeatable("amiibo status"))
     }
 
+    @Test fun `staged draft writes are repeatable because they are absolute sets`() {
+        // `bind` sets the entry keyed by its source; `mouse` sets one named field
+        // to one value. Both act on a draft held in RAM, so a repeat leaves it
+        // byte-identical, and neither touches stored or realized state.
+        assertTrue(ManagementRetryPolicy.isRepeatable("kbm draft bind key:1D a"))
+        assertTrue(ManagementRetryPolicy.isRepeatable("kbm draft bind mouse:1 rstick_right"))
+        assertTrue(ManagementRetryPolicy.isRepeatable("kbm draft mouse sensitivityx 512"))
+        assertTrue(ManagementRetryPolicy.isRepeatable("kbm draft mouse inverty 1"))
+    }
+
+    @Test fun `the draft transaction boundaries are never repeated`() {
+        assertFalse(ManagementRetryPolicy.isRepeatable("kbm draft begin kb pos:1 0 Work"))
+        assertFalse(ManagementRetryPolicy.isRepeatable("kbm draft commit"))
+        assertFalse(ManagementRetryPolicy.isRepeatable("kbm draft abort"))
+    }
+
     /**
      * The dangerous ones. Each of these has an effect that a second execution
      * would change, so a lost reply must end the session rather than be papered

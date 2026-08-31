@@ -618,12 +618,16 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
                     "sinceReadyMs=${elapsedOrNone(now, owner.readyAtElapsedMillis)} " +
                     "sinceReplyMs=${elapsedOrNone(now, owner.lastReplyAtElapsedMillis)}",
             )
-            // A DROPPED COMMAND IS A HICCUP, NOT THE END OF THE SESSION. See
-            // ManagementRetryPolicy: the adapter discards a command that arrives
-            // while its one-slot bridge is busy, and says nothing, so the only
-            // symptom is this timeout. Repeating a command that cannot change
-            // its own outcome is far cheaper than invalidating the connection
-            // and losing an upload half way through.
+            // A MISSING REPLY IS A HICCUP, NOT THE END OF THE SESSION. See
+            // ManagementRetryPolicy. Repeating a command that cannot change its
+            // own outcome is far cheaper than invalidating the connection and
+            // losing an upload half way through.
+            //
+            // The one-slot bridge's BUSY drop is NOT what reaches here: it fails
+            // the ATT write instead. A timeout means the adapter took the command
+            // and its answer never arrived — which on 2026-08-31 turned out to be
+            // a firmware notification that was never scheduled while a controller
+            // connect attempt was in flight.
             var attempt = 0
             while (true) {
             try {
