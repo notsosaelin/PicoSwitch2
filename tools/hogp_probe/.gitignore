@@ -1,0 +1,4 @@
+# Build output. The repo root's .gitignore predates the C# work and has no
+# bin/obj rules; the companion tree is covered elsewhere, this project is not.
+bin/
+obj/

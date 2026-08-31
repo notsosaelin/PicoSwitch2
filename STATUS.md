@@ -7,6 +7,34 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Windows Phase 6 gate run 2026-08-31: B1 and B2 pass, B3-B6 unmeasured. Phase 6 stays gated;
+  Phase 6a is not gated and is the available work.** WINDOWS_PASS.md §14.5 asks whether a Windows PC
+  can present the 161-byte bridge descriptor over HOGP such that `android_bridge_identify()` matches.
+  **The two questions §14.3 expected Windows to block are now retired.** `GattServiceProvider.CreateAsync(0x1812)`
+  returns Success — HID is not on the reserved-service list in practice — and both `0x2908` Report
+  Reference descriptors were created, along with the whole mandatory HOGP characteristic set.
+  **The experiment then stopped short of B3, the decisive one.** `StartAdvertising` aborts for a
+  connectable advertisement on the test radio (Intel `VID_8087&PID_0032`, driver 24.40.10.8), five
+  attempts in a row, `Error = Success`. The controls matter more than the abort: a MEANINGLESS
+  128-bit control service aborts identically, encryption-required versus plain makes no difference,
+  and a plain `BluetoothLEAdvertisementPublisher` on the same radio reaches `Started`. So the refusal
+  is specific to CONNECTABLE `GattServiceProvider` advertising and says nothing about HOGP, HID, or
+  the firmware. B3-B6 are recorded as **unmeasured, not failed** — the adapter was never given a
+  chance to connect, so `bridge` over UART would necessarily read `calls == 0` and would mean only
+  "nothing connected".
+  **No §14.6 branch is taken.** Every branch maps a SPECIFIC failed question to a product decision,
+  and escalating to Path C on an advertiser abort would commit a joint firmware + Windows pass on no
+  evidence. Two explanations remain untested and lead to different answers: package identity (the
+  probe is an unpackaged console app, the product is a packaged WinUI 3 app that already declares the
+  `bluetooth` capability) and the radio/driver. One packaged run separates them; §14.5 also asks for
+  a second radio, because a single-machine result is not a product claim.
+  **Negative knowledge:** `IsPeripheralRoleSupported == true` is NOT sufficient evidence that a
+  Windows PC can advertise connectably. It reports true on this machine while every connectable
+  advertisement aborts.
+  `tools/hogp_probe/` is kept and re-runnable per radio, with controls for service, encryption,
+  connectability, discoverability and a no-GATT advertiser baseline.
+  [`docs/experiments/windows-hogp-bridge-feasibility-2026-08-31.md`](docs/experiments/windows-hogp-bridge-feasibility-2026-08-31.md)
+
 - **The management carrier stopped answering while the adapter looked for a controller. Fixed
   2026-08-31; REQUIRES A REFLASH; hardware smoke test pending.** A KB/M resident upload died on
   `kbm draft bind key:1D a` after 10 000 ms, the app could not reconnect without being
