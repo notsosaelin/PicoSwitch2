@@ -2,7 +2,9 @@
 
 **Status:** SHIPPED across firmware, Windows and Android, 2026-08-30. Source- and
 test-validated; end-to-end hardware validation outstanding (see §14).
-**Date:** 2026-08-29, rewritten 2026-08-30 to describe what actually shipped
+**Date:** 2026-08-29; rewritten 2026-08-30 to describe what shipped; revised
+2026-08-30 for schema 16 — bank positions, switch keys, boot vs runtime, and the
+local-library / resident-bank split (§2a, §3, §4a, §5, §7, §8, §9).
 **Scope:** KB/M mapping selection in firmware, the management surface, Windows and Android
 **Evidence baseline:** hardware failures recorded in
 [`ble-keyboard-classified-as-mouse-2026-08-29.md`](../experiments/ble-keyboard-classified-as-mouse-2026-08-29.md)
@@ -38,23 +40,58 @@ The critical one is the last. Active is a **snapshot**, not a pointer into a
 mutable profile slot. A pointer model cannot express "saved but not applied" at
 all — saving would silently become applying.
 
-## 3. Storage (schema 14)
+## 2a. Two stores, and the position that addresses one of them
+
+The original model had one store and it was the adapter's. That was the second
+architectural mistake, and it is the one this revision fixes.
+
+| Store | Holds | Bounded by | Needs a connection |
+|---|---|---|---|
+| **Local library** | The user's collection, on the companion | Nothing | **No** |
+| **Resident bank** | The adapter's working set | 3 positions × 2 layouts, plus a built-in Default | Yes |
+
+Six was never a statement about how many mappings a person may have. It is how
+many the **adapter** can hold so that it keeps working with no companion
+attached. Treating it as the user's capacity made `New` a flash erase, made
+`Save` change what the console might run, and made both impossible while
+disconnected — for a task, composing a key mapping, that never needed a device.
+
+A **position** is what the user actually selects: `Default`, `Profile 1`,
+`Profile 2`, `Profile 3`, scoped to a layout. It is deliberately *not* a storage
+slot and *not* a `profile_id`. "Profile 1" means the same thing to a person in
+both banks, and the derived layout decides which one is read — which is exactly
+what lets a single switch key serve both. Exposing ids here would force the user
+to know which record lives where.
+
+Copying between the two stores is always explicit:
+
+```
+local library  --Assign / Update-->  resident bank
+local library  <--Copy to library--  resident bank
+```
+
+Neither direction ever happens as a side effect of an edit.
+
+## 3. Storage (schema 16)
 
 ```c
-#define NS2_KBM_MAX_PROFILES 6u        // CUSTOM profiles; Defaults are built in
-#define NS2_KBM_PROFILE_NAME_MAX 20u   // 19 usable characters
+#define NS2_KBM_MAX_PROFILES 6u          // = POSITIONS_PER_LAYOUT * LAYOUT_COUNT
+#define NS2_KBM_POSITIONS_PER_LAYOUT 3u  // custom positions in ONE bank
+#define NS2_KBM_POSITION_DEFAULT 0u      // the built-in; consumes no record
+#define NS2_KBM_PROFILE_NAME_MAX 20u     // 19 usable characters
+#define NS2_KBM_SWITCH_BINDINGS_MAX 4u   // Default + Profile 1..3
 
 typedef struct {                       // everything a profile OWNS
     ns2_kbm_profile_overrides_t overrides;   // sparse, unchanged from v13
-    ns2_kbm_mouse_config_t mouse;            // now profile-owned
+    ns2_kbm_mouse_config_t mouse;            // profile-owned since v14
 } ns2_kbm_content_t;                   // 206 bytes
 
 typedef struct {
-    uint8_t used, layout, profile_id, reserved;
+    uint8_t used, layout, profile_id, position;   // v16 spends v15's reserved byte
     uint16_t revision;
     char name[NS2_KBM_PROFILE_NAME_MAX];
     ns2_kbm_content_t content;
-} ns2_kbm_profile_slot_t;              // 232 bytes
+} ns2_kbm_profile_slot_t;              // 232 bytes, unchanged in size
 
 typedef struct {
     uint8_t source_id, reserved;       // which profile produced this snapshot
@@ -62,12 +99,43 @@ typedef struct {
     ns2_kbm_content_t content;         // the REALIZED mapping
 } ns2_kbm_active_t;                    // 210 bytes
 
+typedef struct {                       // v15: change profile with no app
+    uint8_t used, kind, position;
+    uint8_t code;                      // HID usage, or mouse button
+} ns2_kbm_switch_binding_t;
+
 typedef struct {
     uint8_t mode, next_profile_id, reserved[2];
     ns2_kbm_profile_slot_t profiles[NS2_KBM_MAX_PROFILES];
     ns2_kbm_active_t active[NS2_KBM_LAYOUT_COUNT];
-} ns2_kbm_config_t;                    // 1816 bytes
+    ns2_kbm_switch_binding_t switches[NS2_KBM_SWITCH_BINDINGS_MAX];  // ONE table
+    uint8_t boot_position[NS2_KBM_LAYOUT_COUNT];   // what to realize at power-up
+    uint8_t reserved3[…];
+} ns2_kbm_config_t;
 ```
+
+`NS2_KBM_MAX_PROFILES == NS2_KBM_POSITIONS_PER_LAYOUT * NS2_KBM_LAYOUT_COUNT` is
+asserted at compile time, so the record cannot grow a seventh profile that no
+position addresses.
+
+**The switch table is layout-free and shared.** A binding names a *position*, and
+the adapter resolves it through whichever layout is derived when the key is
+pressed. One key therefore works in both banks and selects that bank's profile,
+which is the behaviour a person expects and the reason position is the unit
+rather than id.
+
+### Boot position is not runtime position
+
+```
+boot_position[layout]     persisted. Costs a flash write. Set by "On startup".
+active[layout]            realized NOW. Costs nothing. Moved by Apply and by a
+                          switch key.
+```
+
+They are separate because a switch key moves the second and not the first, so
+after one press they legitimately differ for the rest of the session. A client
+that assumed the persisted choice was live would report the wrong profile as
+active — and a hotkey that wrote flash on every press would be unusable.
 
 **`config_record_t` is 1888 of `CONFIG_RECORD_BYTES` (2048)**, asserted at compile
 time. Widening from 1024 was verified against the persistence map rather than
@@ -147,20 +215,49 @@ forgotten through the wrong companion.
 v11 and v12 lift to the v13 shape first and then through the same one migration,
 so an adapter on any supported schema reaches byte-identical v14 state.
 
+## 4a. Migration v14 → v15 → v16
+
+`CONFIG_PERSIST_VERSION` is **16**.
+
+- **v15** adds the switch-key table and `boot_position[]`. Both start empty /
+  `Default`, which is the behaviour a v14 adapter already had.
+- **v16** gives every stored profile a `position`. Assignment is deterministic —
+  slot order, within the profile's own layout — so the same stored record always
+  lands on the same position, and two adapters with identical bytes migrate
+  identically.
+
+`boot_position[]` is derived from **what was already realized**, not reset. An
+adapter that came up running the user's mapping keeps coming up running it.
+
+**The rule is applied on every MIGRATED path, not just the newest one.** An
+earlier version applied boot realization only in the v14 branch, so a record
+arriving from v11/v12/v13 was migrated correctly and then had its mapping
+discarded on the way through. A record that has travelled further must not end
+up worse off than one that started closer.
+
 ## 5. Save is not Apply
 
 The contract, pinned by tests at the model layer rather than left to UI
-convention:
+convention. With the local library in place there are now **three** steps, not
+two, and each one is a separate act by the user:
 
 ```
-Work revision 3, applied.        console runs revision 3
-  user edits locally             console runs revision 3, ZERO adapter writes
-  user saves                     Work becomes revision 4
-                                 console STILL runs revision 3
-                                 activeMatchesSaved -> false
-  user presses Set Active        console runs revision 4
-                                 activeMatchesSaved -> true
+Halo is in the library and assigned to Profile 1, which is running.
+
+  user edits locally     library unchanged, ZERO adapter writes
+  user SAVES             the LIBRARY changes. The adapter does not.
+                         the row reads "Profile 1 · adapter copy out of date"
+  user UPDATES           Profile 1 now holds the new content
+                         the console STILL runs the old snapshot
+                         matchesSaved -> false, "activate to use changes"
+  user ACTIVATES         the console runs the new content
+                         matchesSaved -> true
 ```
+
+Save reaching the adapter is the defect this replaces; Assign reaching the
+console would be the same defect one layer along. Assigning into the position
+that is currently running deliberately preserves the realized snapshot, so
+refreshing a stored copy can never change gameplay mid-session.
 
 `ns2_kbm_resolve()` reads **only** the realized snapshot. Resolving through the
 library would make Save an implicit Apply, which is precisely the bug.
@@ -198,15 +295,35 @@ existing limitation of the single-bank, non-CRC record.
 
 | Command | Purpose |
 |---|---|
-| `kbm profiles [cursor]` | The library, walked by cursor |
-| `kbm active` | Both realized mappings, with `matchesSaved` |
-| `kbm apply <kb\|kbm> <id\|default>` | **The only command that changes console behaviour** |
+| `kbm profiles [cursor]` | The resident bank, walked by cursor. Each row carries its `position` |
+| `kbm active` | Both realized mappings, with `matchesSaved`, `bootPosition`, `runtimePosition` |
+| `kbm apply <kb\|kbm> <id\|default>` | **The only command that changes console behaviour.** Runtime only; no flash write |
+| `kbm boot <kb\|kbm> <default\|1-3>` | The power-up choice. The one profile selection worth a flash write |
+| `kbm remove <kb\|kbm> <1-3>` | Empty one bank position. The local library is untouched |
+| `kbm switches` | The shared switch-key table |
+| `kbm switch <src> <none\|default\|1-3>` | Bind or clear one switch key |
 | `kbm map <kb\|kbm> [cursor]` | One layout's REALIZED mapping, walked by cursor |
 | `kbm pmap <id> [cursor]` | One STORED profile's mapping, same walk |
-| `kbm profile rename\|dup\|delete` | Library metadata |
-| `kbm draft …` | The staged save above |
+| `kbm profile rename\|dup\|delete` | Resident metadata |
+| `kbm draft …` | The staged save/assign transaction above |
 | `kbm status` | Product state only. Gains `activeProfile`, `activeProfileName`, `activeRevision`, `activeFingerprint`, `activeMatchesSaved` |
 | `kbm counters` | The 15 ingress counters, split out of `kbm status` |
+
+`kbm draft begin` takes either a profile id (save into that record) or
+**`pos:N`** (assign into that position). The second form is what the local
+library uses: the client names the position the user picked and the adapter
+decides which record backs it.
+
+**`default` is a word on the wire, not `0`.** `kbm_position_arg()` accepts the
+literal `default` and rejects any number below 1, so a client that sent a
+position's numeric value would have its command refused for the one action a
+user is most likely to bind a key to.
+
+**Removing a position can never leave a dangling reference.** If the removed
+position was the runtime choice or the boot choice, that layout falls back to
+`Default` inside the same operation. A client re-reads the realized mapping
+afterwards rather than assuming, because what the console is running may have
+changed underneath it.
 
 ### The wire budget
 
@@ -319,36 +436,93 @@ rather than letting a client keep claiming the profile is applied.
 `kbm map kb` still reports what the console is really using, which is what an old
 client expects.
 
-## 8. Client draft model
+## 8. Client model
 
-Both companions implement the same state machine, and the rules live beside the
-wire types (`KeyboardMouseDraft` / `KbmDraft`) so the two cannot drift:
+The editing path runs on the **local draft** (`KbmLocalDraft`, both languages),
+keyed on a library UUID that no adapter has ever seen. Its only states are:
 
 | State | Meaning |
 |---|---|
-| Clean | Draft equals the saved profile, which is not applied |
-| Active | The realized mapping matches this profile's saved content |
+| Clean | Equals what is stored in the library |
 | Dirty | Edited locally. **Zero adapter writes have happened** |
-| SavedNotApplied | Stored in the library; the console runs something else |
-| Conflict | The adapter's profile moved on since this draft was based on it |
-| Disconnected | No live session — nothing may be presented as live truth |
 
 Dirty is computed from **content**, not tracked with a flag, so putting an edit
-back correctly disables Save. "Active" requires the id **and** the content to
-match; an id match alone is what would let the UI claim a profile is applied when
-it was saved and never applied.
+back correctly disables Save.
 
-**Flash writes:** editing 30 controls → 0. Save → 1. Apply → 1 (0 when the
-content is already realized). Rename / duplicate / delete → 1 each.
+There is deliberately no third state here. Where a profile stands relative to a
+device is a **relationship**, not a property of the draft, and it is computed by
+the bank projection (`KbmBankView`, both languages) from three independent
+comparisons — local vs resident, resident vs runtime, and the conclusion drawn
+from them:
+
+| Relationship | Meaning |
+|---|---|
+| LocalOnly | In the library only. Never sent to this adapter |
+| OnAdapter | Assigned to a position, and the copies agree |
+| AdapterCopyOutOfDate | Assigned, edited locally since. The adapter holds the older content |
+| Active | Assigned, in agreement, and running now |
+| ResidentUpdatedNotActivated | The resident copy was updated; the console has not picked it up |
+
+A single `matchesSaved` boolean cannot express the third row, which is the
+**ordinary** state right after a local Save and the exact fact the user needs.
+
+### Matching a local profile to its resident copy
+
+The two companions mint their own ids and never see each other's, so a resident
+copy is matched by **content** — the fingerprint — with the name as evidence.
+A resident belongs to at most one library row, and claiming consumes:
+
+```
+1. name AND content   strongest
+2. name
+3. content            weakest
+```
+
+**Name outranks content alone, and the order is load-bearing.** Editing is the
+common case and changes content, so right after a Save a profile no longer
+matches its own resident — but it may coincidentally match a *different* one.
+Content-first made an edited "Halo" claim an unrelated Profile 2 and report
+itself safely on the adapter, hiding the one fact that mattered. Content still
+decides when no name matches, which is what keeps a locally renamed profile
+attached to the resident the other companion wrote.
+
+Unique claiming matters for a second reason: two untouched copies of Default have
+identical content, and without it both would read as "on adapter".
+
+### Offline
+
+The library, the editor and the whole mapping grid work with **no adapter**. A
+profile stores sparse overrides, and the canonical table those are applied
+against is firmware data shipped in both companions
+(`tools/fixtures/management/kbm-default-mappings.json`, generated from
+`src/ns2_kbm.c`). Parity tests on both platforms assert the shipped copy still
+matches what the firmware emits, so carrying it cannot silently drift.
+
+Adapter-only controls are **disabled, not hidden**: a user who cannot see them
+cannot tell that connecting would bring them back.
+
+**Flash writes:** editing 30 controls → 0. Local save / duplicate / rename /
+delete → 0. Assign → 1. On startup → 1. Activate → 0. Remove → 1.
 
 ## 9. UX
 
-Both platforms: a profile selector that **opens** a profile (never applies it),
-`Save` / `Discard` / `Set Active` as separate controls with separate enablement,
-`New` / `Rename` / `Delete`, and one line of status plus a detail sentence for the
-states a single word cannot carry. Built-in Default is labelled as such and
-cannot be renamed or deleted; saving while viewing it creates a profile of the
-user's own.
+Both platforms present the two stores as two cards.
+
+**Your library** — the layout selector, every local profile with its relationship
+line, and `New` / `Save` / `Discard` / `Duplicate` / `Rename` / `Delete`. All
+local, all available offline. Selecting a row **opens** it; it never applies it.
+Built-in Default is always offered, is labelled as such, and cannot be renamed or
+deleted — saving while viewing it creates a profile of the user's own. The single
+control here that reaches the adapter is `Assign to adapter…`, and it says so.
+
+**On adapter** — one row per position including the empty ones, because
+"Profile 3 · Empty" is what tells a user they have somewhere to assign to.
+Each row carries `Activate`, `On startup`, `Copy to library` and `Remove`, with
+`active now` / `on startup` / `key F1` shown as separate marks.
+
+**Profile switch keys** — one row per semantic action, bound or not, rendered
+from the actions rather than from the bindings so the ones the user came to set
+up are visible.
 
 Windows keeps its section-scoped busy ring rather than disabling the page, and
 business rules stay in Services/Presentation. Android keeps rules in the
@@ -411,7 +585,12 @@ not.
 ## 12. Deliberately not built
 
 - Per-game or title-aware switching — the adapter cannot know what is running.
-- Profile-switch key chords — every chord is a chord some game wants.
+- Profile-switch key **chords** — every chord is a chord some game wants. Single
+  switch keys *are* built (§3); chords are not.
+- Syncing the two companions' libraries to each other. They share content through
+  the adapter's resident bank and nothing else; a local-only profile stays local.
+  Anything more would need an account, a transport and a conflict policy that
+  this feature does not have.
 - User-selectable layout — asserting Keyboard + Mouse with no mouse silently
   drops the right stick.
 - Game-shaped templates (FPS, platformer, …) — inventing them without evidence is
@@ -421,25 +600,44 @@ not.
 
 ## 13. Settled decisions
 
-1. **Six CUSTOM profiles**, shared across layouts. Built-in Defaults consume no
-   slot.
+1. **Six resident profiles = 3 positions × 2 layouts.** Built-in Defaults consume
+   no record. This is the ADAPTER's working set, not the user's capacity: the
+   local library is unbounded.
 2. **`CONFIG_RECORD_BYTES` = 2048.** Verified against the flash map; nothing
    transactional is compromised.
 3. **Default template only.** Content is a data-only addition later.
 4. **Mouse settings are profile-owned.**
 5. **No CRC / A-B config store in this feature.**
+6. **Position, not id, is the user-facing unit**, and the switch-key table is one
+   shared, layout-free table.
+7. **Boot and runtime selection are separate**, and only boot writes flash.
+8. **Save is local.** Assign, Update, Remove, Activate and On startup are the
+   only operations that reach the adapter, and all five are explicit.
+9. **The fingerprint is the cross-platform bridge.** Local ids are never shared
+   between companions.
 
 ## 14. What is not proven
 
 Everything here is source- and test-validated. **No part of the profile system
-has run on hardware.** Specifically unproven until the smoke test in the final
-report is run:
+has run on hardware.** Specifically unproven:
 
-- the v13 → v14 migration against a real adapter's stored bytes;
-- the staged transaction over a real BLE management session;
+- the v13 → v14 → v15 → v16 migration chain against a real adapter's stored bytes;
+- the staged transaction, in both its `<id>` and `pos:N` forms, over a real BLE
+  management session;
 - that Apply changes console behaviour and Save does not, at the console;
-- persistence of the realized mapping across a real power cycle;
+- that a switch key changes the running profile at the console, and that it does
+  **not** change the power-up choice;
+- persistence of `boot_position[]` across a real power cycle;
 - cross-platform hand-off between the two companions.
+
+On the last point, what *is* proven in software is the contract the hand-off
+rides on rather than the hand-off itself. Both companions' fingerprints are
+replayed against vectors emitted by the firmware's own
+`ns2_kbm_content_fingerprint` (`KbmFingerprintParityTest`,
+`KbmFingerprintTests`), and the Android suite drives the whole
+Windows → adapter → Android → adapter → Windows scenario through the real
+library and bank projection using those firmware-derived vectors as the content
+(`KbmCrossPlatformScenarioTest`). Two processes have never actually met.
 
 The hardware-confirmed 8BitDo multi-report-ID fix and the durable
 management-companion fix are both covered by regressions in the host suite and
