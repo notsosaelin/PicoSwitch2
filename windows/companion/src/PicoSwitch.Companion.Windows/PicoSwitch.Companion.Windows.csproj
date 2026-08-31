@@ -18,6 +18,16 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!--
+      DPAPI, for the amiibo retail key set. Not in the base framework on .NET, and
+      deliberately referenced HERE rather than in a Core project: binding a secret
+      to a Windows user account is exactly the kind of platform behaviour this
+      project exists to contain.
+    -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../PicoSwitch.Bridge.Core/PicoSwitch.Bridge.Core.csproj" />
     <ProjectReference Include="../PicoSwitch.Management.Core/PicoSwitch.Management.Core.csproj" />
   </ItemGroup>
