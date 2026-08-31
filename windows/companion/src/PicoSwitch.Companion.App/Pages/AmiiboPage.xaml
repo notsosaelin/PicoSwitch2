@@ -157,33 +157,144 @@
                         </StackPanel>
                     </Grid>
 
-                    <!-- Two lines per row: the name the user gave it, and what
-                         it actually is. The second line is where "on the
-                         adapter" appears, which is the thing someone scanning
-                         the list is usually looking for. -->
-                    <ListView
-                        x:Name="LibraryList"
+                    <!-- Search, sort and filters. Amiibo are a collection:
+                         people think in series and characters, so the controls
+                         that matter are the ones that narrow by those. Every
+                         filter's choices come from what the user actually owns. -->
+                    <Grid ColumnSpacing="8" RowSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <AutoSuggestBox
+                            x:Name="SearchBox"
+                            QueryIcon="Find"
+                            PlaceholderText="Search name, character, series or id"
+                            TextChanged="OnSearchChanged" />
+
+                        <ComboBox
+                            Grid.Column="1"
+                            x:Name="SortBox"
+                            MinWidth="150"
+                            SelectionChanged="OnSortChanged">
+                            <ComboBoxItem Content="Recently added" />
+                            <ComboBoxItem Content="Name" />
+                            <ComboBoxItem Content="Figure number" />
+                            <ComboBoxItem Content="Release date" />
+                        </ComboBox>
+
+                        <Button
+                            Grid.Column="2"
+                            x:Name="SortDirectionButton"
+                            Style="{StaticResource PageButtonStyle}"
+                            VerticalAlignment="Stretch"
+                            MinWidth="44"
+                            Content="&#xE74A;"
+                            FontFamily="Segoe MDL2 Assets"
+                            ToolTipService.ToolTip="Reverse the order"
+                            Click="OnToggleSortDirection" />
+                    </Grid>
+
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ComboBox x:Name="GameSeriesBox" HorizontalAlignment="Stretch"
+                                  PlaceholderText="Game series" SelectionChanged="OnFilterChanged" />
+                        <ComboBox Grid.Column="1" x:Name="AmiiboSeriesBox" HorizontalAlignment="Stretch"
+                                  PlaceholderText="Amiibo series" SelectionChanged="OnFilterChanged" />
+                        <ComboBox Grid.Column="2" x:Name="TypeBox" HorizontalAlignment="Stretch"
+                                  PlaceholderText="Type" SelectionChanged="OnFilterChanged" />
+                        <Button Grid.Column="3" x:Name="ClearFiltersButton"
+                                Style="{StaticResource PageButtonStyle}"
+                                Content="Clear" Click="OnClearFilters" />
+                    </Grid>
+
+                    <!-- A GRID, not a list. Artwork is how someone recognises a
+                         figure; a text row of forty tags is unusable for the one
+                         job this page has. -->
+                    <GridView
+                        x:Name="LibraryGrid"
                         SelectionMode="Single"
-                        MaxHeight="360"
+                        MaxHeight="460"
+                        IsItemClickEnabled="False"
                         SelectionChanged="OnLibrarySelectionChanged">
-                        <ListView.ItemTemplate>
-                            <DataTemplate x:DataType="pages:AmiiboLibraryRow">
-                                <StackPanel Spacing="2" Margin="0,6,0,6">
-                                    <TextBlock Text="{x:Bind Title}" />
+                        <GridView.ItemTemplate>
+                            <DataTemplate x:DataType="pages:AmiiboTile">
+                                <Grid Width="150" Height="196" Padding="6">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+
+                                    <Image
+                                        Source="{x:Bind Image}"
+                                        Stretch="Uniform"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Center" />
+
+                                    <!-- Shown only when there is no artwork, so
+                                         a figure the catalog does not know still
+                                         reads as a tile rather than a gap. -->
+                                    <FontIcon
+                                        Glyph="&#xE8EC;"
+                                        FontSize="40"
+                                        Opacity="0.35"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Center"
+                                        Visibility="{x:Bind PlaceholderVisibility}" />
+
+                                    <Border
+                                        VerticalAlignment="Top"
+                                        HorizontalAlignment="Right"
+                                        Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                        CornerRadius="4"
+                                        Padding="6,2"
+                                        Visibility="{x:Bind BadgeVisibility}">
+                                        <TextBlock
+                                            Text="{x:Bind Badge}"
+                                            FontSize="10"
+                                            Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                                    </Border>
+
                                     <TextBlock
-                                        Text="{x:Bind Detail}"
+                                        Grid.Row="1"
+                                        Text="{x:Bind Title}"
+                                        MaxLines="2"
+                                        TextWrapping="Wrap"
+                                        TextTrimming="CharacterEllipsis"
+                                        Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                    <TextBlock
+                                        Grid.Row="2"
+                                        Text="{x:Bind Subtitle}"
+                                        MaxLines="1"
+                                        TextTrimming="CharacterEllipsis"
                                         Style="{StaticResource CaptionTextBlockStyle}"
                                         Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                </StackPanel>
+                                </Grid>
                             </DataTemplate>
-                        </ListView.ItemTemplate>
-                    </ListView>
+                        </GridView.ItemTemplate>
+                    </GridView>
+
+                    <TextBlock
+                        x:Name="EmptyLibraryText"
+                        Visibility="Collapsed"
+                        TextWrapping="Wrap"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
 
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <Button x:Name="SendButton" Style="{StaticResource PageButtonStyle}"
                                 Content="Send to adapter" Click="OnUpload" />
                         <Button x:Name="RenameButton" Style="{StaticResource PageButtonStyle}"
                                 Content="Rename" Click="OnRename" />
+                        <Button x:Name="InitializeButton" Style="{StaticResource PageButtonStyle}"
+                                Content="Initialize" Click="OnInitialize" />
                         <Button x:Name="ExportButton" Style="{StaticResource PageButtonStyle}"
                                 Content="Export" Click="OnExportOne" />
                         <Button x:Name="DeleteButton" Style="{StaticResource PageButtonStyle}"

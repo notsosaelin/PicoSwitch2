@@ -868,12 +868,47 @@ public sealed class AdapterRepository(IManagementTransport transport)
     // client that assumed the result of its own command would be describing a
     // tag that had already moved on.
 
+    /// <summary>
+    /// Re-read the adapter's Amiibo state, and its capability with it.
+    /// </summary>
+    /// <remarks>
+    /// UPDATING THE CAPABILITY IS THE POINT. An earlier version set only the
+    /// status, which left <see cref="AdapterCapabilities.Amiibo"/> at whatever
+    /// the last full refresh had decided — so a page that came up before that
+    /// refresh, or after one failed probe, showed "the adapter has not reported
+    /// its Amiibo state yet" and its Reload button could never clear it. Reload
+    /// has to be able to recover the thing it is reloading.
+    ///
+    /// A command the firmware does not implement is reported as Unsupported
+    /// rather than as a failure: that is a different fact, with a different fix.
+    /// </remarks>
     public async Task<AmiiboStatus> RefreshAmiiboAsync(
         CancellationToken cancellationToken = default)
     {
-        var status = await client.AmiiboStatusAsync(cancellationToken).ConfigureAwait(false);
-        snapshot.Set(snapshot.Value with { Amiibo = status });
-        return status;
+        try
+        {
+            var status = await client.AmiiboStatusAsync(cancellationToken).ConfigureAwait(false);
+            snapshot.Set(snapshot.Value with
+            {
+                Amiibo = status,
+                Capabilities = snapshot.Value.Capabilities with
+                {
+                    Amiibo = CapabilityState.Available,
+                },
+            });
+            return status;
+        }
+        catch (AdapterCommandException error) when (error.IsUnsupported())
+        {
+            snapshot.Set(snapshot.Value with
+            {
+                Capabilities = snapshot.Value.Capabilities with
+                {
+                    Amiibo = CapabilityState.Unsupported,
+                },
+            });
+            throw;
+        }
     }
 
     /// <summary>

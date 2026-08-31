@@ -35,6 +35,46 @@ public sealed class AdapterRepositoryTests
     }
 
     [Fact]
+    public async Task RefreshingAmiiboUpdatesItsCapabilityNotJustItsStatus()
+    {
+        // THE BUG THIS PINS, seen on hardware: the Amiibo page reported "the
+        // adapter has not reported its Amiibo state yet" and its Reload button
+        // could never clear it. Refresh read the status but left the CAPABILITY
+        // at whatever the last full refresh had decided, so a page that came up
+        // before that refresh -- or after one failed probe -- was stuck. Reload
+        // has to be able to recover the thing it is reloading.
+        var transport = new FakeTransport();
+        transport.Replies["info"] = Info;
+        transport.Replies["amiibo status"] =
+            """{"loaded":false,"v3loaded":false,"dirty":false,"presented":false,"size":0,"upload":{}}""";
+
+        var repository = new AdapterRepository(transport);
+
+        await repository.RefreshAmiiboAsync();
+
+        Assert.Equal(
+            CapabilityState.Available,
+            repository.Snapshot.Value.Capabilities.Amiibo);
+    }
+
+    [Fact]
+    public async Task FirmwareWithoutAmiiboReportsUnsupportedRatherThanUnknown()
+    {
+        // A different fact with a different fix: "update your firmware", not
+        // "reload". Collapsing the two sends the user to the wrong action.
+        var transport = new FakeTransport();
+        transport.Replies["info"] = Info;
+        transport.Replies["amiibo status"] = """{"error":"unknown command"}""";
+
+        var repository = new AdapterRepository(transport);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => repository.RefreshAmiiboAsync());
+        Assert.Equal(
+            CapabilityState.Unsupported,
+            repository.Snapshot.Value.Capabilities.Amiibo);
+    }
+
+    [Fact]
     public async Task ADeviceThatIsNotAPicoSwitch2IsDisconnectedAndNeverValidated()
     {
         var transport = new FakeTransport();
