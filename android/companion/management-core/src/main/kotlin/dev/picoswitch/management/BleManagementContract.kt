@@ -9,6 +9,25 @@ object BleManagementContract {
     const val ATT_PAYLOAD_WITH_DEFAULT_MTU = 20
     const val MAX_REPLY_PAYLOAD_BYTES = 511
 
+    /** ATT write payload for a negotiated MTU: three bytes go to the header. */
+    const val ATT_HEADER_BYTES = 3
+
+    /**
+     * How much of a command fits in one ATT write at [mtu].
+     *
+     * FRAGMENT SIZE IS NOT PART OF THE PROTOCOL. The adapter accumulates
+     * received bytes into a line buffer and acts on the newline, so it cannot
+     * observe where a command was split; only the total length matters, and that
+     * is bounded well below its buffer. Sending 20 bytes at a time when the link
+     * has agreed on far more simply multiplies the number of round trips, and
+     * every round trip is another opportunity for a callback to arrive late.
+     *
+     * Never returns less than the default, so a failed or absent negotiation
+     * behaves exactly as before.
+     */
+    fun attPayloadFor(mtu: Int): Int =
+        (mtu - ATT_HEADER_BYTES).coerceAtLeast(ATT_PAYLOAD_WITH_DEFAULT_MTU)
+
     fun commandChunks(command: String, payloadBytes: Int): List<ByteArray> {
         require(payloadBytes > 0) { "Payload size must be positive" }
         return ManagementProtocol.frame(command)

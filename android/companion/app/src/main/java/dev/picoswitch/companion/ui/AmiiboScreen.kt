@@ -1643,12 +1643,22 @@ internal fun AmiiboArtwork(imageUrl: String, contentDescription: String, modifie
 /**
  * The process-wide artwork cache.
  *
- * One store for the whole app, not one per composable: a cache that does not
- * outlive the thing being scrolled past is not a cache. Keyed on the application
- * context so it survives configuration changes and every screen shares it.
+ * A GENUINE SINGLETON, not a remembered one. `remember` is scoped to a position
+ * in the composition, so remembering the store inside the artwork composable
+ * gave EVERY TILE ITS OWN — a thousand separate memory caches, each holding one
+ * picture, each with its own request-coalescing map that could therefore
+ * coalesce nothing. Only the disk layer was actually shared, which is why a
+ * fresh launch still went to the network for artwork it already had on disk.
+ *
+ * A cache that does not outlive the thing being scrolled past is not a cache.
  */
+private val artworkStore = java.util.concurrent.atomic.AtomicReference<AmiiboArtworkStore?>(null)
+
 @Composable
 private fun rememberAmiiboArtworkStore(): AmiiboArtworkStore {
     val context = LocalContext.current.applicationContext
-    return remember(context) { AmiiboArtworkStore(context.cacheDir) }
+    return artworkStore.get() ?: AmiiboArtworkStore(context.cacheDir).also { created ->
+        // compareAndSet so two first-frame tiles cannot install two stores.
+        artworkStore.compareAndSet(null, created)
+    }.let { artworkStore.get()!! }
 }
