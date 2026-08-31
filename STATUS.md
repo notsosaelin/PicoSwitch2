@@ -7,6 +7,32 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Windows Virtual Amiibo (Phase 5) implemented 2026-08-31; hardware validation outstanding.**
+  The Windows companion now has the whole Amiibo surface: a local backup library, the
+  portal-compatible ZIP exchange, upload with progress and cancel, present/eject, save1/save2,
+  CRC-verified sync, clear, DPAPI-protected key storage, and decrypted register metadata.
+  **The precondition came first.** `AmiiboCrypto` already existed twice — Kotlin and
+  `web/index.html` — and its failure mode is silent: a wrong HMAC produces a tag the console simply
+  rejects, with nothing to read. A C# port would have been a third copy verified against nothing, so
+  `tools/fixtures/amiibo/crypto-vectors.json` was built first, generated from the Kotlin
+  implementation over real dumps. 14 vectors and 2 negative ones now cover both tag sizes and both
+  register states; coverage is DERIVED from the vectors so it cannot go stale, and crossing tag type
+  with register state immediately exposed a gap the per-axis view had hidden (no set-up NTAG215 tag,
+  still open). The fixture carries **no key material** — the key set is a SHA-256 fingerprint — and
+  **no personal data**: every set-up tag in the corpus has a real Mii name, so names are recorded as
+  digests, which is a complete equality check that discloses nothing.
+  Running the C# suite with and without the key gave the same green result, which is the shape of a
+  suite that is not running; a deliberate broken-expectation probe confirmed the decrypting half
+  genuinely executes, and that hazard is now closed permanently — a set-but-unusable key path throws
+  rather than silently disabling half the file.
+  **The rule the page is built around:** a game writing to a tag produces a change that exists only
+  on the adapter, so uploading over it and clearing it are refused until it is synced, and sync
+  writes the library BEFORE acknowledging — acknowledging first would clear the adapter's dirty flag
+  on data saved nowhere.
+  4 Windows suites green (123/146/52/412); descriptor parity green. **Not validated on hardware:**
+  a tag uploaded from Windows being read by the console, and a console-written tag syncing back.
+  [`WINDOWS_PASS.md` §31 Phase 5](WINDOWS_PASS.md)
+
 - **KB/M profile system shipped end-to-end 2026-08-30; REQUIRES A REFLASH; hardware validation
   pending.** Firmware, management protocol, Windows and Android in one pass. Two defects are fixed.
   **(1)** The mapping a keyboard resolved against was **derived** from which peer roles happened to
