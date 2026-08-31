@@ -145,6 +145,27 @@ The platform-neutral bridge architecture intentionally allows additional host pl
 
 No additional platform backend should begin until it is selected as an active task.
 
+## Amiibo carrier throughput
+
+Accepted follow-ups from the Phase 5 transport pass. Both are measurable with the UART diagnostic
+channel and `blecap` on the adapter, and neither should be changed by guess: the first trades
+against a firmware hazard that was characterised on hardware, and the second is peer-visible.
+
+- **Tune the inter-command turnaround.** `ManagementTurnaroundPolicy.MinMillis` is 100 ms between
+  every reply and the next command, against a hazard window the transport documents as 1–3 ms. That
+  is ~1.7 s of pure delay for a 540-byte tag and **≈6.4 s for a 2048-byte v3**, and it dominates
+  transfer time now that a chunk is one ATT write rather than five. Retry makes an occasional drop
+  survivable, so the value can probably fall a long way. The experiment: sweep the value with
+  `blecap` running and count the adapter's `RX_BUSY` discards per setting, which is the actual
+  quantity being traded. Do not lower it without that count.
+
+- **Raise `AMIIBO_CHUNK_BYTES` from 32 to 48.** An `amiibo chunk <offset> <hex>` at 32 bytes is ~81
+  characters; at 48 it is ~113, still inside the firmware's 128-byte command buffer and the UART
+  parser's 127-character line. That cuts a 540-byte transfer from 17 commands to 12 — ~30% fewer
+  round trips and ~30% less turnaround. 64 bytes would be ~145 characters and overflow, so 48 is the
+  ceiling. Peer-visible: verify against the firmware's `amiibo chunk` handler and round-trip a tag
+  over UART before changing the constant, which is shared by both clients and the UART tool.
+
 ## Linux
 
 A Linux companion/backend is an accepted future direction.

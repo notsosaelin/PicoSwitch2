@@ -7,6 +7,41 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Virtual Amiibo (Phase 5) complete 2026-08-31. Android transfer hardware-confirmed; the
+  console-facing half is not.** The library gained a shared interaction model, and the Amiibo
+  transport gained four fixes that between them turned a transfer that stalled and dropped the
+  adapter into one that completes.
+  **The interaction model** separates three ideas one property used to carry: which card is
+  focused, which one's details are open, and which are selected for a bulk command. Single tap
+  browses, double tap inspects, long press selects; browsing owns the whole surface until details
+  are explicitly asked for. `AmiiboInteractionState` is mirrored in C# and Kotlin with 36 parity
+  properties asserted on each side, and is intended to govern any future touch-capable client —
+  [`docs/architecture/companion-library-interaction.md`](docs/architecture/companion-library-interaction.md).
+  **The transport.** Uploads stalled at arbitrary offsets (64, 96, 288 of the same file) and took
+  the management session with them. Arbitrary offsets were the tell: a framing fault stops in the
+  same place, a scheduling one does not. A UART upload of the same tag completing in 1.3 s cleared
+  the firmware's begin/chunk/commit path and localised it to the BLE carrier. Four causes, all
+  client-side: transactions ran on `Dispatchers.Main`, so a command's 10 s budget measured how busy
+  the UI was; commands were fragmented to 20 bytes although the negotiated MTU was 517 and the
+  firmware accumulates to a newline regardless, making an 81-byte chunk five writes instead of one;
+  a command dropped by the adapter's one-slot bridge — which it discards silently when busy — was
+  never retried, and the timeout path invalidates the session, so one drop ended a transfer and
+  disconnected the adapter; and every visible library tile recomposed on every progress tick,
+  because the tiles took a parameter Compose could not treat as stable. Windows had the same
+  fragmentation and retry defects **plus no turnaround policy at all**, which is consistent with it
+  stalling more often than Android. The carrier policies now live in `Management.Core` as mirrors of
+  the Kotlin ones.
+  **Measured**, layout lab at 1200 entries, scrolling: janky frames 12.77% → 4.52%, legacy jank
+  34.04% → 0.00%, 99th percentile 81 ms → 18 ms. Artwork gained a byte-bounded memory cache, a disk
+  cache and request coalescing; a relaunch in airplane mode draws the whole library from disk.
+  **Hardware-confirmed:** an Android upload to the adapter completing, and a 540-byte UART upload in
+  1.3 s. **Not confirmed:** the console reading a tag uploaded this way, a console-written tag
+  syncing back, and the Windows carrier fixes — those were validated by tests and build only.
+  Two measured follow-ups remain open, both in [`PLAN.md`](PLAN.md): the 100 ms inter-command
+  turnaround (≈6.4 s of pure delay on a 2048-byte v3, against a documented 1–3 ms hazard window),
+  and raising `AMIIBO_CHUNK_BYTES` from 32 to 48, which is the largest that still fits the
+  firmware's 128-byte command buffer.
+
 - **Windows Virtual Amiibo (Phase 5) implemented 2026-08-31; hardware validation outstanding.**
   The Windows companion now has the whole Amiibo surface: a local backup library, the
   portal-compatible ZIP exchange, upload with progress and cancel, present/eject, save1/save2,
