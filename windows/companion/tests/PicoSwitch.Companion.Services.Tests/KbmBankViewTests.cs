@@ -209,7 +209,7 @@ public sealed class KbmBankViewTests : IDisposable
     }
 
     [Fact]
-    public void AResidentProfileIsMatchedByContentBeforeName()
+    public void ContentMatchesAResidentWhenNoNameDoes()
     {
         // Windows and Android local ids are NOT shared, so content is the only
         // thing they can compare. A renamed local copy of the same mapping is
@@ -223,6 +223,39 @@ public sealed class KbmBankViewTests : IDisposable
 
         Assert.Equal(KbmLocalState.OnAdapter, rows[0].State);
         Assert.Equal(1, rows[0].AssignedPosition);
+    }
+
+    [Fact]
+    public void AnEditedProfileKeepsItsOwnResidentRatherThanOneItNowEquals()
+    {
+        // THE ORDERING THIS PINS: name outranks content alone.
+        //
+        // Editing locally is the common case and changes content, so right after
+        // a Save a profile no longer matches its own resident copy -- and may
+        // coincidentally equal a DIFFERENT one. Matching on content first made an
+        // edited "Halo" claim the unrelated Profile 2 and report itself safely on
+        // the adapter, hiding the one fact the user needed: Halo's own copy is
+        // stale. Caught by the Android cross-platform scenario, fixed in both.
+        var library = Library();
+        var halo = library.Create(KbmLayout.Keyboard, "Halo",
+                                  [Bind(0x09, KbmDestination.Gr)]);
+        var stale = library.Create(KbmLayout.Keyboard, "Scratch",
+                                   [Bind(0x04, KbmDestination.Zr)]);
+        library.Delete(stale.Id);
+
+        var state = State(
+        [
+            // What Halo was before the edit.
+            Resident(2, 1, "Halo", stale.Fingerprint),
+            // Same content as the edited Halo, but a different profile entirely.
+            Resident(3, 2, "Zelda", halo.Fingerprint),
+        ]);
+
+        var rows = KbmBankView.Library(library.Value, state, KbmLayout.Keyboard);
+
+        Assert.Equal(KbmLocalState.AdapterCopyOutOfDate, rows[0].State);
+        Assert.Equal(1, rows[0].AssignedPosition);
+        Assert.True(rows[0].CanUpdateAdapterCopy);
     }
 
     [Fact]

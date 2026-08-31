@@ -139,7 +139,17 @@ public static class KbmBankView
         // Two local profiles can hold identical content — two untouched copies of
         // Default do — and without this both would claim the same resident and
         // each would be reported as "on adapter". Claiming consumes, and the
-        // strongest evidence wins: name AND content, then content, then name.
+        // strongest evidence wins: name AND content, then name, then content.
+        //
+        // NAME OUTRANKS CONTENT ALONE, and the ordering is load-bearing. Editing
+        // a profile locally is the common case and changes its content, so right
+        // after a save the local profile no longer matches its own resident copy
+        // — but it may coincidentally match a DIFFERENT one. Content-first made
+        // an edited "Halo" claim the unrelated resident it now happened to equal
+        // and report "on adapter", when the fact the user needed was that Halo's
+        // own copy had gone stale. Content still decides when no name matches,
+        // which is what keeps a locally renamed profile attached to the resident
+        // the other companion wrote.
         var unclaimed = state.Profiles.Profiles
             .Where(resident => resident.Layout == layout)
             .ToList();
@@ -155,8 +165,8 @@ public static class KbmBankView
                 {
                     0 => candidate.Fingerprint == profile.Fingerprint &&
                          Same(candidate.Name, profile.Name),
-                    1 => candidate.Fingerprint == profile.Fingerprint,
-                    _ => Same(candidate.Name, profile.Name),
+                    1 => Same(candidate.Name, profile.Name),
+                    _ => candidate.Fingerprint == profile.Fingerprint,
                 });
 
                 if (resident is not null)
