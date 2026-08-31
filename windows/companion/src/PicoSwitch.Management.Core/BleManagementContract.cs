@@ -18,6 +18,26 @@ public static class BleManagementContract
     public const int AttPayloadWithDefaultMtu = 20;
     public const int MaxReplyPayloadBytes = 511;
 
+    /// <summary>ATT write payload for a negotiated MTU: three bytes are header.</summary>
+    public const int AttHeaderBytes = 3;
+
+    /// <summary>
+    /// How much of a command fits in one ATT write at <paramref name="mtu"/>.
+    /// </summary>
+    /// <remarks>
+    /// FRAGMENT SIZE IS NOT PART OF THE PROTOCOL. The adapter accumulates
+    /// received bytes into a line buffer and acts on the newline, so it cannot
+    /// observe where a command was split; only the total length matters, and it
+    /// is bounded well below that buffer. Writing 20 bytes at a time when the
+    /// link has agreed on far more simply multiplies the round trips, and every
+    /// round trip is another chance for a reply to arrive late.
+    ///
+    /// Never returns less than the default, so an absent or failed negotiation
+    /// behaves exactly as before.
+    /// </remarks>
+    public static int AttPayloadFor(int mtu) =>
+        Math.Max(AttPayloadWithDefaultMtu, mtu - AttHeaderBytes);
+
     public static IReadOnlyList<byte[]> CommandChunks(string command, int payloadBytes)
     {
         if (payloadBytes <= 0)

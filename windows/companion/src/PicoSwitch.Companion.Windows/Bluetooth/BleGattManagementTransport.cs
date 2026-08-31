@@ -500,7 +500,7 @@ public sealed class BleGattManagementTransport : IManagementTransport
 
     /* ------------------------------------------------------------- exchange */
 
-    private async Task<string> ExchangeAsync(string command, long timeoutMillis)
+    private async Task<string> ExchangeAsync(string command, long timeoutMillis, int attempt = 0)
     {
         OwnedGatt owner;
         lock (gate)
@@ -512,13 +512,31 @@ public sealed class BleGattManagementTransport : IManagementTransport
             }
         }
 
+        // THE ONE-SLOT CARRIER NEEDS A GAP, and this client did not give it one.
+        // The adapter bridges commands between cores through a single slot, and
+        // Windows can deliver the last notification before the firmware's next
+        // task turn has released it; a write in that window is accepted by GATT
+        // and produces no reply. Android has honoured this since the behaviour
+        // was characterised, which is consistent with Windows stalling more
+        // often on the same operation.
+        var turnaround = ManagementTurnaroundPolicy.DelayMillis(
+            Environment.TickCount64, owner.LastReplyAtMillis);
+        if (turnaround > 0)
+        {
+            await Task.Delay((int)turnaround).ConfigureAwait(false);
+        }
+
         var reply = new PendingReply();
         pending = reply;
         try
         {
+            // THE NEGOTIATED PDU, NOT THE DEFAULT. The session's MaxPduSize was
+            // logged and then ignored, so an 81-byte "amiibo chunk" went out as
+            // five sequential writes where one will do. The adapter never sees
+            // the boundaries; see BleManagementContract.AttPayloadFor.
             foreach (var chunk in BleManagementContract.CommandChunks(
                          command,
-                         BleManagementContract.AttPayloadWithDefaultMtu))
+                         BleManagementContract.AttPayloadFor(owner.MaxPduSize)))
             {
                 var writer = new DataWriter();
                 writer.WriteBytes(chunk);
@@ -542,11 +560,26 @@ public sealed class BleGattManagementTransport : IManagementTransport
                 // next request consume a late reply: management replies carry no
                 // request identifier, so a late one is indistinguishable from the
                 // next one's.
+                //
+                // Unless the command can simply be sent again. The adapter drops
+                // a command that arrives while its bridge is busy and says
+                // nothing, so a timeout does not mean the session is broken —
+                // and retiring it for one dropped chunk ends a transfer that
+                // would otherwise have finished. See ManagementRetryPolicy for
+                // why this is an allowlist.
+                if (ManagementRetryPolicy.IsRepeatable(command) &&
+                    attempt < ManagementRetryPolicy.MaxRetries)
+                {
+                    return await ExchangeAsync(command, timeoutMillis, attempt + 1)
+                        .ConfigureAwait(false);
+                }
+
                 await RetireAsync("reply-timeout").ConfigureAwait(false);
                 throw new ManagementException(
                     $"The adapter did not answer '{command}' within {timeoutMillis} ms.");
             }
 
+            owner.LastReplyAtMillis = Environment.TickCount64;
             return await reply.Completion.Task.ConfigureAwait(false);
         }
         catch (GattTransportException)
@@ -818,6 +851,23 @@ public sealed class BleGattManagementTransport : IManagementTransport
         public bool Closed { get; private set; }
 
         public bool Subscribed { get; set; }
+
+        /// <summary>
+        /// When the last reply landed, for <see cref="ManagementTurnaroundPolicy"/>.
+        /// Zero until the first, which the policy reads as "no gap required".
+        /// </summary>
+        public long LastReplyAtMillis { get; set; }
+
+        /// <summary>
+        /// The negotiated ATT MTU, or the default until the session reports one.
+        /// </summary>
+        /// <remarks>
+        /// Read through the session rather than cached at connect: Windows can
+        /// raise the PDU after the link is up, and a value captured too early
+        /// would pin every later write to the smaller size.
+        /// </remarks>
+        public int MaxPduSize =>
+            session.MaxPduSize > 0 ? session.MaxPduSize : BleManagementContract.DefaultAttMtu;
 
         public GattDeviceService? Service { get; set; }
 
