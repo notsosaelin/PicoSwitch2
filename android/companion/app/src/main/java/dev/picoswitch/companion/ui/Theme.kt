@@ -64,6 +64,16 @@ object LayoutTokens {
      */
     val AmiiboCellMinWidth = 132.dp
     val AmiiboArtHeight = 84.dp
+
+    // Carousel: deliberately much larger and lower-density than a grid cell.
+    // If these were close to the grid's, the two views would be the same thing
+    // at two zoom levels rather than two ways of browsing.
+    /**
+     * Upper bound on a carousel card. The card is otherwise a fraction of the
+     * viewport so one figure fills a phone page; on a wide tablet pane that
+     * fraction would produce an absurdly large single card, so it stops here.
+     */
+    val AmiiboCarouselMaxWidth = 420.dp
     /**
      * Width the Amiibo toolbar needs before filter, sort and scan can stay as
      * their own buttons: six 48 dp targets plus a readable title. Below it they
