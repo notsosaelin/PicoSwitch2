@@ -72,9 +72,36 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   Firmware config migration (v11/v12/v13 → v14) is unaffected and still supported.
   `cfg <command>` on the UART console now runs any management command and reports the size the
   wireless bridge would see, closing the gap that forced both defects to be diagnosed from source.
-  78/78 host, 594 Windows, 435 Android JVM, lint clean, debug APK, both boards build,
-  management command parity 62/62 and descriptor parity green.
   **The fix has not yet run on hardware — it needs a reflash.**
+  [`docs/architecture/kbm-profile-system-hld.md`](docs/architecture/kbm-profile-system-hld.md)
+
+- **KB/M library and resident bank separated; Android brought to parity 2026-08-30; hardware
+  validation pending.** The third defect in the same feature, and an architectural one: the
+  companions treated the adapter's **six resident profiles as the user's library**. Six is how many
+  the *adapter* can hold so it works with no app attached — not how many mappings a person may
+  own. Conflating them made `New` a staged flash write that assigned itself to the working set,
+  made `Save` change what the console might run, and made both impossible while disconnected, for a
+  task that never needed a device.
+  There are now **two stores**. The local library is unbounded, lives in the companion, and its
+  New/Duplicate/Rename/Delete/Edit/Save/Discard send **zero** management commands — enforced
+  structurally, because `KbmLibraryRepository` owns no transport and cannot acquire one. The
+  adapter's bank is **3 positions × 2 layouts plus a built-in Default**, and only
+  Assign/Update/Remove/Activate/On-startup reach it. Editing works offline because the firmware's
+  canonical default table ships in both companions from
+  `tools/fixtures/management/kbm-default-mappings.json`, with parity tests asserting it still
+  matches what the firmware emits.
+  Schema **14 → 16**: profiles gain a semantic `position` (what the user selects, resolved through
+  the derived layout), plus one shared layout-free **switch-key table** so the profile can be
+  changed with no app, and `boot_position[]` kept separate from the runtime choice — a switch key
+  moves the second and not the first, and only the first costs a flash write. Removing a position
+  that is running or is the boot choice falls that layout back to Default, so no reference dangles.
+  Cross-platform hand-off rides on the **content fingerprint**: the two companions mint their own
+  ids and never see each other's, so a resident copy is matched by content with the name as
+  evidence. **Name outranks content alone** — content-first made an edited profile claim an
+  unrelated resident it now coincidentally equalled and report itself safely stored, hiding the one
+  fact that mattered. Found by the Android cross-platform scenario, fixed in both implementations.
+  79/79 host, 663 Windows, 1505 Android JVM, lint clean, debug APK. No firmware source changed in
+  this pass.
   [`docs/architecture/kbm-profile-system-hld.md`](docs/architecture/kbm-profile-system-hld.md)
 
 - **BLE keyboard input — root-caused and fixed 2026-08-29; HARDWARE-CONFIRMED.** An 8BitDo
