@@ -8,7 +8,10 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -169,21 +172,7 @@ class AmiiboCryptoFixtureTool {
                     "names that discloses neither. Both empty digests as sha256 of the empty " +
                     "string, so producing a name where there is none fails just as loudly.",
             )
-            put(
-                "coverage",
-                buildJsonObject {
-                    put("figureV3", true)
-                    put("ntag215", false)
-                    put(
-                        "gap",
-                        "The tracked corpus contains no 540- or 572-byte NTAG215 image, so " +
-                            "the NTAG215 path is NOT covered by these vectors. An " +
-                            "implementation verified only against this fixture is unverified " +
-                            "for that path. Adding one genuine NTAG215 dump to dumps/amiibo/ " +
-                            "and regenerating closes it.",
-                    )
-                },
-            )
+            put("coverage", coverage(accepted))
             put(
                 "keySet",
                 buildJsonObject {
@@ -203,6 +192,68 @@ class AmiiboCryptoFixtureTool {
         output.parentFile.mkdirs()
         output.writeText(Json { prettyPrint = true }.encodeToString(document) + "\n")
         println("wrote ${output.relativeTo(repoRoot).invariantSeparatorsPath}")
+    }
+
+    /**
+     * What these vectors actually cover, derived from the vectors themselves.
+     *
+     * DERIVED, never asserted by hand. The first version of this fixture
+     * hardcoded its own coverage claims, which meant that adding a tag would
+     * have left the fixture stating a gap it no longer had — and, worse, that
+     * removing one would have left it claiming coverage it had lost. A reader
+     * deciding whether their implementation is verified has to be able to trust
+     * this block.
+     */
+    private fun coverage(vectors: List<JsonObject>): JsonObject {
+        val tagTypes = vectors
+            .map { it["identity"]!!.jsonObject["tagType"]!!.jsonPrimitive.content }
+            .toSet()
+        val setUpStates = vectors
+            .map { it["register"]!!.jsonObject["setUp"]!!.jsonPrimitive.boolean }
+            .toSet()
+        val appDataStates = vectors
+            .map { it["register"]!!.jsonObject["hasAppData"]!!.jsonPrimitive.boolean }
+            .toSet()
+
+        val missing = buildList {
+            if ("Ntag215" !in tagTypes) {
+                add(
+                    "no 540- or 572-byte NTAG215 image: that whole tag path is unverified",
+                )
+            }
+            if ("FigureV3" !in tagTypes) {
+                add("no 2048-byte Figure v3 image: that whole tag path is unverified")
+            }
+            if (false !in setUpStates) {
+                add("no un-set-up tag: the empty-register decode is unverified")
+            }
+            if (true !in setUpStates) {
+                add("no set-up tag: owner, nickname and date decoding are unverified")
+            }
+            if (true !in appDataStates) {
+                add("no tag carrying game app data: title and app id decoding are unverified")
+            }
+        }
+
+        return buildJsonObject {
+            put("ntag215", "Ntag215" in tagTypes)
+            put("figureV3", "FigureV3" in tagTypes)
+            put("setUpTag", true in setUpStates)
+            put("unsetTag", false in setUpStates)
+            put("appDataTag", true in appDataStates)
+            put(
+                "gap",
+                if (missing.isEmpty()) {
+                    "None known. Both tag sizes, both register states and the app-data " +
+                        "path are represented. This says nothing about firmware or console " +
+                        "behaviour, which no software fixture can cover."
+                } else {
+                    "An implementation verified only against these vectors is unverified " +
+                        "for: " + missing.joinToString("; ") + ". Adding a matching dump to " +
+                        "dumps/amiibo/ and regenerating closes it."
+                },
+            )
+        }
     }
 
     private fun vector(

@@ -161,22 +161,36 @@ class AmiiboCryptoFixtureTest {
         }
     }
 
-    @Test fun `the coverage gap is stated rather than implied`() {
-        // The tracked corpus has no NTAG215 image, so these vectors do not cover
-        // that path. An implementation verified only against this fixture is
-        // unverified for 540- and 572-byte tags, and the fixture has to say so
-        // out loud or the next reader will assume otherwise.
+    @Test fun `the stated coverage matches the vectors actually present`() {
+        // The coverage block is what a reader consults to decide whether their
+        // implementation is verified, so it must describe these vectors rather
+        // than whatever was true when someone last edited it by hand. Checked
+        // against the vectors instead of against a constant, so adding or
+        // removing a dump cannot leave the claim stale.
         val coverage = fixture["coverage"]!!.jsonObject
-        assertTrue("figureV3 coverage claim", coverage["figureV3"]!!.jsonPrimitive.boolean)
-        assertFalse(
-            "if an NTAG215 vector was added, update this test with it",
+        val tagTypes = vectors.map { it["identity"]!!.jsonObject.string("tagType") }.toSet()
+
+        assertEquals(
+            "ntag215 coverage claim",
+            "Ntag215" in tagTypes,
             coverage["ntag215"]!!.jsonPrimitive.boolean,
         )
-        assertTrue(coverage.string("gap").contains("NTAG215"))
-        assertTrue(
-            "no vector should be an NTAG215 tag while coverage says otherwise",
-            vectors.none { it["identity"]!!.jsonObject.string("tagType") == "Ntag215" },
+        assertEquals(
+            "figureV3 coverage claim",
+            "FigureV3" in tagTypes,
+            coverage["figureV3"]!!.jsonPrimitive.boolean,
         )
+
+        // Both tag paths and both register states are what make the fixture
+        // worth verifying a new implementation against; an un-set-up tag is the
+        // only thing that exercises the empty-register decode.
+        assertTrue("both tag sizes must be represented", tagTypes.containsAll(
+            setOf("Ntag215", "FigureV3"),
+        ))
+        assertTrue("a set-up tag must be represented", coverage["setUpTag"]!!.jsonPrimitive.boolean)
+        assertTrue("an un-set-up tag must be represented", coverage["unsetTag"]!!.jsonPrimitive.boolean)
+        assertTrue("an app-data tag must be represented", coverage["appDataTag"]!!.jsonPrimitive.boolean)
+        assertTrue("the gap must be stated either way", coverage.string("gap").isNotBlank())
     }
 
     // -------------------------------------------------- only with real keys
