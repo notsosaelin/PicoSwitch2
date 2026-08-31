@@ -111,6 +111,17 @@ class AdapterRepository(private val transport: ManagementTransport) {
         runCatching { client.controller() }.getOrNull()?.let { controller ->
             _snapshot.value = _snapshot.value.copy(controller = controller)
         }
+        // The colours, for the same reason and by the same omission. Appearance
+        // renders from the snapshot's config, and a disconnected snapshot's
+        // colours are zeroes -- so a freshly connected session showed three
+        // black swatches until the user pressed Refresh. They are adapter truth
+        // and cheap to read, and nobody should have to ask for them.
+        runCatching { client.config() }.getOrNull()?.let { config ->
+            _snapshot.value = _snapshot.value.copy(
+                config = config,
+                capabilities = _snapshot.value.capabilities.copy(colors = CapabilityState.Available),
+            )
+        }
     }
 
     suspend fun disconnect() {

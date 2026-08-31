@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Warning
@@ -47,6 +49,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -1511,22 +1514,34 @@ private fun TouchGamepadMenu(
                  * below, which is a consequence the chips cannot show.
                  */
                 Text("Controller", style = MaterialTheme.typography.titleSmall)
-                // BOTH arrangements. A flow row spaces its wrapped LINES only if
-                // asked to, so with horizontal spacing alone the fourth chip
-                // sat flush against the first row and the list read as three
-                // controllers and an afterthought.
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(SPACE_M),
-                    verticalArrangement = Arrangement.spacedBy(SPACE_M),
-                ) {
-                    TouchProfileSelector.gameplayPersonalities.forEach { option ->
-                        FilterChip(
-                            selected = personality == option,
-                            onClick = { if (personality != option) onPersonality(option) },
-                            label = { Text(option.title) },
-                            enabled = !busy,
-                            modifier = Modifier.heightIn(min = TOUCH_TARGET),
-                        )
+                // ONE CHOICE, ONE CONTROL, matching the Adapter page. A chip per
+                // personality put four equally-weighted targets in a menu for a
+                // setting with exactly one value, and grew a row whenever a
+                // personality was added. Stating the current mode and keeping
+                // the alternatives one tap away is the shape this setting has.
+                Box {
+                    var open by remember { mutableStateOf(false) }
+                    OutlinedButton(
+                        onClick = { open = true },
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = TOUCH_TARGET),
+                    ) {
+                        Text(personality.title, Modifier.weight(1f), textAlign = TextAlign.Start)
+                        Icon(Icons.Default.ArrowDropDown, null)
+                    }
+                    DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                        TouchProfileSelector.gameplayPersonalities.forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text(option.title) },
+                                leadingIcon = if (personality == option) {
+                                    { Icon(Icons.Default.Check, null) }
+                                } else null,
+                                onClick = {
+                                    open = false
+                                    if (personality != option) onPersonality(option)
+                                },
+                            )
+                        }
                     }
                 }
                 // Kept: a personality switch re-enumerates USB and replaces the

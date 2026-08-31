@@ -173,11 +173,16 @@ class AdapterRepositoryTest {
         assertEquals(1, transport.knownConnects)
         assertEquals(0, transport.scans)
         // Identity validation is still gated on ONE command. The main screen's own truth
-        // (personality, console-slot controller identity) is read after that, so a freshly
-        // connected session is not blank until the user presses Refresh -- but it can never
-        // decide whether the carrier is healthy.
+        // (personality, console-slot controller identity, colours) is read after that, so a
+        // freshly connected session is not blank until the user presses Refresh -- but it can
+        // never decide whether the carrier is healthy.
+        //
+        // "get" carries the adapter's colours, and it joined this list because Appearance
+        // renders from the snapshot: a disconnected snapshot's colours are zeroes, so a fresh
+        // session showed three black swatches until the user pressed Refresh. Same class of
+        // defect as personality and device, and the same fix.
         assertEquals("info", transport.commands.first())
-        assertEquals(listOf("info", "personality", "device"), transport.commands)
+        assertEquals(listOf("info", "personality", "device", "get"), transport.commands)
     }
 
     @Test fun `a failing main-screen read cannot reject a validated adapter`() = runTest {

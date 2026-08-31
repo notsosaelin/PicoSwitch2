@@ -107,7 +107,13 @@ fun AmiiboScreen(
     val selected = ui.library.firstOrNull { it.id == ui.selectedAmiiboId }
     val adapterMatchesSelected = selected != null &&
         AmiiboGallery.residentOn(selected, adapter.uid, adapterLoaded)
-    val adapterOnly = adapterLoaded && !adapterMatchesSelected
+    // The resident figure's own card now lives on the Adapter page, where the
+    // rest of the adapter's state is. It used to appear here, in the details
+    // column, whenever the highlighted Amiibo was not the resident one — so
+    // opening any other figure summoned a second card about a different one,
+    // and it claimed "No copy on this phone" purely because the resident tag
+    // was not the one being looked at. Whether the phone has a copy is a
+    // question about the LIBRARY, not about the selection.
 
     // Indexed by FIGURE id once, not scanned per item. amiiboCatalogEntries is
     // keyed by library item id, so looking a figure up by scanning its values
@@ -196,7 +202,6 @@ fun AmiiboScreen(
                                 .verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space3),
                         ) {
-                            if (adapterOnly) AdapterAmiiboCard(ui, viewModel)
                             AmiiboDetailPanel(
                                 inspected, ui, viewModel, onImportKeys,
                                 onClose = viewModel::closeAmiiboDetails,
@@ -204,13 +209,7 @@ fun AmiiboScreen(
                         }
                     }
                 } else {
-                    Column(Modifier.fillMaxSize()) {
-                        if (adapterOnly) {
-                            AdapterAmiiboCard(ui, viewModel)
-                            Spacer(Modifier.height(LayoutTokens.Space2))
-                        }
-                        AmiiboBrowser(ui, viewModel, cards, Modifier.weight(1f).fillMaxWidth())
-                    }
+                    AmiiboBrowser(ui, viewModel, cards, Modifier.fillMaxSize())
                 }
             }
         }
@@ -1370,21 +1369,46 @@ private fun AmiiboDetailPanel(
 }
 
 /**
- * The Amiibo currently on the adapter when it is not one of the phone's own.
+ * The Amiibo the adapter is holding.
  *
- * Deliberately distinct from the library detail: this data exists only on the
- * adapter, so its primary action is to bring a copy back to the phone.
+ * LIVES ON THE ADAPTER PAGE, with the rest of the adapter's state. It used to
+ * appear in the library's details column whenever the highlighted figure was
+ * not the resident one — so opening any other Amiibo summoned a second card
+ * describing a different one, which is a confusing answer to a question nobody
+ * asked.
+ *
+ * It also claimed "No copy on this phone" in that situation, which was simply
+ * untrue whenever the resident tag WAS in the library and merely not selected.
+ * Whether the phone holds a copy is a question about the library, so it is now
+ * answered by looking there.
  */
 @Composable
-private fun AdapterAmiiboCard(ui: CompanionUiState, viewModel: CompanionViewModel) {
+internal fun AdapterAmiiboCard(ui: CompanionUiState, viewModel: CompanionViewModel) {
     var clearOpen by rememberSaveable { mutableStateOf(false) }
     val status = ui.snapshot.amiibo
     val catalog = ui.adapterAmiiboCatalog
+    val resident = status.loaded || status.v3Loaded
+
+    // The actual answer: is this tag anywhere in the library?
+    val backup = remember(ui.library, status.uid, resident) {
+        AmiiboGallery.residentId(ui.library, status.uid, resident)
+            ?.let { id -> ui.library.firstOrNull { it.id == id } }
+    }
     val pro2 = ui.snapshot.personality.current == Personality.Pro2
     val enabled = ui.connection.connected && !ui.busy &&
         ui.snapshot.capabilities.amiibo != CapabilityState.Unsupported && pro2
 
-    SectionCard(container = MaterialTheme.colorScheme.tertiaryContainer) {
+    SectionCard(title = "Virtual Amiibo", icon = Icons.Default.Contactless) {
+        if (!resident) {
+            EmptyStateBlock(
+                Icons.Default.Contactless,
+                "No Amiibo loaded",
+                "Send one from your library, or scan a tag with this phone.",
+                Modifier.fillMaxWidth(),
+            )
+            return@SectionCard
+        }
+
         Row(verticalAlignment = Alignment.CenterVertically) {
             AmiiboArtwork(
                 catalog?.imageUrl.orEmpty(),
@@ -1393,16 +1417,20 @@ private fun AdapterAmiiboCard(ui: CompanionUiState, viewModel: CompanionViewMode
             )
             Spacer(Modifier.width(LayoutTokens.Space3))
             Column(Modifier.weight(1f)) {
-                Text("On the adapter", style = MaterialTheme.typography.labelMedium)
                 Text(
-                    catalogTitle(catalog, "Unknown figure"),
+                    catalogTitle(catalog, backup?.displayName ?: "Unknown figure"),
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    "No copy on this phone",
+                    when {
+                        status.dirty -> "Changed by the console; not saved to this phone"
+                        backup != null -> "Saved on this phone"
+                        else -> "Not in your library"
+                    },
                     style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             StatusChip(if (status.presented) "Presented" else "Loaded", tone = ChipTone.Positive)
@@ -1417,11 +1445,17 @@ private fun AdapterAmiiboCard(ui: CompanionUiState, viewModel: CompanionViewMode
         // and the primary action, and splitting the row evenly wrapped it onto
         // two lines inside the 360 dp detail pane.
         Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
-            Button(
-                onClick = viewModel::syncSelectedAmiibo,
-                enabled = enabled,
-                modifier = Modifier.weight(1.5f),
-            ) { Text("Save to phone", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            // Saving is offered when there is something to save: a tag the
+            // library does not have, or console changes that exist only here.
+            // Offering it for an untouched tag the phone already holds asked
+            // the user to copy a file over itself.
+            if (backup == null || status.dirty) {
+                Button(
+                    onClick = viewModel::syncSelectedAmiibo,
+                    enabled = enabled,
+                    modifier = Modifier.weight(1.5f),
+                ) { Text("Save to phone", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            }
             OutlinedButton(
                 onClick = { viewModel.setPresented(!status.presented) },
                 enabled = enabled,
@@ -1443,7 +1477,11 @@ private fun AdapterAmiiboCard(ui: CompanionUiState, viewModel: CompanionViewMode
     if (clearOpen) ConfirmDialog(
         onDismiss = { clearOpen = false },
         title = "Clear adapter Amiibo?",
-        body = "This Amiibo has no backup on this phone. Save it first if you may need it later.",
+        body = if (backup != null) {
+            "The adapter stops holding this tag. Your library keeps its copy."
+        } else {
+            "This Amiibo has no backup on this phone. Save it first if you may need it later."
+        },
         confirmLabel = "Clear adapter",
         destructive = true,
         confirmEnabled = enabled && !status.dirty,
@@ -1628,13 +1666,20 @@ internal fun AmiiboArtwork(imageUrl: String, contentDescription: String, modifie
         // grid tile and reads as a broken image when the same composable is
         // handed a full-height carousel card, so the placeholder takes a share
         // of the box and stops before it becomes a billboard.
-        BoxWithConstraints(measured, contentAlignment = Alignment.Center) {
-            val size = (minOf(maxWidth, maxHeight) * 0.4f).coerceIn(28.dp, 96.dp)
+        //
+        // A FRACTION OF THE BOX, NOT A MEASUREMENT OF IT. This used
+        // BoxWithConstraints, which is a SubcomposeLayout and therefore cannot
+        // answer an intrinsic measurement — so any parent that asked one of a
+        // tile containing artwork crashed outright. fillMaxSize with a fraction
+        // needs no subcomposition and says the same thing.
+        Box(measured, contentAlignment = Alignment.Center) {
             Icon(
                 Icons.Default.Contactless,
                 contentDescription,
                 tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(size),
+                modifier = Modifier
+                    .fillMaxSize(0.4f)
+                    .sizeIn(minWidth = 24.dp, minHeight = 24.dp, maxWidth = 96.dp, maxHeight = 96.dp),
             )
         }
     }
