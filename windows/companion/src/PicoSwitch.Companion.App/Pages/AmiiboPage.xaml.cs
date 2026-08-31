@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
 using PicoSwitch.Bridge.Core;
 using PicoSwitch.Companion.Services;
 using PicoSwitch.Companion.Services.Presentation;
@@ -14,18 +15,30 @@ using WinRT.Interop;
 namespace PicoSwitch.Companion.App.Pages;
 
 /// <summary>
-/// One row of the Amiibo library list.
+/// One tile in the Amiibo library grid.
 /// </summary>
 /// <remarks>
 /// Top-level and public because the XAML item template binds to it: the markup
 /// compiler cannot reach a nested type through <c>x:DataType</c>, and generates
 /// code that does not compile if asked to.
 ///
-/// Two fields because the row needs two lines. The detail carries the tag
-/// family, the figure id, and whether this is the backup the adapter is holding
-/// — that last one being what someone scanning the list is usually looking for.
+/// Carries a resolved <see cref="Image"/> rather than a URL, so the template has
+/// no converter and no binding that can fail silently on a bad address.
 /// </remarks>
-public sealed record AmiiboLibraryRow(string Id, string Title, string Detail);
+public sealed record AmiiboTile(
+    string Id,
+    string Title,
+    string Subtitle,
+    string Badge,
+    ImageSource? Image)
+{
+    public Visibility BadgeVisibility =>
+        Badge.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>Shown when there is no artwork, so the tile is never a gap.</summary>
+    public Visibility PlaceholderVisibility =>
+        Image is null ? Visibility.Visible : Visibility.Collapsed;
+}
 
 /// <summary>
 /// Amiibo: the user's tag backups, and the one the adapter is holding.
@@ -58,6 +71,15 @@ public sealed partial class AmiiboPage : Page
     private bool dialogOpen;
     private (int Completed, int Total)? transfer;
     private CancellationTokenSource? transferCancellation;
+    private bool amiiboRead;
+
+    private AmiiboGalleryFilters filters = new();
+
+    /// <summary>Resolved artwork, keyed by URL so a re-render costs nothing.</summary>
+    private readonly Dictionary<string, ImageSource> artwork = new(StringComparer.Ordinal);
+
+    /// <summary>The "no filter" row. Not a series anyone owns.</summary>
+    private const string AllFilter = "All";
 
     public AmiiboPage()
     {
@@ -85,6 +107,9 @@ public sealed partial class AmiiboPage : Page
 
             if (adapters.Connection.Value.Phase == ConnectionPhase.Connected)
             {
+                // Marked before awaiting, so the state-change handler does not
+                // fire a second read while this one is still in flight.
+                amiiboRead = true;
                 await SafeAsync(() => adapters.RefreshAmiiboAsync());
             }
         });
@@ -100,7 +125,31 @@ public sealed partial class AmiiboPage : Page
         transferCancellation?.Cancel();
     }
 
-    private void OnStateChanged() => AppServices.OnUiThread(Render);
+    /// <summary>
+    /// Repaint, and pick up an adapter that connected after the page opened.
+    /// </summary>
+    /// <remarks>
+    /// Without the second half the page only ever read the adapter in
+    /// <c>OnLoaded</c>, so arriving here first and connecting second left it
+    /// stuck reporting that nothing had been read — with a Reload button as the
+    /// only way out of a state the app could see for itself.
+    /// </remarks>
+    private void OnStateChanged() => AppServices.OnUiThread(() =>
+    {
+        Render();
+
+        var connected = adapters.Connection.Value.Phase == ConnectionPhase.Connected;
+        if (connected && !amiiboRead && transfer is null)
+        {
+            amiiboRead = true;
+            _ = GuardAsync(() => SafeAsync(() => adapters.RefreshAmiiboAsync()));
+        }
+        else if (!connected)
+        {
+            // So a reconnect reads again rather than trusting a stale snapshot.
+            amiiboRead = false;
+        }
+    });
 
     // ----------------------------------------------------------------- adapter
 
@@ -437,9 +486,59 @@ public sealed partial class AmiiboPage : Page
             return;
         }
 
-        selectedId = LibraryList.SelectedItem is AmiiboLibraryRow row ? row.Id : null;
+        selectedId = LibraryGrid.SelectedItem is AmiiboTile tile ? tile.Id : null;
         Render();
     }
+
+    /// <summary>
+    /// Wipe a backup's owner, nickname and game data, and re-sign it.
+    /// </summary>
+    /// <remarks>
+    /// The portal's Initialize, brought over. What it is FOR: a tag someone else
+    /// registered, or one whose save you want to start over, becomes a blank
+    /// figure again without losing the figure itself.
+    ///
+    /// Rewrites the stored backup in place, which is why the confirmation says
+    /// so plainly — there is no undo, and for a tag the physical figure has
+    /// moved past, this library copy may be the only record of that save. Export
+    /// first is the honest advice and the dialog gives it.
+    ///
+    /// The crypto refuses to re-sign an image whose HMAC does not verify, and
+    /// checks its own output really is empty before returning it, so a failure
+    /// here leaves the stored bytes untouched.
+    /// </remarks>
+    private async void OnInitialize(object sender, RoutedEventArgs e) =>
+        await GuardAsync(async () =>
+        {
+            if (View().Selected is not { } item)
+            {
+                return;
+            }
+
+            var retail = keys.Read();
+            if (retail is null)
+            {
+                Report("Import your amiibo keys before initializing a tag.",
+                       InfoBarSeverity.Warning);
+                return;
+            }
+
+            if (!await ConfirmAsync(
+                    $"Initialize '{item.DisplayName}'?",
+                    "The owner, nickname and any game data are erased and the backup is " +
+                    "re-signed in place. The figure itself is unchanged. This cannot be " +
+                    "undone — export a copy first if you might want this save back.",
+                    "Initialize"))
+            {
+                return;
+            }
+
+            var initialized = AmiiboCrypto.Initialize(library.Bytes(item.Id), retail);
+            library.UpdateFromAdapter(item.Id, initialized);
+
+            Report($"'{item.DisplayName}' is now a blank figure.", InfoBarSeverity.Success);
+            Render();
+        });
 
     // -------------------------------------------------------------------- keys
 
@@ -582,73 +681,189 @@ public sealed partial class AmiiboPage : Page
 
     private void RenderLibrary(AmiiboView view)
     {
-        var loadedId = view.LoadedFromLibrary?.Id;
-        var rows = view.Library
-            .OrderBy(item => item.DisplayName, StringComparer.CurrentCultureIgnoreCase)
-            .Select(item => new AmiiboLibraryRow(
-                item.Id,
-                item.DisplayName,
-                Describe(item, item.Id == loadedId, catalog.Find(item.FigureId))))
+        var cards = AmiiboGallery.Build(
+            view.Library, catalog.Find, view.LoadedFromLibrary?.Id, filters);
+
+        var tiles = cards
+            .Select(card => new AmiiboTile(
+                card.Id, card.Title, card.Subtitle, card.Badge, Artwork(card.ImageUrl)))
             .ToList();
 
         // Rebuilt wholesale, so the selection is restored by ID rather than by
-        // object identity: the rows are new instances every render, and matching
+        // object identity: the tiles are new instances every render, and matching
         // on the instance would silently drop the selection.
         suppressSelection = true;
-        LibraryList.ItemsSource = rows;
-        LibraryList.SelectedItem = rows.FirstOrDefault(row => row.Id == selectedId);
+        LibraryGrid.ItemsSource = tiles;
+        LibraryGrid.SelectedItem = tiles.FirstOrDefault(tile => tile.Id == selectedId);
         suppressSelection = false;
 
-        LibrarySummary.Text = rows.Count == 0
-            ? "No backups yet. Import a .bin dump, or a library backup exported from the phone app."
-            : $"{rows.Count} backup{(rows.Count == 1 ? "" : "s")}.";
+        RenderFilterOptions(view);
+
+        var total = view.Library.Count;
+        LibrarySummary.Text = total == 0
+            ? "No backups yet."
+            : cards.Count == total
+                ? $"{total} backup{(total == 1 ? "" : "s")}."
+                : $"{cards.Count} of {total} shown.";
+
+        // Distinguishes "you have nothing" from "your filter matched nothing",
+        // which need completely different actions from the user.
+        EmptyLibraryText.Visibility = tiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        EmptyLibraryText.Text = total == 0
+            ? "Import a .bin dump, a folder of them, or a library ZIP — including one " +
+              "exported from the phone app or another tool."
+            : "Nothing matches. Clear the search and filters to see the whole library.";
 
         var hasSelection = view.Selected is not null;
         RenameButton.IsEnabled = hasSelection;
         DeleteButton.IsEnabled = hasSelection;
         ExportButton.IsEnabled = hasSelection;
-        ExportArchiveButton.IsEnabled = rows.Count > 0;
+        // Initializing rewrites the tag, so it needs the keys as well.
+        InitializeButton.IsEnabled = hasSelection && keys.Exists;
+        ExportArchiveButton.IsEnabled = total > 0;
+        ClearFiltersButton.IsEnabled = filters.Any;
     }
 
     /// <summary>
-    /// The second line of a library row.
+    /// Populate the filter dropdowns from what the user actually owns.
     /// </summary>
     /// <remarks>
-    /// Leads with what the figure IS when the catalog knows — "Tom Nook · Animal
-    /// Crossing" reads as a collection, where the raw figure id reads as a
-    /// database. The id is still shown when there is nothing better, because a
-    /// correct-but-unhelpful answer beats an invented one.
+    /// A dropdown listing every amiibo series in existence when the library holds
+    /// three figures is a worse control than one listing those three's series.
+    /// Rebuilt on render, so a filter whose last match was just deleted does not
+    /// linger as a choice that shows nothing.
     /// </remarks>
-    private static string Describe(
-        AmiiboLibraryItem item, bool onAdapter, AmiiboCatalogEntry? catalog)
+    private void RenderFilterOptions(AmiiboView view)
     {
-        var parts = new List<string>();
+        var options = AmiiboGallery.Options(view.Library, catalog.Find);
+        suppressSelection = true;
+        Fill(GameSeriesBox, options.GameSeries, filters.GameSeries);
+        Fill(AmiiboSeriesBox, options.AmiiboSeries, filters.AmiiboSeries);
+        Fill(TypeBox, options.Types, filters.Type);
+        suppressSelection = false;
 
-        var known = catalog?.Name is { Length: > 0 } name
-            ? name
-            : catalog?.Character is { Length: > 0 } character
-                ? character
-                : null;
-
-        parts.Add(known ?? item.FigureId);
-        if (catalog?.GameSeries is { Length: > 0 } series)
+        static void Fill(ComboBox box, ValueList<string> values, string selected)
         {
-            parts.Add(series);
+            var items = new List<string> { AllFilter };
+            items.AddRange(values);
+
+            // Only rebuilt when the choices actually changed, so a render does
+            // not fight a dropdown the user has open.
+            if (box.ItemsSource is not List<string> existing || !existing.SequenceEqual(items))
+            {
+                box.ItemsSource = items;
+            }
+
+            box.SelectedItem = selected.Length == 0 ? AllFilter : selected;
+        }
+    }
+
+    /// <summary>
+    /// Resolve a catalog image URL, once per address.
+    /// </summary>
+    /// <remarks>
+    /// Cached so a re-render — which happens on every adapter status change —
+    /// does not re-request forty images. <see cref="BitmapImage"/> fetches
+    /// asynchronously and stays blank on failure, which is right for decoration:
+    /// the tile falls back to its placeholder glyph and nothing else is affected.
+    ///
+    /// This is the one thing on the page that contacts a host per FIGURE rather
+    /// than once for the whole catalog, so it does reveal which figures are in
+    /// the library to whoever serves the artwork. The Android companion has
+    /// always done this and the artwork is most of the point of the catalog; it
+    /// is called out here so the trade is visible rather than accidental.
+    /// </remarks>
+    private ImageSource? Artwork(string url)
+    {
+        if (url.Length == 0)
+        {
+            return null;
         }
 
-        parts.Add(item.TagType == AmiiboTagType.FigureV3 ? "Figure v3" : "NTAG215");
-
-        if (onAdapter)
+        if (artwork.TryGetValue(url, out var cached))
         {
-            parts.Add("on the adapter");
+            return cached;
         }
 
-        if (item.DirtyFromAdapter)
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
         {
-            parts.Add("changed on the adapter");
+            return null;
         }
 
-        return string.Join(" · ", parts);
+        var image = new BitmapImage(uri) { DecodePixelWidth = 160 };
+        artwork[url] = image;
+        return image;
+    }
+
+    // Search, sort and filter handlers. Each one only records the change and
+    // re-renders: all the matching and ordering rules live in AmiiboGallery,
+    // where they are testable without a page.
+
+    private void OnSearchChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args)
+    {
+        if (args.Reason != AutoSuggestionBoxTextChangeReason.UserInput)
+        {
+            return;
+        }
+
+        filters = filters with { Search = sender.Text ?? "" };
+        Render();
+    }
+
+    private void OnSortChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (suppressSelection || SortBox.SelectedIndex < 0)
+        {
+            return;
+        }
+
+        filters = filters with { Sort = (AmiiboSort)SortBox.SelectedIndex };
+        Render();
+    }
+
+    private void OnToggleSortDirection(object sender, RoutedEventArgs e)
+    {
+        filters = filters with { Descending = !filters.Descending };
+        Render();
+    }
+
+    private void OnFilterChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (suppressSelection || sender is not ComboBox box)
+        {
+            return;
+        }
+
+        // "All" is a sentinel row rather than a real value, so it maps back to
+        // the empty string the filter model uses for "unset".
+        var value = box.SelectedItem as string ?? AllFilter;
+        var chosen = value == AllFilter ? "" : value;
+
+        filters = box.Name switch
+        {
+            nameof(GameSeriesBox) => filters with { GameSeries = chosen },
+            nameof(AmiiboSeriesBox) => filters with { AmiiboSeries = chosen },
+            _ => filters with { Type = chosen },
+        };
+
+        Render();
+    }
+
+    private void OnClearFilters(object sender, RoutedEventArgs e)
+    {
+        // Sort survives: it is a preference, not a narrowing, and resetting it
+        // would be an unasked-for change.
+        filters = new AmiiboGalleryFilters
+        {
+            Sort = filters.Sort,
+            Descending = filters.Descending,
+        };
+
+        suppressSelection = true;
+        SearchBox.Text = "";
+        suppressSelection = false;
+        Render();
     }
 
     private void RenderDetails(AmiiboView view)
