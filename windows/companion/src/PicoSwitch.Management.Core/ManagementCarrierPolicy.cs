@@ -43,10 +43,20 @@ public static class ManagementTurnaroundPolicy
 /// THE FIRMWARE CAN DROP A COMMAND WITHOUT ANSWERING IT, by design. Its wireless
 /// bridge holds one command and one response at a time, and a complete command
 /// arriving while either slot is occupied is discarded outright — the line
-/// buffer is reset and BUSY returned, with nothing sent back. A client learns of
-/// it only by timing out, and both clients respond to a timeout by tearing the
-/// session down, so a single dropped chunk ends a transfer and disconnects the
-/// adapter.
+/// buffer is reset and BUSY returned. Both clients respond to the resulting
+/// failure by tearing the session down, so a single dropped chunk ends a
+/// transfer and disconnects the adapter.
+/// </para>
+/// <para>
+/// CORRECTED 2026-08-31: the drop is NOT silent, and the correction matters. The
+/// ATT write returns <c>INSUFFICIENT_RESOURCES</c>, both clients write with
+/// response, and the failure therefore arrives as a GATT protocol error rather
+/// than a timeout. So a reply timeout is evidence AGAINST this mechanism, not
+/// for it — which is what excluded it as the cause of the resident-upload stall
+/// in docs/experiments/kbm-resident-upload-notify-stall-2026-08-31.md, whose
+/// real cause was a notification that was never scheduled. The retry allowlist
+/// here still earns its place: what it covers is a command whose write succeeded
+/// and whose reply went missing for any reason at all.
 /// </para>
 /// <para>
 /// REPEATABLE MEANS THE SECOND SEND CANNOT CHANGE THE OUTCOME OF THE FIRST, even
@@ -73,6 +83,18 @@ public static class ManagementRetryPolicy
         "amiibo chunk ",
         "amiibo read ",
         "amiibo status",
+        // A staged KB/M draft is assembled in RAM and both of these are ABSOLUTE
+        // writes into it: `bind` sets the entry keyed by its source, `mouse` sets
+        // one named field to one value. Sending either twice leaves the draft
+        // byte-identical, and neither touches stored or realized state — only
+        // `commit` does. So the amiibo-chunk argument applies verbatim.
+        //
+        // `draft begin`, `draft commit` and `draft abort` are excluded and must
+        // stay excluded: begin RESETS the staging buffer, and a repeat of a
+        // commit whose reply was lost would find no draft and report failure for
+        // a transfer that in fact succeeded.
+        "kbm draft bind ",
+        "kbm draft mouse ",
     ];
 
     public static bool IsRepeatable(string command)

@@ -69,6 +69,35 @@ public sealed class ManagementCarrierPolicyTests
         Assert.True(ManagementRetryPolicy.IsRepeatable("amiibo status"));
     }
 
+    [Fact]
+    public void StagedDraftWritesAreRepeatableBecauseTheyAreAbsoluteSets()
+    {
+        // `bind` sets the entry keyed by its source; `mouse` sets one named field
+        // to one value. Both act on a draft held in RAM, so a repeat leaves it
+        // byte-identical and neither touches stored or realized state.
+        //
+        // This matters because a resident upload is dozens of commands, and the
+        // adapter's one-slot bridge can drop any one of them silently. Ending the
+        // whole transfer -- and the session -- over a single dropped bind is what
+        // this allowlist entry prevents.
+        Assert.True(ManagementRetryPolicy.IsRepeatable("kbm draft bind key:1D a"));
+        Assert.True(ManagementRetryPolicy.IsRepeatable("kbm draft bind mouse:1 rstick_right"));
+        Assert.True(ManagementRetryPolicy.IsRepeatable("kbm draft mouse sensitivityx 512"));
+        Assert.True(ManagementRetryPolicy.IsRepeatable("kbm draft mouse inverty 1"));
+    }
+
+    [Fact]
+    public void TheDraftTransactionBoundariesAreNeverRepeated()
+    {
+        // `begin` RESETS the staging buffer, so repeating one that was in fact
+        // received would discard the binds already sent. `commit` and `abort`
+        // consume it: a repeat of a commit whose reply was lost finds no draft and
+        // would report failure for a transfer that succeeded.
+        Assert.False(ManagementRetryPolicy.IsRepeatable("kbm draft begin kb pos:1 0 Work"));
+        Assert.False(ManagementRetryPolicy.IsRepeatable("kbm draft commit"));
+        Assert.False(ManagementRetryPolicy.IsRepeatable("kbm draft abort"));
+    }
+
     /// <summary>
     /// The dangerous ones. A timeout does NOT mean the command was not executed,
     /// so anything whose second execution would differ must end the session
