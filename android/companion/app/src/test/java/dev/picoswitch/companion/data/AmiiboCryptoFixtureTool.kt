@@ -215,11 +215,20 @@ class AmiiboCryptoFixtureTool {
             .map { it["register"]!!.jsonObject["hasAppData"]!!.jsonPrimitive.boolean }
             .toSet()
 
+        // Tag type CROSSED with register state, not each independently. Having a
+        // set-up tag and having a v3 tag does not mean the set-up v3 decode is
+        // covered, and it is the combination an implementation gets wrong: the
+        // two sizes place the encrypted blocks 0x40 bytes apart.
+        val combinations = vectors
+            .map {
+                it["identity"]!!.jsonObject["tagType"]!!.jsonPrimitive.content to
+                    it["register"]!!.jsonObject["setUp"]!!.jsonPrimitive.boolean
+            }
+            .toSet()
+
         val missing = buildList {
             if ("Ntag215" !in tagTypes) {
-                add(
-                    "no 540- or 572-byte NTAG215 image: that whole tag path is unverified",
-                )
+                add("no 540- or 572-byte NTAG215 image: that whole tag path is unverified")
             }
             if ("FigureV3" !in tagTypes) {
                 add("no 2048-byte Figure v3 image: that whole tag path is unverified")
@@ -233,6 +242,17 @@ class AmiiboCryptoFixtureTool {
             if (true !in appDataStates) {
                 add("no tag carrying game app data: title and app id decoding are unverified")
             }
+            for (type in tagTypes.sorted()) {
+                if (true !in combinations.filter { it.first == type }.map { it.second }) {
+                    add("no SET-UP $type tag: its register decode is unverified")
+                }
+                if (false !in combinations.filter { it.first == type }.map { it.second }) {
+                    add(
+                        "no UN-SET-UP $type tag: the state a freshly imported one is in " +
+                            "is unverified",
+                    )
+                }
+            }
         }
 
         return buildJsonObject {
@@ -241,6 +261,14 @@ class AmiiboCryptoFixtureTool {
             put("setUpTag", true in setUpStates)
             put("unsetTag", false in setUpStates)
             put("appDataTag", true in appDataStates)
+            put(
+                "tagTypeAndRegisterState",
+                JsonArray(
+                    combinations.sortedWith(compareBy({ it.first }, { it.second })).map {
+                        JsonPrimitive("${it.first}/${if (it.second) "set-up" else "un-set-up"}")
+                    },
+                ),
+            )
             put(
                 "gap",
                 if (missing.isEmpty()) {
