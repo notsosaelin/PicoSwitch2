@@ -17,7 +17,34 @@ public enum AmiiboSort
     Release,
 }
 
-/// <summary>What the user has narrowed the library to.</summary>
+/// <summary>How the library is presented.</summary>
+/// <remarks>
+/// Three genuinely different jobs, not three sizes of the same list. Grid is for
+/// recognising a figure by its artwork, Carousel is for unhurried browsing of a
+/// few at a time, and List is for scanning and managing hundreds. All three read
+/// the SAME query result — see <see cref="AmiiboGallery.Build"/> — so switching
+/// between them is a change of presentation and nothing else.
+/// </remarks>
+public enum AmiiboViewMode
+{
+    Grid,
+    Carousel,
+    List,
+}
+
+/// <summary>
+/// What the user has narrowed the library to, and how they are looking at it.
+/// </summary>
+/// <remarks>
+/// DELIBERATELY CARRIES NO SELECTION. Which item is selected cannot influence
+/// which items are shown or their order, and keeping selection out of this
+/// record is what makes that true by construction rather than by discipline:
+/// there is no way to write a projection that depends on it.
+///
+/// That separation is the fix for a real defect. The page used to rebuild the
+/// whole browser from its selection handler, which replaced the GridView's
+/// ItemsSource and threw away the scroll position on every click.
+/// </remarks>
 public sealed record AmiiboGalleryFilters
 {
     public string Search { get; init; } = "";
@@ -32,9 +59,28 @@ public sealed record AmiiboGalleryFilters
 
     public bool Descending { get; init; }
 
+    /// <summary>Presentation only. Never affects which items are produced.</summary>
+    public AmiiboViewMode View { get; init; } = AmiiboViewMode.Grid;
+
+    /// <summary>True when anything is NARROWING the library.</summary>
+    /// <remarks>
+    /// Sort and view are excluded on purpose: they are preferences, not
+    /// filters, and "Clear filters" must not silently reset them.
+    /// </remarks>
     public bool Any =>
         Search.Length > 0 || GameSeries.Length > 0 ||
         AmiiboSeries.Length > 0 || Type.Length > 0;
+
+    /// <summary>
+    /// Everything that decides WHICH cards are produced, and in what order.
+    /// </summary>
+    /// <remarks>
+    /// Used to answer "does the browser actually need rebuilding?". Excludes
+    /// <see cref="View"/>, because changing view must not re-run the query, and
+    /// excludes selection, which is not here at all.
+    /// </remarks>
+    public string QueryIdentity =>
+        $"{Search}{GameSeries}{AmiiboSeries}{Type}{Sort}{Descending}";
 }
 
 /// <summary>One tile in the library grid.</summary>
@@ -56,6 +102,16 @@ public sealed record AmiiboCard
     public bool OnAdapter { get; init; }
 
     public bool Changed { get; init; }
+
+    // Columns for the detailed list. Carried on the same card rather than in a
+    // second projection, so all three views provably read one result set.
+    public string GameSeries { get; init; } = "";
+
+    public string AmiiboSeries { get; init; } = "";
+
+    public string ReleaseDate { get; init; } = "";
+
+    public string FigureId { get; init; } = "";
 
     public bool HasArtwork => ImageUrl.Length > 0;
 
@@ -176,6 +232,10 @@ public static class AmiiboGallery
                 OwnName = own,
                 OnAdapter = onAdapter,
                 Changed = item.DirtyFromAdapter,
+                GameSeries = entry?.GameSeries ?? "",
+                AmiiboSeries = entry?.AmiiboSeries ?? "",
+                ReleaseDate = entry?.ReleaseDate ?? "",
+                FigureId = item.FigureId,
             },
             entry,
             item);

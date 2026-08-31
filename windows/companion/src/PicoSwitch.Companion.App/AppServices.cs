@@ -1,5 +1,6 @@
 using Microsoft.UI.Dispatching;
 using PicoSwitch.Companion.Services;
+using PicoSwitch.Companion.Services.Presentation;
 using PicoSwitch.Companion.Windows.Storage;
 using PicoSwitch.Companion.Services.Diagnostics;
 
@@ -134,6 +135,37 @@ public static class AppServices
             }
         }
     }
+
+    /// <summary>
+    /// Which library view the user prefers. Persisted.
+    /// </summary>
+    /// <remarks>
+    /// A stable preference, not a per-visit choice: re-picking Grid or List on
+    /// every launch is friction. Kept in the same document store as everything
+    /// else, and a damaged value simply falls back to Grid.
+    /// </remarks>
+    public static AmiiboViewMode AmiiboViewMode
+    {
+        get => Enum.TryParse<AmiiboViewMode>(Documents.Read("amiibo-view"), out var mode)
+            ? mode
+            : AmiiboViewMode.Grid;
+        set => _ = Documents.Write("amiibo-view", value.ToString());
+    }
+
+    /// <summary>
+    /// Whether catalog artwork may be fetched.
+    /// </summary>
+    /// <remarks>
+    /// The seam for a future "load online artwork" setting. Artwork is the one
+    /// thing that contacts a host per FIGURE rather than once for the whole
+    /// catalog, so it reveals which figures are in the library to whoever serves
+    /// the images. Routing every artwork request through one flag means that
+    /// setting becomes a one-line change rather than a page rewrite.
+    ///
+    /// Defaults on, matching the Android companion's long-standing behaviour.
+    /// </remarks>
+    public static bool OnlineArtworkEnabled =>
+        Documents.Read("amiibo-artwork") != "off";
 
     public static AdapterConnectionService Adapters
     {
