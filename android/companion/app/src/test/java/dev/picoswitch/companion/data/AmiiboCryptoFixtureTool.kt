@@ -3,6 +3,7 @@ package dev.picoswitch.companion.data
 import dev.picoswitch.companion.model.AmiiboCryptoState
 import dev.picoswitch.companion.model.AmiiboDetails
 import dev.picoswitch.companion.model.AmiiboIdentity
+import dev.picoswitch.companion.model.AmiiboLibraryItem
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
@@ -98,6 +99,57 @@ class AmiiboCryptoFixtureTool {
                     "initialize=${initialized.map { "ok" }.getOrElse { it.message?.take(60) }}",
             )
         }
+    }
+
+    /**
+     * Regenerate `tools/fixtures/amiibo/library-archive-v3.zip`.
+     *
+     * A library archive written by THIS implementation, checked in so the C# and
+     * portal readers have a real one to open. The exchange format is the only
+     * way a user moves backups between the companions, and "we both implemented
+     * the same spec" is not evidence that they interoperate — a fixture one side
+     * writes and the other reads is.
+     *
+     * Needs no keys: the archive carries encrypted images and plaintext identity,
+     * and nothing in writing one decrypts anything.
+     */
+    @Test fun `regenerate the library archive fixture`() {
+        assumeTrue(
+            "needs -Damiibo.regenerate=true",
+            System.getProperty("amiibo.regenerate") == "true",
+        )
+
+        // One of each tag size, so a reader that mishandles either is caught.
+        val sources = listOf(
+            "ntag215-animal-crossing-tom-nook.bin" to "Tom Nook",
+            "v3-kirby-tank-star-factory.bin" to "Kirby & Tank Star",
+        )
+
+        val items = sources.mapIndexed { index, (fileName, displayName) ->
+            val bytes = File(repoRoot, "dumps/amiibo/$fileName").readBytes()
+            val identity = AmiiboCrypto.identity(bytes)
+            AmiiboLibraryArchive.ExportItem(
+                item = AmiiboLibraryItem(
+                    id = "fixture-$index",
+                    displayName = displayName,
+                    fileName = fileName,
+                    size = bytes.size,
+                    crc32 = AmiiboFiles.crc32(bytes),
+                    uid = identity.uid,
+                    figureId = identity.figureId,
+                    importedAtMillis = 0L,
+                ),
+                bytes = bytes,
+                // The second entry is the loaded one, so a reader that ignores
+                // the marker or assumes the first entry fails.
+                loaded = index == 1,
+            )
+        }
+
+        val output = File(repoRoot, ARCHIVE_FIXTURE)
+        output.parentFile.mkdirs()
+        output.writeBytes(AmiiboLibraryArchive.write(items))
+        println("wrote ${output.relativeTo(repoRoot).invariantSeparatorsPath}")
     }
 
     /** Regenerate `tools/fixtures/amiibo/crypto-vectors.json`. */
@@ -356,6 +408,7 @@ class AmiiboCryptoFixtureTool {
 
     private companion object {
         const val FIXTURE = "tools/fixtures/amiibo/crypto-vectors.json"
+        const val ARCHIVE_FIXTURE = "tools/fixtures/amiibo/library-archive-v3.zip"
     }
 }
 
