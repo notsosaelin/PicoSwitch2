@@ -17,6 +17,30 @@
         <Style x:Key="PageButtonStyle" TargetType="Button">
             <Setter Property="MinWidth" Value="96" />
             <Setter Property="Height" Value="32" />
+            <Setter Property="CornerRadius" Value="4" />
+        </Style>
+
+        <!-- The inspector's two action rows must read as one control family.
+             A Button and a ToggleButton do NOT share a corner radius by
+             default, so Rename/Export/More looked square while
+             Overview/Tag/Adapter looked like pills sitting directly beneath
+             them. One height, one width, one radius for both. -->
+        <Style x:Key="InspectorButtonStyle" TargetType="Button">
+            <Setter Property="MinWidth" Value="88" />
+            <Setter Property="Width" Value="88" />
+            <Setter Property="Height" Value="32" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+        </Style>
+
+        <Style x:Key="InspectorTabStyle" TargetType="ToggleButton">
+            <Setter Property="MinWidth" Value="88" />
+            <Setter Property="Width" Value="88" />
+            <Setter Property="Height" Value="32" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
         </Style>
 
         <!-- Grid tile. Artwork leads, then identity, then one small badge.
@@ -155,12 +179,44 @@
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
                         VerticalAlignment="Center">
+                <!-- Only in the narrow layout, where the inspector is an
+                     overlay and needs a way in. -->
+                <Button x:Name="DetailsButton" Style="{StaticResource PageButtonStyle}"
+                        MinWidth="80" Content="Details" Visibility="Collapsed"
+                        Click="OnShowDetails" />
                 <Button x:Name="ImportButton" Style="{StaticResource PageButtonStyle}"
                         Content="Import…" Click="OnImport" />
                 <Button x:Name="ImportFolderButton" Style="{StaticResource PageButtonStyle}"
                         Content="Import folder…" Click="OnImportFolder" />
                 <Button x:Name="ExportArchiveButton" Style="{StaticResource PageButtonStyle}"
                         Content="Export all" Click="OnExportArchive" />
+
+                <!-- Amiibo keys are APPLICATION configuration, not a property of
+                     whichever figure happens to be selected. They used to sit at
+                     the bottom of the inspector, which meant scrolling past one
+                     Amiibo's details to manage global encryption keys. -->
+                <Button x:Name="KeysButton" Style="{StaticResource PageButtonStyle}"
+                        MinWidth="72" Content="Keys">
+                    <Button.Flyout>
+                        <Flyout>
+                            <StackPanel Spacing="8" Width="300">
+                                <TextBlock Text="Amiibo keys"
+                                           Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                <TextBlock x:Name="KeyStatus" TextWrapping="Wrap"
+                                           Style="{StaticResource CaptionTextBlockStyle}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button x:Name="ImportKeysButton"
+                                            Style="{StaticResource PageButtonStyle}"
+                                            Content="Import keys" Click="OnImportKeys" />
+                                    <Button x:Name="ForgetKeysButton"
+                                            Style="{StaticResource PageButtonStyle}"
+                                            Content="Forget" Click="OnForgetKeys" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Flyout>
+                    </Button.Flyout>
+                </Button>
             </StackPanel>
         </Grid>
 
@@ -233,11 +289,14 @@
             </Grid>
         </StackPanel>
 
-        <!-- Browse on the left, inspect on the right. -->
-        <Grid Grid.Row="2" ColumnSpacing="12">
+        <!-- Browse on the left, inspect on the right — when there is room for
+             both. Below that the inspector overlays the browser instead of
+             squeezing it off the screen; see OnContentSizeChanged. -->
+        <Grid Grid.Row="2" x:Name="ContentArea" ColumnSpacing="12"
+              SizeChanged="OnContentSizeChanged">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" MinWidth="360" />
-                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" MinWidth="280" />
+                <ColumnDefinition x:Name="InspectorColumn" Width="Auto" />
             </Grid.ColumnDefinitions>
 
             <Border Style="{StaticResource CardStyle}" Padding="8">
@@ -288,134 +347,183 @@
                 </Grid>
             </Border>
 
-            <!-- Inspection. Contextual to the selection, and where the
-                 selected-item actions live. -->
-            <Border Grid.Column="1" Style="{StaticResource CardStyle}" Width="340">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel Spacing="12">
-                        <StackPanel x:Name="SelectionEmpty" Spacing="6">
-                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}"
-                                       Text="Nothing selected" />
-                            <TextBlock TextWrapping="Wrap"
-                                       Style="{StaticResource CaptionTextBlockStyle}"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                       Text="Pick an Amiibo to see its details and what you can do with it." />
-                        </StackPanel>
+            <!--
+                THE INSPECTOR. An inspector, not a settings page in a sidebar.
 
-                        <StackPanel x:Name="SelectionContent" Spacing="12" Visibility="Collapsed">
-                            <Grid ColumnSpacing="12">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <Grid Width="88" Height="88">
-                                    <Image x:Name="SelectedArtwork" Stretch="Uniform" />
-                                    <FontIcon x:Name="SelectedArtworkPlaceholder" Glyph="&#xE8EC;"
-                                              FontSize="34" Opacity="0.3" />
-                                </Grid>
-                                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
-                                    <TextBlock x:Name="SelectedTitle" TextWrapping="Wrap" MaxLines="2"
-                                               Style="{StaticResource SubtitleTextBlockStyle}" />
-                                    <TextBlock x:Name="SelectedSubtitle" TextWrapping="Wrap" MaxLines="2"
-                                               Style="{StaticResource CaptionTextBlockStyle}"
-                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                </StackPanel>
-                            </Grid>
+                Fixed regions on top — hero, primary action, secondary actions —
+                then ONE small scrolling area holding whichever category is
+                selected. Nothing important is ever below a long scroll, because
+                only one category's rows are present at a time.
+            -->
+            <Border x:Name="Inspector" Grid.Column="1" Style="{StaticResource CardStyle}"
+                    Width="420" Padding="14" HorizontalAlignment="Right">
+                <Grid RowSpacing="10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
 
-                            <!-- Primary adapter action, on its own. -->
-                            <Button x:Name="SendButton" Style="{StaticResource AccentButtonStyle}"
-                                    HorizontalAlignment="Stretch" Height="34"
-                                    Content="Send to adapter" Click="OnUpload" />
-                            <TextBlock x:Name="SendReason" TextWrapping="Wrap" Visibility="Collapsed"
-                                       Style="{StaticResource CaptionTextBlockStyle}"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <!-- Only in the narrow layout, where this panel covers the
+                         browser and therefore needs a way out. -->
+                    <Button x:Name="CloseInspectorButton" Grid.Row="0"
+                            HorizontalAlignment="Right" Visibility="Collapsed"
+                            Content="&#xE711;" FontFamily="Segoe MDL2 Assets"
+                            Height="28" MinWidth="28" Padding="0"
+                            ToolTipService.ToolTip="Close details"
+                            Click="OnCloseInspector" />
 
-                            <!-- Ordinary local actions. -->
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <Button x:Name="RenameButton" Style="{StaticResource PageButtonStyle}"
-                                        Content="Rename" Click="OnRename" />
-                                <Button x:Name="ExportButton" Style="{StaticResource PageButtonStyle}"
-                                        Content="Export" Click="OnExportOne" />
-                            </StackPanel>
-
-                            <StackPanel x:Name="DetailHost" Spacing="10" />
-
-                            <!-- Destructive, separated and last, so neither can
-                                 be hit while reaching for Rename. -->
-                            <StackPanel Spacing="6">
-                                <TextBlock Text="Danger zone"
-                                           Style="{StaticResource CaptionTextBlockStyle}"
-                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <Button x:Name="InitializeButton" Style="{StaticResource PageButtonStyle}"
-                                            Content="Initialize" Click="OnInitialize" />
-                                    <Button x:Name="DeleteButton" Style="{StaticResource PageButtonStyle}"
-                                            Content="Delete" Click="OnDelete" />
-                                </StackPanel>
-                            </StackPanel>
-                        </StackPanel>
-
-                        <!-- The adapter's own slot, independent of the selection. -->
-                        <StackPanel Spacing="8">
-                            <TextBlock Text="Adapter" Style="{StaticResource BodyStrongTextBlockStyle}" />
-                            <TextBlock x:Name="SlotHeadline" Style="{StaticResource BodyTextBlockStyle}"
-                                       Text="Not read yet" />
-                            <TextBlock x:Name="SlotDetail" TextWrapping="Wrap"
-                                       Style="{StaticResource CaptionTextBlockStyle}"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-
-                            <muxc:ProgressBar x:Name="TransferProgress" Visibility="Collapsed"
-                                              Minimum="0" Maximum="100" />
-                            <TextBlock x:Name="TransferLabel" Visibility="Collapsed"
-                                       Style="{StaticResource CaptionTextBlockStyle}"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <Button x:Name="PresentButton" Style="{StaticResource PageButtonStyle}"
-                                        Content="Present" Click="OnPresent" />
-                                <Button x:Name="EjectButton" Style="{StaticResource PageButtonStyle}"
-                                        Content="Eject" Click="OnEject" />
-                            </StackPanel>
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <Button x:Name="SyncButton" Style="{StaticResource PageButtonStyle}"
-                                        Content="Sync to library" Click="OnSync" />
-                                <Button x:Name="ClearButton" Style="{StaticResource PageButtonStyle}"
-                                        Content="Clear" Click="OnClear" />
-                                <Button x:Name="CancelButton" Style="{StaticResource PageButtonStyle}"
-                                        Content="Cancel" Click="OnCancelTransfer" Visibility="Collapsed" />
-                            </StackPanel>
-
-                            <StackPanel x:Name="CopySection" Spacing="6" Visibility="Collapsed">
-                                <TextBlock x:Name="CopyLabel"
-                                           Style="{StaticResource CaptionTextBlockStyle}"
-                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <Button x:Name="UseOriginalButton" Style="{StaticResource PageButtonStyle}"
-                                            Content="Use original" Click="OnUseOriginal" />
-                                    <Button x:Name="UseConsoleCopyButton" Style="{StaticResource PageButtonStyle}"
-                                            Content="Console copy" Click="OnUseConsoleCopy" />
-                                </StackPanel>
-                            </StackPanel>
-
-                            <Button x:Name="RefreshButton" Style="{StaticResource PageButtonStyle}"
-                                    HorizontalAlignment="Stretch"
-                                    Content="Reload adapter state" Click="OnRefresh" />
-                        </StackPanel>
-
-                        <StackPanel Spacing="6">
-                            <TextBlock Text="Amiibo keys" Style="{StaticResource BodyStrongTextBlockStyle}" />
-                            <TextBlock x:Name="KeyStatus" TextWrapping="Wrap"
-                                       Style="{StaticResource CaptionTextBlockStyle}"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <Button x:Name="ImportKeysButton" Style="{StaticResource PageButtonStyle}"
-                                        Content="Import keys" Click="OnImportKeys" />
-                                <Button x:Name="ForgetKeysButton" Style="{StaticResource PageButtonStyle}"
-                                        Content="Forget" Click="OnForgetKeys" />
-                            </StackPanel>
-                        </StackPanel>
+                    <StackPanel x:Name="SelectionEmpty" Grid.Row="1" Spacing="6">
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}"
+                                   Text="Nothing selected" />
+                        <TextBlock TextWrapping="Wrap"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Text="Pick an Amiibo to see its details and what you can do with it." />
                     </StackPanel>
-                </ScrollViewer>
+
+                    <!-- COMPACT HERO. Horizontal, 64px art, three tight lines.
+                         The old one burned ~120px of height before any metadata
+                         began. -->
+                    <Grid Grid.Row="1" x:Name="HeroPanel" ColumnSpacing="12" Visibility="Collapsed">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid Width="64" Height="64" VerticalAlignment="Top">
+                            <Image x:Name="SelectedArtwork" Stretch="Uniform" />
+                            <FontIcon x:Name="SelectedArtworkPlaceholder" Glyph="&#xE8EC;"
+                                      FontSize="26" Opacity="0.3" />
+                        </Grid>
+                        <StackPanel Grid.Column="1" Spacing="1" VerticalAlignment="Center">
+                            <TextBlock x:Name="SelectedTitle" TextWrapping="Wrap" MaxLines="2"
+                                       TextTrimming="CharacterEllipsis"
+                                       Style="{StaticResource BodyStrongTextBlockStyle}" />
+                            <TextBlock x:Name="SelectedSubtitle" MaxLines="1"
+                                       TextTrimming="CharacterEllipsis"
+                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="SelectedAdapterState" MaxLines="1"
+                                       TextTrimming="CharacterEllipsis"
+                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- Primary action, immediately under the hero. -->
+                    <StackPanel Grid.Row="2" x:Name="PrimaryActionPanel" Spacing="4"
+                                Visibility="Collapsed">
+                        <Button x:Name="SendButton" Style="{StaticResource AccentButtonStyle}"
+                                HorizontalAlignment="Stretch" Height="32"
+                                Content="Send to adapter" Click="OnUpload" />
+                        <TextBlock x:Name="SendReason" TextWrapping="Wrap" Visibility="Collapsed"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+
+                    <!-- Ordinary actions inline; destructive ones behind More,
+                         so they are one click away but never dominate. -->
+                    <StackPanel Grid.Row="3" x:Name="SecondaryActionPanel"
+                                Orientation="Horizontal" Spacing="8" Visibility="Collapsed">
+                        <Button x:Name="RenameButton" Style="{StaticResource InspectorButtonStyle}"
+                                Content="Rename" Click="OnRename" />
+                        <Button x:Name="ExportButton" Style="{StaticResource InspectorButtonStyle}"
+                                Content="Export" Click="OnExportOne" />
+                        <Button x:Name="MoreButton" Style="{StaticResource InspectorButtonStyle}"
+                                Content="More">
+                            <Button.Flyout>
+                                <MenuFlyout>
+                                    <MenuFlyoutItem x:Name="InitializeItem" Text="Initialize…"
+                                                    Click="OnInitialize" />
+                                    <MenuFlyoutSeparator />
+                                    <MenuFlyoutItem x:Name="DeleteItem" Text="Delete…"
+                                                    Click="OnDelete" />
+                                </MenuFlyout>
+                            </Button.Flyout>
+                        </Button>
+                    </StackPanel>
+
+                    <!-- CATEGORIES, not one giant scroll. -->
+                    <!-- Separated from the action row above: these switch what
+                         you are LOOKING at, where those act on the Amiibo. Two
+                         adjacent rows of identical buttons read as one control
+                         group, which is exactly what they are not. -->
+                    <StackPanel Grid.Row="4" x:Name="CategoryBar" Orientation="Horizontal"
+                                Spacing="8" Margin="0,10,0,2" Visibility="Collapsed">
+                        <ToggleButton x:Name="OverviewTab" Content="Overview"
+                                      Style="{StaticResource InspectorTabStyle}"
+                                      Click="OnCategoryChanged" />
+                        <ToggleButton x:Name="TagTab" Content="Tag"
+                                      Style="{StaticResource InspectorTabStyle}"
+                                      Click="OnCategoryChanged" />
+                        <ToggleButton x:Name="AdapterTab" Content="Adapter"
+                                      Style="{StaticResource InspectorTabStyle}"
+                                      Click="OnCategoryChanged" />
+                    </StackPanel>
+
+                    <ScrollViewer Grid.Row="5" VerticalScrollBarVisibility="Auto">
+                        <StackPanel Spacing="10">
+                            <!-- Overview and Tag are dense label/value grids. -->
+                            <StackPanel x:Name="DetailHost" Spacing="2" />
+
+                            <!-- The adapter category. Its deeper controls only
+                                 appear when they can actually be used; five dead
+                                 buttons teach nobody anything. -->
+                            <StackPanel x:Name="AdapterPanel" Spacing="8" Visibility="Collapsed">
+                                <TextBlock x:Name="SlotHeadline"
+                                           Style="{StaticResource BodyStrongTextBlockStyle}"
+                                           Text="Not read yet" />
+                                <TextBlock x:Name="SlotDetail" TextWrapping="Wrap"
+                                           Style="{StaticResource CaptionTextBlockStyle}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                                <muxc:ProgressBar x:Name="TransferProgress" Visibility="Collapsed"
+                                                  Minimum="0" Maximum="100" />
+                                <TextBlock x:Name="TransferLabel" Visibility="Collapsed"
+                                           Style="{StaticResource CaptionTextBlockStyle}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                                <StackPanel x:Name="AdapterControls" Spacing="8"
+                                            Visibility="Collapsed">
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button x:Name="PresentButton" Style="{StaticResource PageButtonStyle}"
+                                                MinWidth="84" Content="Present" Click="OnPresent" />
+                                        <Button x:Name="EjectButton" Style="{StaticResource PageButtonStyle}"
+                                                MinWidth="84" Content="Eject" Click="OnEject" />
+                                        <Button x:Name="CancelButton" Style="{StaticResource PageButtonStyle}"
+                                                MinWidth="84" Content="Cancel"
+                                                Click="OnCancelTransfer" Visibility="Collapsed" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button x:Name="SyncButton" Style="{StaticResource PageButtonStyle}"
+                                                MinWidth="120" Content="Sync to library" Click="OnSync" />
+                                        <Button x:Name="ClearButton" Style="{StaticResource PageButtonStyle}"
+                                                MinWidth="84" Content="Clear" Click="OnClear" />
+                                    </StackPanel>
+
+                                    <StackPanel x:Name="CopySection" Spacing="6" Visibility="Collapsed">
+                                        <TextBlock x:Name="CopyLabel"
+                                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <Button x:Name="UseOriginalButton" Style="{StaticResource PageButtonStyle}"
+                                                    MinWidth="110" Content="Use original" Click="OnUseOriginal" />
+                                            <Button x:Name="UseConsoleCopyButton" Style="{StaticResource PageButtonStyle}"
+                                                    MinWidth="110" Content="Console copy" Click="OnUseConsoleCopy" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </StackPanel>
+
+                                <Button x:Name="RefreshButton" Style="{StaticResource PageButtonStyle}"
+                                        HorizontalAlignment="Stretch"
+                                        Content="Reload adapter state" Click="OnRefresh" />
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
             </Border>
         </Grid>
     </Grid>

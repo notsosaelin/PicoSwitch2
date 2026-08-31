@@ -106,6 +106,32 @@ public sealed partial class AmiiboPage : Page
     /// <summary>The "no filter" row. Not a series anyone owns.</summary>
     private const string AllFilter = "All";
 
+    /// <summary>Which inspector category is showing.</summary>
+    /// <remarks>
+    /// Page state rather than query state: it changes what is DESCRIBED, never
+    /// what the library contains, so it is deliberately not part of the filters
+    /// and cannot trigger a browser rebuild.
+    /// </remarks>
+    private enum InspectorCategory
+    {
+        Overview,
+        Tag,
+        Adapter,
+    }
+
+    private InspectorCategory category = InspectorCategory.Overview;
+
+    /// <summary>
+    /// Below this content width the inspector overlays instead of sitting beside
+    /// the browser. 420 of inspector plus a browser worth looking at needs about
+    /// this much before the two stop competing.
+    /// </summary>
+    private const double SideBySideMinimumWidth = 860;
+
+    private bool sideBySide = true;
+    private bool initialisedLayout;
+    private bool inspectorOpen;
+
     public AmiiboPage()
     {
         InitializeComponent();
@@ -215,7 +241,7 @@ public sealed partial class AmiiboPage : Page
 
     private void RenderAdapter(AmiiboView view)
     {
-        SlotHeadline.Text = view.Available ? view.SlotHeadline : "Adapter not available";
+        SlotHeadline.Text = view.Available ? view.SlotHeadline : "Not connected";
         SlotDetail.Text = view.UnavailableReason ?? view.SlotDetail;
 
         DirtyBar.IsOpen = view.NeedsSync;
@@ -229,6 +255,14 @@ public sealed partial class AmiiboPage : Page
 
         var busy = transfer is not null;
         RefreshButton.IsEnabled = view.Connected && !busy;
+
+        // THE DEEPER CONTROLS APPEAR ONLY WHEN THEY MEAN SOMETHING. With nothing
+        // connected the Adapter category says so in two lines and offers Reload;
+        // it does not present five dead buttons. Visible-but-disabled is the
+        // right treatment for a control the user is reaching for, not for every
+        // command that happens to exist.
+        AdapterControls.Visibility = view.Available ? Visibility.Visible : Visibility.Collapsed;
+
         PresentButton.IsEnabled = view.CanPresent && !busy;
         EjectButton.IsEnabled = view.CanEject && !busy;
         SyncButton.IsEnabled = view.CanSync && !busy;
@@ -240,6 +274,82 @@ public sealed partial class AmiiboPage : Page
         UseConsoleCopyButton.IsEnabled = view.CanChooseCopy && !view.Status.UsingSave2 && !busy;
 
         RenderTransfer();
+    }
+
+    /// <summary>
+    /// Choose between the side-by-side and overlay layouts.
+    /// </summary>
+    /// <remarks>
+    /// A FIXED-WIDTH INSPECTOR DOES NOT FIT EVERY WINDOW. At 200% scaling on a
+    /// 1080p display this page gets roughly 640 logical points of content width,
+    /// and 420 of inspector plus the browser's minimum simply pushed the
+    /// inspector — and the last filter with it — off the right-hand edge.
+    ///
+    /// Wide enough for both: they sit side by side and the inspector is always
+    /// present. Too narrow: the browser keeps the full width and the inspector
+    /// overlays it on demand, which is the responsive treatment that keeps the
+    /// library primary instead of squeezing it.
+    /// </remarks>
+    private void OnContentSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        var wide = e.NewSize.Width >= SideBySideMinimumWidth;
+        if (wide == sideBySide && initialisedLayout)
+        {
+            return;
+        }
+
+        initialisedLayout = true;
+        sideBySide = wide;
+        ApplyLayout();
+    }
+
+    private void ApplyLayout()
+    {
+        if (sideBySide)
+        {
+            Grid.SetColumn(Inspector, 1);
+            Grid.SetColumnSpan(Inspector, 1);
+            InspectorColumn.Width = GridLength.Auto;
+            Inspector.Visibility = Visibility.Visible;
+            CloseInspectorButton.Visibility = Visibility.Collapsed;
+            DetailsButton.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        // Overlay: the inspector spans both columns and hugs the right edge, so
+        // the browser underneath keeps its full width rather than being squeezed
+        // to nothing.
+        Grid.SetColumn(Inspector, 0);
+        Grid.SetColumnSpan(Inspector, 2);
+        InspectorColumn.Width = new GridLength(0);
+        Inspector.Visibility = inspectorOpen ? Visibility.Visible : Visibility.Collapsed;
+        CloseInspectorButton.Visibility = Visibility.Visible;
+        DetailsButton.Visibility = Visibility.Visible;
+    }
+
+    private void OnCloseInspector(object sender, RoutedEventArgs e)
+    {
+        inspectorOpen = false;
+        ApplyLayout();
+    }
+
+    private void OnShowDetails(object sender, RoutedEventArgs e)
+    {
+        inspectorOpen = true;
+        ApplyLayout();
+    }
+
+    /// <summary>Switch inspector category. Touches no query state.</summary>
+    private void OnCategoryChanged(object sender, RoutedEventArgs e)
+    {
+        category = sender switch
+        {
+            var button when ReferenceEquals(button, TagTab) => InspectorCategory.Tag,
+            var button when ReferenceEquals(button, AdapterTab) => InspectorCategory.Adapter,
+            _ => InspectorCategory.Overview,
+        };
+
+        RenderSelection(View());
     }
 
     private void RenderTransfer()
@@ -277,8 +387,16 @@ public sealed partial class AmiiboPage : Page
         var cards = AmiiboGallery.Build(
             view.Library, catalog.Find, view.LoadedFromLibrary?.Id, filters);
 
+        // Identity, badge AND the catalog-derived fields the tiles display.
+        //
+        // Id and badge alone were not enough, and the failure was visible: the
+        // catalog arrives asynchronously, so the first projection has no names
+        // and no artwork. When it landed the sequence was unchanged, the rebuild
+        // was skipped, and every tile kept its placeholder while the inspector —
+        // which reads the catalog directly — showed the real image.
         var signature = string.Join(
-            "|", cards.Select(card => card.Id + ":" + card.Badge));
+            "|", cards.Select(card =>
+                $"{card.Id}:{card.Badge}:{card.Title}:{card.ImageUrl}"));
 
         if (signature != browserSignature)
         {
@@ -419,20 +537,36 @@ public sealed partial class AmiiboPage : Page
     private void RenderSelection(AmiiboView view)
     {
         var item = view.Selected;
-        SelectionEmpty.Visibility = item is null ? Visibility.Visible : Visibility.Collapsed;
-        SelectionContent.Visibility = item is null ? Visibility.Collapsed : Visibility.Visible;
+        var chosen = item is not null;
 
-        if (item is null)
+        SelectionEmpty.Visibility = chosen ? Visibility.Collapsed : Visibility.Visible;
+        HeroPanel.Visibility = chosen ? Visibility.Visible : Visibility.Collapsed;
+        PrimaryActionPanel.Visibility = chosen ? Visibility.Visible : Visibility.Collapsed;
+        SecondaryActionPanel.Visibility = chosen ? Visibility.Visible : Visibility.Collapsed;
+        CategoryBar.Visibility = chosen ? Visibility.Visible : Visibility.Collapsed;
+
+        // The Adapter category is about the adapter, not the selection, so it
+        // stays reachable with nothing selected.
+        OverviewTab.IsChecked = category == InspectorCategory.Overview;
+        TagTab.IsChecked = category == InspectorCategory.Tag;
+        AdapterTab.IsChecked = category == InspectorCategory.Adapter;
+        AdapterPanel.Visibility =
+            category == InspectorCategory.Adapter ? Visibility.Visible : Visibility.Collapsed;
+
+        if (!chosen)
         {
             DetailHost.Children.Clear();
             return;
         }
 
-        var entry = catalog.Find(item.FigureId);
+        var entry = catalog.Find(item!.FigureId);
         var card = tiles.FirstOrDefault(tile => tile.Id == item.Id);
 
         SelectedTitle.Text = card?.Title ?? item.DisplayName;
         SelectedSubtitle.Text = card?.Subtitle ?? item.FigureId;
+        SelectedAdapterState.Text = view.LoadedFromLibrary?.Id == item.Id
+            ? view.NeedsSync ? "On the adapter · changed by the console" : "On the adapter"
+            : "Not on the adapter";
 
         var image = Artwork(entry?.ImageUrl ?? "");
         SelectedArtwork.Source = image;
@@ -442,9 +576,9 @@ public sealed partial class AmiiboPage : Page
         var busy = transfer is not null;
         SendButton.IsEnabled = view.CanUpload && !busy;
 
-        // Visible but disabled, with the reason: a control that vanishes when
-        // the adapter is away cannot tell the user that connecting brings it
-        // back. Local actions are never gated on a connection at all.
+        // The primary action stays visible-but-disabled with its reason, because
+        // it is the control the user is reaching for. That is different from the
+        // deeper adapter commands, which are hidden until they mean something.
         SendReason.Visibility = view.CanUpload || view.UnavailableReason is null
             ? Visibility.Collapsed
             : Visibility.Visible;
@@ -452,18 +586,34 @@ public sealed partial class AmiiboPage : Page
             ? "Sync the adapter's changed Amiibo first."
             : view.UnavailableReason ?? "";
 
+        // Local actions are never gated on a connection.
         RenameButton.IsEnabled = true;
         ExportButton.IsEnabled = true;
-        DeleteButton.IsEnabled = true;
-        InitializeButton.IsEnabled = keys.Exists;
+        DeleteItem.IsEnabled = true;
+        InitializeItem.IsEnabled = keys.Exists;
 
         RenderDetailGroups(item, entry, view);
     }
 
+    /// <summary>
+    /// The rows for the selected category, as a dense aligned grid.
+    /// </summary>
+    /// <remarks>
+    /// ONE CATEGORY AT A TIME. Rendering all of them into a single column is
+    /// what turned this pane into a scrolling form; Overview and Tag now hold
+    /// only their own rows, and the Adapter category is a separate panel.
+    ///
+    /// Group headings are dropped when the category IS the group — repeating
+    /// "Identity" under an "Overview" tab that contains nothing else is noise.
+    /// </remarks>
     private void RenderDetailGroups(
         AmiiboLibraryItem item, AmiiboCatalogEntry? entry, AmiiboView view)
     {
         DetailHost.Children.Clear();
+        if (category == InspectorCategory.Adapter)
+        {
+            return;
+        }
 
         var groups = AmiiboInspection.Build(
             item,
@@ -472,15 +622,25 @@ public sealed partial class AmiiboPage : Page
             onAdapter: view.LoadedFromLibrary?.Id == item.Id,
             adapterChanged: view.NeedsSync && view.LoadedFromLibrary?.Id == item.Id);
 
-        foreach (var group in groups)
+        var wanted = category == InspectorCategory.Overview
+            ? new[] { "Identity" }
+            : ["Tag", "Registration", "Game data"];
+
+        var shown = groups.Where(group => wanted.Contains(group.Title)).ToList();
+        var headings = shown.Count > 1;
+
+        foreach (var group in shown)
         {
-            DetailHost.Children.Add(new TextBlock
+            if (headings)
             {
-                Text = group.Title,
-                Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
-                Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
-                Margin = new Thickness(0, 4, 0, 2),
-            });
+                DetailHost.Children.Add(new TextBlock
+                {
+                    Text = group.Title,
+                    Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
+                    Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+                    Margin = new Thickness(0, 8, 0, 2),
+                });
+            }
 
             foreach (var row in group.Rows)
             {
@@ -497,15 +657,18 @@ public sealed partial class AmiiboPage : Page
     /// </remarks>
     private static Grid DetailRow(AmiiboDetailRow row)
     {
-        var grid = new Grid { ColumnSpacing = 10 };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(104) });
+        // Two columns, a fixed label width, and tight vertical padding. The
+        // previous version gave every field the height of a settings row, which
+        // is most of why six facts filled a screen.
+        var grid = new Grid { ColumnSpacing = 12, Padding = new Thickness(0, 3, 0, 3) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         var label = new TextBlock
         {
             Text = row.Label,
             Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
-            Foreground = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"],
+            Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
             VerticalAlignment = VerticalAlignment.Top,
         };
         Grid.SetColumn(label, 0);
@@ -619,6 +782,14 @@ public sealed partial class AmiiboPage : Page
 
         selectedId = host.SelectedItem is AmiiboTile tile ? tile.Id : null;
         RestoreSelection();
+
+        // In the overlay layout, picking something is the request to see it.
+        if (!sideBySide && selectedId is not null && !inspectorOpen)
+        {
+            inspectorOpen = true;
+            ApplyLayout();
+        }
+
         RenderAfterSelection();
     }
 
