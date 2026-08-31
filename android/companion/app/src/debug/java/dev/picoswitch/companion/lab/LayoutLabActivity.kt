@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import dev.picoswitch.companion.data.AmiiboInteractionState
 import dev.picoswitch.companion.model.*
 import dev.picoswitch.companion.ui.AppOverlay
 import dev.picoswitch.companion.ui.AppSection
@@ -63,7 +64,9 @@ class LayoutLabActivity : ComponentActivity() {
                 kbm = if (empty) emptyKbm() else sampleKbm(),
                 library = if (empty) emptyList() else sampleLibrary(),
                 amiiboCatalogEntries = if (empty) emptyMap() else sampleCatalog(),
-                selectedAmiiboId = if (empty) null else sampleLibrary().first().id,
+                amiiboInteraction = AmiiboInteractionState(
+                    focusedId = if (empty) null else sampleLibrary().first().id,
+                ),
                 selectedAmiiboCatalog = if (empty) null else sampleCatalog().values.first(),
                 amiiboKeysLoaded = true,
                 nfcScan = NfcScanStatus(NfcScanPhase.Idle),

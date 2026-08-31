@@ -3,13 +3,17 @@
 package dev.picoswitch.companion.ui
 
 import android.graphics.BitmapFactory
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.lazy.LazyColumn
@@ -30,6 +34,12 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.ImageBitmap
@@ -43,6 +53,8 @@ import dev.picoswitch.companion.data.AmiiboCard
 import dev.picoswitch.companion.data.AmiiboCategory
 import dev.picoswitch.companion.data.AmiiboGallery
 import dev.picoswitch.companion.data.AmiiboInspection
+import dev.picoswitch.companion.data.AmiiboInteraction
+import dev.picoswitch.companion.data.AmiiboInteractionState
 import dev.picoswitch.companion.data.AmiiboGalleryFilters
 import dev.picoswitch.companion.data.AmiiboGalleryOptions
 import dev.picoswitch.companion.data.AmiiboSort
@@ -76,7 +88,21 @@ fun AmiiboScreen(
     val filters = ui.amiiboFilters
     val query = filters.search
     var searchOpen by rememberSaveable { mutableStateOf(false) }
-    var detailOpen by rememberSaveable { mutableStateOf(false) }
+
+    // WHETHER details are open is domain state, shared with Windows and pinned
+    // by tests. Only WHERE they appear is a layout question, and this is the
+    // answer to it — hoisted out of BoxWithConstraints so the sheet, which is
+    // rendered outside it, can ask.
+    var twoColumnDetail by remember { mutableStateOf(false) }
+    val paneOpen = ui.amiiboInteraction.inspectorOpen
+    val inspected = ui.library.firstOrNull { it.id == ui.amiiboInteraction.inspectedId }
+
+    // Back cancels a selection, then closes the details surface, and only then
+    // leaves the screen. Enabled only when there is something to dismiss, so it
+    // is never swallowed on an ordinary browsing screen.
+    BackHandler(enabled = ui.amiiboInteraction.selecting || paneOpen) {
+        viewModel.backFromAmiibo()
+    }
 
     val adapter = ui.snapshot.amiibo
     val adapterLoaded = adapter.loaded || adapter.v3Loaded
@@ -116,9 +142,9 @@ fun AmiiboScreen(
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val twoColumn = twoColumnLayout(maxWidth)
 
-        // Unfolding or rotating into a two-pane width while the compact sheet is
-        // up would leave the same figure described twice, once over the other.
-        LaunchedEffect(twoColumn) { if (twoColumn) detailOpen = false }
+        // Unfolding or rotating between the two treatments must not leave the
+        // same figure described twice, once over the other.
+        LaunchedEffect(twoColumn) { twoColumnDetail = twoColumn }
 
         Column(Modifier.fillMaxSize()) {
             AmiiboToolbar(
@@ -151,21 +177,32 @@ fun AmiiboScreen(
                 Spacer(Modifier.height(LayoutTokens.Space2))
             }
 
+            // The bulk bar, present only while a selection exists. That is what
+            // makes selection mode unmistakable instead of something the user
+            // has to infer from tick marks.
+            AmiiboSelectionBar(ui, viewModel, cards)
+
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                if (twoColumn) {
+                // THE BROWSER OWNS THE CANVAS UNTIL SOMEONE ASKS TO INSPECT.
+                // The pane used to be permanent at this width, reserving space
+                // to describe whatever happened to be highlighted; now width
+                // decides only WHERE details appear, never whether they do.
+                if (twoColumn && paneOpen) {
                     Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space3)) {
-                        // No sheet here: the inspector beside the grid is
-                        // already showing this figure, and stacking a modal copy
-                        // of it over the top would hide the browser it exists to
-                        // sit next to.
-                        AmiiboBrowser(ui, viewModel, cards, Modifier.weight(1f).fillMaxHeight()) {}
+                        // No sheet here: the pane beside the grid is already
+                        // showing this figure, and stacking a modal copy of it
+                        // over the top would hide the browser it sits next to.
+                        AmiiboBrowser(ui, viewModel, cards, Modifier.weight(1f).fillMaxHeight())
                         Column(
                             Modifier.width(LayoutTokens.DetailWidth).fillMaxHeight()
                                 .verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space3),
                         ) {
                             if (adapterOnly) AdapterAmiiboCard(ui, viewModel)
-                            AmiiboDetailPanel(selected, ui, viewModel, onImportKeys)
+                            AmiiboDetailPanel(
+                                inspected, ui, viewModel, onImportKeys,
+                                onClose = viewModel::closeAmiiboDetails,
+                            )
                         }
                     }
                 } else {
@@ -174,25 +211,25 @@ fun AmiiboScreen(
                             AdapterAmiiboCard(ui, viewModel)
                             Spacer(Modifier.height(LayoutTokens.Space2))
                         }
-                        AmiiboBrowser(ui, viewModel, cards, Modifier.weight(1f).fillMaxWidth()) {
-                            detailOpen = true
-                        }
+                        AmiiboBrowser(ui, viewModel, cards, Modifier.weight(1f).fillMaxWidth())
                     }
                 }
             }
         }
     }
 
-    // Compact layouts get the detail as a sheet so the grid stays the page.
-    if (detailOpen && selected != null) {
-        ModalBottomSheet(onDismissRequest = { detailOpen = false }) {
+    // Compact layouts get the details as a sheet so the browser stays the page.
+    if (!twoColumnDetail && inspected != null) {
+        ModalBottomSheet(onDismissRequest = viewModel::closeAmiiboDetails) {
             Column(
                 Modifier.fillMaxWidth().padding(horizontal = LayoutTokens.Space4)
                     .padding(bottom = LayoutTokens.Space5)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space3),
             ) {
-                AmiiboDetailPanel(selected, ui, viewModel, onImportKeys, framed = false)
+                // No close button: a sheet is dismissed by swiping it away or by
+                // Back, both of which are native and both of which are wired.
+                AmiiboDetailPanel(inspected, ui, viewModel, onImportKeys, framed = false)
             }
         }
     }
@@ -550,7 +587,6 @@ private fun AmiiboBrowser(
     viewModel: CompanionViewModel,
     cards: List<AmiiboCard>,
     modifier: Modifier,
-    onOpenDetail: () -> Unit,
 ) {
     if (cards.isEmpty()) {
         EmptyStateBlock(
@@ -566,24 +602,232 @@ private fun AmiiboBrowser(
         return
     }
 
-    val onTap: (AmiiboCard) -> Unit = { card ->
-        if (card.id == ui.selectedAmiiboId) onOpenDetail() else viewModel.selectAmiibo(card.id)
-    }
+    // GESTURES TRANSLATE TO DOMAIN ACTIONS AND DO NOTHING ELSE. Single = browse,
+    // double = inspect, long press = select. The rules those three invoke are
+    // shared with the Windows companion and tested without composing anything.
+    val gestures = AmiiboGestures(
+        onTap = { card -> viewModel.activateAmiibo(card.id) },
+        // Refused by the domain while selecting, so a double tap during a bulk
+        // selection toggles once and opens nothing.
+        onDoubleTap = { card -> viewModel.openAmiiboDetails(card.id) },
+        onLongPress = { card -> viewModel.startAmiiboSelection(card.id) },
+        // Toggle rather than enter-selection, because the accessible action has
+        // to be able to say "Deselect" and mean it. Toggling also starts a
+        // selection from nothing, so one action covers both directions.
+        onToggle = { card -> viewModel.toggleAmiiboSelection(card.id) },
+    )
 
     when (ui.amiiboFilters.view) {
-        AmiiboViewMode.Grid -> AmiiboGridView(cards, ui.selectedAmiiboId, modifier, onTap)
-        AmiiboViewMode.Carousel -> AmiiboCarouselView(cards, ui.selectedAmiiboId, modifier, onTap)
-        AmiiboViewMode.List -> AmiiboListView(cards, ui.selectedAmiiboId, modifier, onTap)
+        AmiiboViewMode.Grid -> AmiiboGridView(cards, ui.amiiboInteraction, modifier, gestures)
+        AmiiboViewMode.Carousel -> AmiiboCarouselView(cards, ui.amiiboInteraction, modifier, gestures)
+        AmiiboViewMode.List -> AmiiboListView(cards, ui.amiiboInteraction, modifier, gestures)
     }
+}
+
+/**
+ * What is selected, and the two things that can be done to it.
+ *
+ * Deliberately two commands. Multi-selection existing is not a reason to invent
+ * a dozen batch operations, and a crowded bar makes the destructive pair harder
+ * to aim at rather than easier.
+ */
+@Composable
+private fun AmiiboSelectionBar(
+    ui: CompanionUiState,
+    viewModel: CompanionViewModel,
+    cards: List<AmiiboCard>,
+) {
+    val interaction = ui.amiiboInteraction
+    if (!interaction.selecting) return
+
+    var initializeOpen by rememberSaveable { mutableStateOf(false) }
+    var deleteOpen by rememberSaveable { mutableStateOf(false) }
+
+    val count = interaction.selectedCount
+    // Selection deliberately survives a filter change, so the set can hold
+    // entries the current query hides. Saying so here — not only in the
+    // confirmation — is what stops somebody destroying more than they can see.
+    val hidden = remember(interaction.selection, cards) {
+        interaction.hiddenSelectedCount(cards.map { it.id })
+    }
+
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = MaterialTheme.shapes.small,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier.padding(horizontal = LayoutTokens.Space3, vertical = LayoutTokens.Space2),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2),
+        ) {
+            IconButton(onClick = viewModel::clearAmiiboSelection) {
+                Icon(Icons.Default.Close, "Exit selection mode")
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "$count selected",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                if (hidden > 0) {
+                    Text(
+                        "$hidden hidden by filters",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            TextButton(
+                onClick = { initializeOpen = true },
+                enabled = !ui.busy,
+            ) { Text("Initialize") }
+            TextButton(
+                onClick = { deleteOpen = true },
+                enabled = !ui.busy,
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
+            ) { Text("Delete") }
+        }
+    }
+    Spacer(Modifier.height(LayoutTokens.Space2))
+
+    val hiddenNote = if (hidden == 0) "" else
+        "$hidden of these are hidden by the current search or filters. "
+
+    // ONE confirmation, not one per entry: twelve dialogs is a prompt users
+    // learn to dismiss without reading, which is worse than one they stop at.
+    if (initializeOpen) ConfirmDialog(
+        onDismiss = { initializeOpen = false },
+        title = "Initialize $count Amiibo?",
+        body = hiddenNote +
+            "This erases the owner, nickname, registration and game data from the selected " +
+            "backups on this phone and re-signs them. The figures themselves are unchanged, " +
+            "and so is the adapter. This cannot be undone.",
+        confirmLabel = "Initialize $count",
+        destructive = true,
+        onConfirm = { initializeOpen = false; viewModel.initializeSelectedAmiibos() },
+    )
+
+    if (deleteOpen) ConfirmDialog(
+        onDismiss = { deleteOpen = false },
+        title = "Delete $count Amiibo from your library?",
+        body = hiddenNote +
+            "This removes these backups from this phone only. It cannot be undone, and the " +
+            "Amiibo currently on the adapter is not affected.",
+        confirmLabel = "Delete $count",
+        destructive = true,
+        onConfirm = { deleteOpen = false; viewModel.deleteSelectedAmiibos() },
+    )
+}
+
+/**
+ * The three gestures every view raises, whatever it looks like.
+ *
+ * Bundled so adding a fourth does not mean changing the signature of every view
+ * and every call site, and so all three views demonstrably raise the same set.
+ */
+private data class AmiiboGestures(
+    val onTap: (AmiiboCard) -> Unit,
+    val onDoubleTap: (AmiiboCard) -> Unit,
+    val onLongPress: (AmiiboCard) -> Unit,
+    val onToggle: (AmiiboCard) -> Unit,
+)
+
+/**
+ * Membership of the bulk set, drawn on the item.
+ *
+ * Present on EVERY item while selecting, not only the ticked ones: an empty
+ * circle is what tells a user that tapping now toggles rather than browses. It
+ * disappears entirely in normal mode, where it would be a control with nothing
+ * to control.
+ *
+ * Carries no semantics of its own — the row already announces its selected
+ * state — and no click handler, because the whole item is the target and a small
+ * second target is only something to miss.
+ */
+@Composable
+private fun AmiiboSelectionTick(
+    interaction: AmiiboInteractionState,
+    card: AmiiboCard,
+    modifier: Modifier = Modifier,
+) {
+    if (!interaction.selecting) return
+
+    val ticked = interaction.isSelected(card.id)
+    Box(
+        modifier
+            .padding(LayoutTokens.Space1)
+            .size(22.dp)
+            .clip(CircleShape)
+            .background(
+                if (ticked) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+            )
+            .border(
+                1.dp,
+                if (ticked) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                CircleShape,
+            )
+            .clearAndSetSemantics { },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (ticked) {
+            Icon(
+                Icons.Default.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(14.dp),
+            )
+        }
+    }
+}
+
+/**
+ * Tap, double tap and long press, plus the accessible equivalents.
+ *
+ * LONG PRESS AND DOUBLE TAP MUST NOT BE THE ONLY ROUTES. Neither exists for a
+ * screen reader, a keyboard or a switch device, so both transitions are also
+ * exposed as named custom actions that assistive technology can invoke directly.
+ */
+@Composable
+private fun Modifier.amiiboGestures(
+    card: AmiiboCard,
+    interaction: AmiiboInteractionState,
+    gestures: AmiiboGestures,
+): Modifier {
+    val ticked = interaction.isSelected(card.id)
+    return this
+        .combinedClickable(
+            onClick = { gestures.onTap(card) },
+            onDoubleClick = { gestures.onDoubleTap(card) },
+            onLongClick = { gestures.onLongPress(card) },
+        )
+        .semantics {
+            // Announces "selected" for the bulk set rather than for the
+            // highlight: membership is what a destructive command acts on, and
+            // it is the fact a user cannot otherwise discover.
+            if (interaction.selecting) selected = ticked
+            customActions = listOf(
+                CustomAccessibilityAction(
+                    if (interaction.selecting && ticked) "Deselect" else "Select",
+                ) { gestures.onToggle(card); true },
+                CustomAccessibilityAction("Open details") {
+                    gestures.onDoubleTap(card); true
+                },
+            )
+        }
 }
 
 /** Adaptive card grid: artwork first, for recognising a figure at a glance. */
 @Composable
 private fun AmiiboGridView(
     cards: List<AmiiboCard>,
-    selectedId: String?,
+    interaction: AmiiboInteractionState,
     modifier: Modifier,
-    onTap: (AmiiboCard) -> Unit,
+    gestures: AmiiboGestures,
 ) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(LayoutTokens.AmiiboCellMinWidth),
@@ -593,7 +837,7 @@ private fun AmiiboGridView(
         contentPadding = PaddingValues(bottom = LayoutTokens.Space5),
     ) {
         items(cards, key = { it.id }) { card ->
-            AmiiboCardTile(card, card.id == selectedId, Modifier.fillMaxWidth()) { onTap(card) }
+            AmiiboCardTile(card, interaction, Modifier.fillMaxWidth(), gestures = gestures)
         }
     }
 }
@@ -609,17 +853,21 @@ private fun AmiiboGridView(
 @Composable
 private fun AmiiboCarouselView(
     cards: List<AmiiboCard>,
-    selectedId: String?,
+    interaction: AmiiboInteractionState,
     modifier: Modifier,
-    onTap: (AmiiboCard) -> Unit,
+    gestures: AmiiboGestures,
 ) {
     val state = rememberLazyListState()
+    val focusedId = interaction.focusedId
 
-    // Follow the selection when it changes from elsewhere — switching into this
-    // view, or a sync selecting the synced tag — so the carousel is never
-    // showing one Amiibo while the details pane describes another.
-    LaunchedEffect(selectedId, cards) {
-        val index = cards.indexOfFirst { it.id == selectedId }
+    // Follow the FOCUS when it changes from elsewhere — switching into this
+    // view, or a sync focusing the synced tag — so the carousel is never showing
+    // one Amiibo while the details surface describes another.
+    //
+    // Deliberately not keyed on the bulk set: ticking items while browsing must
+    // not drag the carousel back to whichever one was focused first.
+    LaunchedEffect(focusedId, cards) {
+        val index = cards.indexOfFirst { it.id == focusedId }
         if (index >= 0) state.animateScrollToItem(index)
     }
 
@@ -633,7 +881,7 @@ private fun AmiiboCarouselView(
         items(cards, key = { it.id }) { card ->
             AmiiboCardTile(
                 card,
-                card.id == selectedId,
+                interaction,
                 // A fraction of the viewport, not a fixed width: the carousel
                 // shows ONE figure at a time with the next one peeking, which
                 // is the only thing it does that the grid does not. A fixed
@@ -644,7 +892,8 @@ private fun AmiiboCarouselView(
                     .widthIn(max = LayoutTokens.AmiiboCarouselMaxWidth)
                     .fillMaxHeight(),
                 large = true,
-            ) { onTap(card) }
+                gestures = gestures,
+            )
         }
     }
 }
@@ -659,27 +908,28 @@ private fun AmiiboCarouselView(
 @Composable
 private fun AmiiboListView(
     cards: List<AmiiboCard>,
-    selectedId: String?,
+    interaction: AmiiboInteractionState,
     modifier: Modifier,
-    onTap: (AmiiboCard) -> Unit,
+    gestures: AmiiboGestures,
 ) {
     LazyColumn(
         modifier = modifier,
         contentPadding = PaddingValues(bottom = LayoutTokens.Space5),
     ) {
         items(cards, key = { it.id }) { card ->
-            val selected = card.id == selectedId
+            val focused = card.id == interaction.focusedId
             Row(
                 Modifier.fillMaxWidth()
                     .background(
-                        if (selected) MaterialTheme.colorScheme.primaryContainer
+                        if (focused) MaterialTheme.colorScheme.primaryContainer
                         else MaterialTheme.colorScheme.surface,
                     )
-                    .clickable { onTap(card) }
+                    .amiiboGestures(card, interaction, gestures)
                     .padding(horizontal = LayoutTokens.Space2, vertical = LayoutTokens.Space2),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space3),
             ) {
+                AmiiboSelectionTick(interaction, card)
                 AmiiboArtwork(card.imageUrl, card.title, Modifier.size(36.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
@@ -714,18 +964,23 @@ private fun AmiiboListView(
 @Composable
 private fun AmiiboCardTile(
     card: AmiiboCard,
-    selected: Boolean,
+    interaction: AmiiboInteractionState,
     modifier: Modifier,
     large: Boolean = false,
-    onClick: () -> Unit,
+    gestures: AmiiboGestures,
 ) {
+    // FOCUS FILLS THE CARD; MEMBERSHIP IS A MARK ON IT. Two different ideas, so
+    // two different presentations — a user has to be able to tell "where I am"
+    // from "what I have ticked" without counting.
+    val focused = card.id == interaction.focusedId
+
     Card(
-        modifier.clickable(onClick = onClick),
+        modifier.amiiboGestures(card, interaction, gestures),
         colors = CardDefaults.cardColors(
-            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer
+            containerColor = if (focused) MaterialTheme.colorScheme.primaryContainer
             else MaterialTheme.colorScheme.surfaceVariant,
         ),
-        border = if (selected) CardDefaults.outlinedCardBorder() else null,
+        border = if (focused) CardDefaults.outlinedCardBorder() else null,
     ) {
         Column(
             Modifier.padding(LayoutTokens.Space2).fillMaxWidth(),
@@ -750,6 +1005,9 @@ private fun AmiiboCardTile(
                         modifier = Modifier.align(Alignment.TopEnd),
                     )
                 }
+                // Opposite corner from the adapter badge: two marks that can
+                // both be present must never land on top of each other.
+                AmiiboSelectionTick(interaction, card, Modifier.align(Alignment.TopStart))
             }
             Spacer(Modifier.height(LayoutTokens.Space2))
             Text(
@@ -783,6 +1041,12 @@ private fun AmiiboDetailPanel(
     viewModel: CompanionViewModel,
     onImportKeys: () -> Unit,
     framed: Boolean = true,
+    /**
+     * Supplied by the two-pane layout only. A sheet is dismissed by swiping or
+     * by Back, both native and both wired; a pane beside the browser has neither
+     * and needs a visible way out, or it is pinned for the rest of the session.
+     */
+    onClose: (() -> Unit)? = null,
 ) {
     if (item == null) {
         if (framed) {
@@ -845,6 +1109,11 @@ private fun AmiiboDetailPanel(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
+            }
+            onClose?.let {
+                IconButton(onClick = it) {
+                    Icon(Icons.Default.Close, "Close details")
+                }
             }
             Box {
                 IconButton(onClick = { menuOpen = true }) {
