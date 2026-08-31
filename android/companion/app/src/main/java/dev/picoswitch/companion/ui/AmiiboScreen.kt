@@ -2,7 +2,6 @@
 
 package dev.picoswitch.companion.ui
 
-import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandHorizontally
@@ -35,6 +34,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.customActions
@@ -49,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.picoswitch.companion.data.AmiiboArtworkStore
 import dev.picoswitch.companion.data.AmiiboCard
 import dev.picoswitch.companion.data.AmiiboCategory
 import dev.picoswitch.companion.data.AmiiboGallery
@@ -60,10 +62,6 @@ import dev.picoswitch.companion.data.AmiiboGalleryOptions
 import dev.picoswitch.companion.data.AmiiboSort
 import dev.picoswitch.companion.data.AmiiboViewMode
 import dev.picoswitch.companion.model.*
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.net.HttpURLConnection
-import java.net.URL
 
 /**
  * The Amiibo library.
@@ -605,22 +603,41 @@ private fun AmiiboBrowser(
     // GESTURES TRANSLATE TO DOMAIN ACTIONS AND DO NOTHING ELSE. Single = browse,
     // double = inspect, long press = select. The rules those three invoke are
     // shared with the Windows companion and tested without composing anything.
-    val gestures = AmiiboGestures(
-        onTap = { card -> viewModel.activateAmiibo(card.id) },
-        // Refused by the domain while selecting, so a double tap during a bulk
-        // selection toggles once and opens nothing.
-        onDoubleTap = { card -> viewModel.openAmiiboDetails(card.id) },
-        onLongPress = { card -> viewModel.startAmiiboSelection(card.id) },
-        // Toggle rather than enter-selection, because the accessible action has
-        // to be able to say "Deselect" and mean it. Toggling also starts a
-        // selection from nothing, so one action covers both directions.
-        onToggle = { card -> viewModel.toggleAmiiboSelection(card.id) },
-    )
+    //
+    // REMEMBERED, and that is not a micro-optimisation. Rebuilding this on every
+    // recomposition produces four fresh lambdas and therefore a fresh instance,
+    // which Compose cannot match against the previous one; every view and every
+    // visible tile below then recomposes whether or not anything they show has
+    // changed. See the note on the item parameters below for why that mattered.
+    val gestures = remember(viewModel) {
+        AmiiboGestures(
+            onTap = { card -> viewModel.activateAmiibo(card.id) },
+            // Refused by the domain while selecting, so a double tap during a
+            // bulk selection toggles once and opens nothing.
+            onDoubleTap = { card -> viewModel.openAmiiboDetails(card.id) },
+            onLongPress = { card -> viewModel.startAmiiboSelection(card.id) },
+            // Toggle rather than enter-selection, because the accessible action
+            // has to be able to say "Deselect" and mean it. Toggling also starts
+            // a selection from nothing, so one action covers both directions.
+            onToggle = { card -> viewModel.toggleAmiiboSelection(card.id) },
+        )
+    }
+
+    val interaction = ui.amiiboInteraction
+    val focusedId = interaction.focusedId
+    val selecting = interaction.selecting
+    // Set lookup per item instead of a linear scan of the selection list, which
+    // at a thousand tiles and a hundred selected is a hundred thousand string
+    // comparisons per pass.
+    val selected = remember(interaction.selection) { interaction.selection.toHashSet() }
 
     when (ui.amiiboFilters.view) {
-        AmiiboViewMode.Grid -> AmiiboGridView(cards, ui.amiiboInteraction, modifier, gestures)
-        AmiiboViewMode.Carousel -> AmiiboCarouselView(cards, ui.amiiboInteraction, modifier, gestures)
-        AmiiboViewMode.List -> AmiiboListView(cards, ui.amiiboInteraction, modifier, gestures)
+        AmiiboViewMode.Grid ->
+            AmiiboGridView(cards, focusedId, selecting, selected, modifier, gestures)
+        AmiiboViewMode.Carousel ->
+            AmiiboCarouselView(cards, focusedId, selecting, selected, modifier, gestures)
+        AmiiboViewMode.List ->
+            AmiiboListView(cards, focusedId, selecting, selected, modifier, gestures)
     }
 }
 
@@ -728,6 +745,7 @@ private fun AmiiboSelectionBar(
  * Bundled so adding a fourth does not mean changing the signature of every view
  * and every call site, and so all three views demonstrably raise the same set.
  */
+@Immutable
 private data class AmiiboGestures(
     val onTap: (AmiiboCard) -> Unit,
     val onDoubleTap: (AmiiboCard) -> Unit,
@@ -749,13 +767,12 @@ private data class AmiiboGestures(
  */
 @Composable
 private fun AmiiboSelectionTick(
-    interaction: AmiiboInteractionState,
-    card: AmiiboCard,
+    selecting: Boolean,
+    ticked: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    if (!interaction.selecting) return
+    if (!selecting) return
 
-    val ticked = interaction.isSelected(card.id)
     Box(
         modifier
             .padding(LayoutTokens.Space1)
@@ -795,10 +812,24 @@ private fun AmiiboSelectionTick(
 @Composable
 private fun Modifier.amiiboGestures(
     card: AmiiboCard,
-    interaction: AmiiboInteractionState,
+    selecting: Boolean,
+    ticked: Boolean,
     gestures: AmiiboGestures,
 ): Modifier {
-    val ticked = interaction.isSelected(card.id)
+    // Built once per item per state, not once per recomposition. Two
+    // CustomAccessibilityAction objects and a list for each of a thousand tiles,
+    // rebuilt on every pass, is allocation the browser does not need.
+    val actions = remember(card.id, selecting, ticked, gestures) {
+        listOf(
+            CustomAccessibilityAction(
+                if (selecting && ticked) "Deselect" else "Select",
+            ) { gestures.onToggle(card); true },
+            CustomAccessibilityAction("Open details") {
+                gestures.onDoubleTap(card); true
+            },
+        )
+    }
+
     return this
         .combinedClickable(
             onClick = { gestures.onTap(card) },
@@ -809,15 +840,8 @@ private fun Modifier.amiiboGestures(
             // Announces "selected" for the bulk set rather than for the
             // highlight: membership is what a destructive command acts on, and
             // it is the fact a user cannot otherwise discover.
-            if (interaction.selecting) selected = ticked
-            customActions = listOf(
-                CustomAccessibilityAction(
-                    if (interaction.selecting && ticked) "Deselect" else "Select",
-                ) { gestures.onToggle(card); true },
-                CustomAccessibilityAction("Open details") {
-                    gestures.onDoubleTap(card); true
-                },
-            )
+            if (selecting) selected = ticked
+            customActions = actions
         }
 }
 
@@ -825,7 +849,9 @@ private fun Modifier.amiiboGestures(
 @Composable
 private fun AmiiboGridView(
     cards: List<AmiiboCard>,
-    interaction: AmiiboInteractionState,
+    focusedId: String?,
+    selecting: Boolean,
+    selected: Set<String>,
     modifier: Modifier,
     gestures: AmiiboGestures,
 ) {
@@ -837,7 +863,14 @@ private fun AmiiboGridView(
         contentPadding = PaddingValues(bottom = LayoutTokens.Space5),
     ) {
         items(cards, key = { it.id }) { card ->
-            AmiiboCardTile(card, interaction, Modifier.fillMaxWidth(), gestures = gestures)
+            AmiiboCardTile(
+                card,
+                focused = card.id == focusedId,
+                selecting = selecting,
+                ticked = card.id in selected,
+                modifier = Modifier.fillMaxWidth(),
+                gestures = gestures,
+            )
         }
     }
 }
@@ -853,12 +886,13 @@ private fun AmiiboGridView(
 @Composable
 private fun AmiiboCarouselView(
     cards: List<AmiiboCard>,
-    interaction: AmiiboInteractionState,
+    focusedId: String?,
+    selecting: Boolean,
+    selected: Set<String>,
     modifier: Modifier,
     gestures: AmiiboGestures,
 ) {
     val state = rememberLazyListState()
-    val focusedId = interaction.focusedId
 
     // Follow the FOCUS when it changes from elsewhere — switching into this
     // view, or a sync focusing the synced tag — so the carousel is never showing
@@ -881,13 +915,15 @@ private fun AmiiboCarouselView(
         items(cards, key = { it.id }) { card ->
             AmiiboCardTile(
                 card,
-                interaction,
+                focused = card.id == focusedId,
+                selecting = selecting,
+                ticked = card.id in selected,
                 // A fraction of the viewport, not a fixed width: the carousel
                 // shows ONE figure at a time with the next one peeking, which
                 // is the only thing it does that the grid does not. A fixed
                 // 220dp card left most of a phone page empty and most of a
                 // tablet pane empty too.
-                Modifier
+                modifier = Modifier
                     .fillParentMaxWidth(if (cards.size > 1) 0.78f else 1f)
                     .widthIn(max = LayoutTokens.AmiiboCarouselMaxWidth)
                     .fillMaxHeight(),
@@ -908,7 +944,9 @@ private fun AmiiboCarouselView(
 @Composable
 private fun AmiiboListView(
     cards: List<AmiiboCard>,
-    interaction: AmiiboInteractionState,
+    focusedId: String?,
+    selecting: Boolean,
+    selected: Set<String>,
     modifier: Modifier,
     gestures: AmiiboGestures,
 ) {
@@ -917,19 +955,20 @@ private fun AmiiboListView(
         contentPadding = PaddingValues(bottom = LayoutTokens.Space5),
     ) {
         items(cards, key = { it.id }) { card ->
-            val focused = card.id == interaction.focusedId
+            val focused = card.id == focusedId
+            val ticked = card.id in selected
             Row(
                 Modifier.fillMaxWidth()
                     .background(
                         if (focused) MaterialTheme.colorScheme.primaryContainer
                         else MaterialTheme.colorScheme.surface,
                     )
-                    .amiiboGestures(card, interaction, gestures)
+                    .amiiboGestures(card, selecting, ticked, gestures)
                     .padding(horizontal = LayoutTokens.Space2, vertical = LayoutTokens.Space2),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space3),
             ) {
-                AmiiboSelectionTick(interaction, card)
+                AmiiboSelectionTick(selecting, ticked)
                 AmiiboArtwork(card.imageUrl, card.title, Modifier.size(36.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
@@ -964,7 +1003,15 @@ private fun AmiiboListView(
 @Composable
 private fun AmiiboCardTile(
     card: AmiiboCard,
-    interaction: AmiiboInteractionState,
+    // PRIMITIVES, NOT THE INTERACTION STATE. Compose can only skip a composable
+    // whose parameters it can compare, and a data class holding a List is not
+    // one it will treat as stable — so passing the state made every tile
+    // non-skippable, and every visible tile recomposed on every change to any
+    // part of the screen's state. During an Amiibo upload that is every progress
+    // tick, which is how a rendering cost turned into an adapter timeout.
+    focused: Boolean,
+    selecting: Boolean,
+    ticked: Boolean,
     modifier: Modifier,
     large: Boolean = false,
     gestures: AmiiboGestures,
@@ -972,10 +1019,8 @@ private fun AmiiboCardTile(
     // FOCUS FILLS THE CARD; MEMBERSHIP IS A MARK ON IT. Two different ideas, so
     // two different presentations — a user has to be able to tell "where I am"
     // from "what I have ticked" without counting.
-    val focused = card.id == interaction.focusedId
-
     Card(
-        modifier.amiiboGestures(card, interaction, gestures),
+        modifier.amiiboGestures(card, selecting, ticked, gestures),
         colors = CardDefaults.cardColors(
             containerColor = if (focused) MaterialTheme.colorScheme.primaryContainer
             else MaterialTheme.colorScheme.surfaceVariant,
@@ -1007,13 +1052,19 @@ private fun AmiiboCardTile(
                 }
                 // Opposite corner from the adapter badge: two marks that can
                 // both be present must never land on top of each other.
-                AmiiboSelectionTick(interaction, card, Modifier.align(Alignment.TopStart))
+                AmiiboSelectionTick(selecting, ticked, Modifier.align(Alignment.TopStart))
             }
             Spacer(Modifier.height(LayoutTokens.Space2))
             Text(
                 card.title,
                 style = if (large) MaterialTheme.typography.titleMedium
                 else MaterialTheme.typography.titleSmall,
+                // BOTH LINES ARE RESERVED, USED OR NOT. A grid of cards whose
+                // height depends on whether the figure's name happens to wrap is
+                // a ragged grid: "Kirby" made a shorter card than "Link -
+                // Tears of the Kingdom" sitting beside it. Reserving the second
+                // line costs one line of space and makes every tile identical.
+                minLines = if (large) 1 else 2,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center,
@@ -1537,38 +1588,39 @@ internal fun catalogSubtitle(catalog: AmiiboCatalogEntry?): String = listOfNotNu
  */
 @Composable
 internal fun AmiiboArtwork(imageUrl: String, contentDescription: String, modifier: Modifier = Modifier) {
-    val image = produceState<ImageBitmap?>(null, imageUrl) {
-        value = if (imageUrl.isBlank()) null else runCatching {
-            withContext(Dispatchers.IO) {
-                val connection = URL(imageUrl).openConnection() as HttpURLConnection
-                try {
-                    connection.connectTimeout = 2_500
-                    connection.readTimeout = 8_000
-                    connection.instanceFollowRedirects = true
-                    if (connection.responseCode !in 200..299) return@withContext null
-                    val bytes = connection.inputStream.use { input ->
-                        val output = java.io.ByteArrayOutputStream()
-                        val buffer = ByteArray(8192)
-                        while (true) {
-                            val count = input.read(buffer)
-                            if (count < 0) break
-                            if (output.size() + count > 2 * 1024 * 1024) return@withContext null
-                            output.write(buffer, 0, count)
-                        }
-                        output.toByteArray()
-                    }
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
-                } finally {
-                    connection.disconnect()
-                }
-            }
-        }.getOrNull()
-    }.value
-    if (image != null) {
+    val store = rememberAmiiboArtworkStore()
+
+    // The size this is actually drawn at, so the decoder can downsample to it.
+    // A 150dp tile has no use for a megapixel bitmap; it only pays to hold one.
+    var targetPx by remember { mutableIntStateOf(0) }
+
+    // Seeded from the memory cache so a tile that has been on screen before
+    // draws its artwork in the first frame rather than flashing a placeholder
+    // on every scroll — which is what the previous per-tile fetch did.
+    val image by produceState<ImageBitmap?>(
+        initialValue = store.peek(imageUrl, targetPx)?.asImageBitmap(),
+        imageUrl,
+        targetPx,
+    ) {
+        if (targetPx > 0) {
+            value = store.peek(imageUrl, targetPx)?.asImageBitmap()
+                ?: store.load(imageUrl, targetPx)?.asImageBitmap()
+        }
+    }
+
+    val measured = modifier.onSizeChanged { size ->
+        val longest = maxOf(size.width, size.height)
+        // Only ever grows, and only in meaningful steps: reacting to every
+        // layout pass would re-decode the same picture repeatedly.
+        if (longest > targetPx * 5 / 4) targetPx = longest
+    }
+
+    val bitmap = image
+    if (bitmap != null) {
         Image(
-            bitmap = image,
+            bitmap = bitmap,
             contentDescription = contentDescription.ifBlank { "Amiibo artwork" },
-            modifier = modifier,
+            modifier = measured,
             contentScale = ContentScale.Fit,
         )
     } else {
@@ -1576,7 +1628,7 @@ internal fun AmiiboArtwork(imageUrl: String, contentDescription: String, modifie
         // grid tile and reads as a broken image when the same composable is
         // handed a full-height carousel card, so the placeholder takes a share
         // of the box and stops before it becomes a billboard.
-        BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
+        BoxWithConstraints(measured, contentAlignment = Alignment.Center) {
             val size = (minOf(maxWidth, maxHeight) * 0.4f).coerceIn(28.dp, 96.dp)
             Icon(
                 Icons.Default.Contactless,
@@ -1586,4 +1638,17 @@ internal fun AmiiboArtwork(imageUrl: String, contentDescription: String, modifie
             )
         }
     }
+}
+
+/**
+ * The process-wide artwork cache.
+ *
+ * One store for the whole app, not one per composable: a cache that does not
+ * outlive the thing being scrolled past is not a cache. Keyed on the application
+ * context so it survives configuration changes and every screen shares it.
+ */
+@Composable
+private fun rememberAmiiboArtworkStore(): AmiiboArtworkStore {
+    val context = LocalContext.current.applicationContext
+    return remember(context) { AmiiboArtworkStore(context.cacheDir) }
 }

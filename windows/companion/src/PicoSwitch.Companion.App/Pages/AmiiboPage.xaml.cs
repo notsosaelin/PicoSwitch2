@@ -37,7 +37,7 @@ public sealed class AmiiboTile(
     string title,
     string subtitle,
     string badge,
-    ImageSource? image,
+    Func<ImageSource?> image,
     string series = "",
     string collection = "",
     string released = "",
@@ -51,7 +51,36 @@ public sealed class AmiiboTile(
 
     public string Badge { get; } = badge;
 
-    public ImageSource? Image { get; } = image;
+    private ImageSource? resolvedImage;
+    private bool imageResolved;
+
+    /// <summary>
+    /// The artwork, fetched the first time a container actually asks for it.
+    /// </summary>
+    /// <remarks>
+    /// RESOLVED LAZILY, AND THAT IS THE WHOLE POINT. A BitmapImage begins
+    /// downloading the moment it is constructed, so building one per card
+    /// started a thousand HTTP requests every time the browser was rebuilt —
+    /// for a library of which perhaps twenty tiles were on screen. The rest were
+    /// bandwidth and decode work spent on pictures nobody was looking at, and it
+    /// competed with the adapter transfer happening at the same time.
+    ///
+    /// Only a REALISED container evaluates this binding, so the grid now fetches
+    /// what it draws and nothing else.
+    /// </remarks>
+    public ImageSource? Image
+    {
+        get
+        {
+            if (!imageResolved)
+            {
+                imageResolved = true;
+                resolvedImage = image();
+            }
+
+            return resolvedImage;
+        }
+    }
 
     public string Series { get; } = series;
 
@@ -205,6 +234,12 @@ public sealed partial class AmiiboPage : Page
 
     /// <summary>Resolved artwork, keyed by URL so a re-render costs nothing.</summary>
     private readonly Dictionary<string, ImageSource> artwork = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// How many decoded images the page will hold. Several screenfuls in any
+    /// view, which is what makes scrolling back cost nothing.
+    /// </summary>
+    private const int MaximumCachedArtwork = 400;
 
     /// <summary>The "no filter" row. Not a series anyone owns.</summary>
     private const string AllFilter = "All";
@@ -716,7 +751,7 @@ public sealed partial class AmiiboPage : Page
                 card.Title,
                 card.Subtitle,
                 card.Badge,
-                Artwork(card.ImageUrl),
+                () => Artwork(card.ImageUrl),
                 series: card.GameSeries,
                 collection: card.AmiiboSeries,
                 released: card.ReleaseDate,
@@ -1068,6 +1103,17 @@ public sealed partial class AmiiboPage : Page
             (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
         {
             return null;
+        }
+
+        // Bounded, because a library of a thousand figures browsed end to end
+        // would otherwise hold a thousand decoded bitmaps for the life of the
+        // page. Clearing wholesale rather than evicting least-recently-used: the
+        // bytes are still in the HTTP cache, so a rebuild is cheap, and a real
+        // LRU here would be machinery guarding something that costs nothing to
+        // recreate.
+        if (artwork.Count >= MaximumCachedArtwork)
+        {
+            artwork.Clear();
         }
 
         var image = new BitmapImage(uri) { DecodePixelWidth = 160 };
