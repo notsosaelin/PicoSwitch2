@@ -38,4 +38,31 @@ class ManagementProtocolTest {
         assertTrue(source.contains("notifications.trySend(ByteArray(0))"))
         assertFalse(source.contains("7c5ad4ed-2731-417c-b316-058505c7c083"))
     }
+
+    /**
+     * A command must not be timed on the main thread.
+     *
+     * THE DEFECT THIS GUARDS. Callers reach the transport from viewModelScope,
+     * whose dispatcher is Main. Every fragment's write callback and every
+     * notification of the reply then resumes there, dozens of main-thread
+     * dispatches inside one command's timeout budget — so the timeout became a
+     * measure of how busy the UI was. A busy library browser could push a chunk
+     * past it, and the timeout path invalidates the session, which took the
+     * adapter connection down mid-upload. Observed stalling at offsets 64, 96
+     * and 288 of the same file: arbitrary, because the cause was scheduling.
+     *
+     * Asserted against the source because the alternative is instrumenting a
+     * GATT stack to prove which thread a continuation resumed on. This is a
+     * cheap guard on a property that is easy to remove by accident and
+     * expensive to rediscover.
+     */
+    @Test fun `management transactions do not run on the main dispatcher`() {
+        val source = String(Files.readAllBytes(
+            Path.of("src", "main", "java", "dev", "picoswitch", "companion", "transport", "BleGattManagementTransport.kt"),
+        ))
+        assertTrue(
+            "transact must move off the caller's dispatcher before exchanging",
+            source.contains("withContext(Dispatchers.IO) { session.exchange {"),
+        )
+    }
 }

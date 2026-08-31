@@ -39,6 +39,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -555,7 +556,28 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
                 "gatt=${queuedOwner?.generation ?: "none"} gattObj=${gattIdentity(queuedOwner?.gatt)} " +
                 "state=${_connection.value.phase} timeoutMs=$timeoutMillis",
         )
-        return session.exchange {
+        // OFF THE MAIN THREAD, DELIBERATELY, AND THIS IS A CORRECTNESS FIX RATHER
+        // THAN AN OPTIMISATION.
+        //
+        // Callers reach this from viewModelScope, whose default dispatcher is
+        // Main. Everything below then resumes there: each fragment's write
+        // callback, and every notification of the reply. A command is fragmented
+        // to 20-byte ATT payloads, so one Amiibo chunk is several write
+        // round-trips plus the notifications carrying its answer — dozens of
+        // main-thread dispatches, all inside ONE timeout budget.
+        //
+        // That made the timeout a measure of how busy the UI was. Browsing a
+        // large library while a transfer ran could delay those continuations
+        // past the budget, and the timeout path calls invalidate(), which tears
+        // the management session down: an upload stalling at an arbitrary chunk
+        // and taking the adapter connection with it. Observed at offsets 64, 96
+        // and 288 of the same file — arbitrary, which is what a scheduling
+        // cause looks like and a protocol cause does not.
+        //
+        // The GATT API is callable from any thread and its callbacks already
+        // arrive on binder threads, so nothing here wanted Main in the first
+        // place; it was inherited from the caller.
+        return withContext(Dispatchers.IO) { session.exchange {
             val startedAt = SystemClock.elapsedRealtime()
             val owner = current ?: throw ManagementException("Connect to the adapter first")
             val activeGatt = owner.gatt ?: throw ManagementException("Connect to the adapter first")
@@ -684,7 +706,7 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
                 )
                 if (owner.commandTrace === trace) owner.commandTrace = null
             }
-        }
+        } }
     }
 
     private fun logTerminal(owner: OwnedGatt, trace: CommandTrace, error: Throwable) {
