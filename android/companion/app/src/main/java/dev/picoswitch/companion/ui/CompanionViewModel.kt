@@ -152,7 +152,15 @@ data class CompanionUiState(
     val snapshot: AdapterSnapshot = AdapterSnapshot(),
     val library: List<AmiiboLibraryItem> = emptyList(),
     val libraryWarnings: List<String> = emptyList(),
-    val selectedAmiiboId: String? = null,
+    /**
+     * Focus, inspection and bulk selection for the library browser.
+     *
+     * One place for three ideas that used to share [selectedAmiiboId]. The
+     * transitions live in [AmiiboInteraction], which the Windows companion also
+     * uses, so gesture callbacks translate taps into domain actions and the two
+     * clients cannot drift apart.
+     */
+    val amiiboInteraction: AmiiboInteractionState = AmiiboInteractionState(),
     /** Cache hits for library cards; this is metadata only and never raw tag data. */
     val amiiboCatalogEntries: Map<String, AmiiboCatalogEntry> = emptyMap(),
     val selectedAmiiboDetails: AmiiboDetails? = null,
@@ -280,6 +288,32 @@ data class CompanionUiState(
      * app speaks. Never silently assumed compatible; see [BridgeContract].
      */
     val bridgeCompatibility: BridgeContract.Compatibility = BridgeContract.Compatibility.NotConnected,
+) {
+    /**
+     * The Amiibo the browser is on.
+     *
+     * DERIVED, not stored: it used to be a field that meant "highlighted",
+     * "being described" and "about to be deleted" all at once. Every single-item
+     * command still reads it, and that stays correct because opening the details
+     * surface moves focus to the item it describes — see the invariant on
+     * [AmiiboInteractionState].
+     */
+    val selectedAmiiboId: String? get() = amiiboInteraction.focusedId
+}
+
+/**
+ * Move the browser's focus, tolerating "nothing focused".
+ *
+ * [AmiiboInteraction.focus] takes a real id because focusing nothing is not a
+ * gesture anyone performs; it happens when the library loses the entry that was
+ * focused, which is this.
+ */
+internal fun CompanionUiState.focusAmiibo(id: String?): CompanionUiState = copy(
+    amiiboInteraction = if (id == null) {
+        amiiboInteraction.copy(focusedId = null, inspectedId = null)
+    } else {
+        AmiiboInteraction.focus(amiiboInteraction, id)
+    },
 )
 
 data class SourceDeviceUi(val id: Int, val descriptor: String, val name: String, val vendorId: Int, val productId: Int)
@@ -396,7 +430,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private val _ui = MutableStateFlow(
         CompanionUiState(
             section = initialSection,
-            selectedAmiiboId = savedState[KEY_AMIIBO],
+            amiiboInteraction = AmiiboInteractionState(focusedId = savedState[KEY_AMIIBO]),
             amiiboKeysLoaded = amiiboKeyStore.read() != null,
             // Only the view mode is restored. Search and filters are
             // per-session: returning to a library silently narrowed by a filter
@@ -502,11 +536,21 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         viewModelScope.launch {
             library.items.collect { value ->
                 _ui.update { old ->
-                    val selected = old.selectedAmiiboId?.takeIf { id -> value.any { it.id == id } } ?: value.firstOrNull()?.id
+                    val ids = value.map { it.id }
+                    // Entries can leave the library while they are focused,
+                    // inspected or ticked. This is the one place selection is
+                    // reconciled with what actually exists; a query change never
+                    // touches it, because a filter hides an entry rather than
+                    // removing it.
+                    val pruned = AmiiboInteraction.prune(old.amiiboInteraction, ids)
+                    val selected = pruned.focusedId ?: ids.firstOrNull()
                     savedState[KEY_AMIIBO] = selected
                     old.copy(
                         library = value,
-                        selectedAmiiboId = selected,
+                        amiiboInteraction = pruned.copy(
+                            focusedId = selected,
+                            inspectedId = pruned.inspectedId?.takeIf { it == selected },
+                        ),
                         amiiboCatalogEntries = catalogEntriesFor(value),
                     )
                 }
@@ -628,8 +672,62 @@ class CompanionViewModel(application: Application, private val savedState: Saved
      */
     fun selectAmiibo(id: String?) {
         if (_ui.value.selectedAmiiboId == id) return
-        savedState[KEY_AMIIBO] = id
-        _ui.update { it.copy(selectedAmiiboId = id) }
+        applyAmiiboInteraction { state -> state.focusAmiibo(id) }
+    }
+
+    // ------------------------------------------------------------------
+    // Browser interaction
+    // ------------------------------------------------------------------
+    // Gesture callbacks translate a tap into ONE of these and do nothing else.
+    // The rules they invoke are shared with the Windows companion and tested
+    // without composing anything; see AmiiboInteraction.
+
+    /** A single tap: browse in normal mode, toggle while selecting. */
+    fun activateAmiibo(id: String) = interact { AmiiboInteraction.activate(it, id) }
+
+    /** A double tap, or the "Open details" accessibility action. */
+    fun openAmiiboDetails(id: String) = interact { AmiiboInteraction.openInspector(it, id) }
+
+    fun closeAmiiboDetails() = interact(AmiiboInteraction::closeInspector)
+
+    /** A long press, or the "Select" accessibility action. */
+    fun startAmiiboSelection(id: String) = interact { AmiiboInteraction.enterSelection(it, id) }
+
+    fun toggleAmiiboSelection(id: String) = interact { AmiiboInteraction.toggleSelection(it, id) }
+
+    fun clearAmiiboSelection() = interact(AmiiboInteraction::clearSelection)
+
+    /**
+     * Back: cancel a selection, then close the details surface.
+     *
+     * @return true when it consumed the gesture. False means nothing was open
+     * and the caller should let Back navigate away, rather than swallowing it
+     * and stranding the user on a screen whose Back does nothing.
+     */
+    fun backFromAmiibo(): Boolean {
+        val current = _ui.value.amiiboInteraction
+        val next = AmiiboInteraction.escape(current)
+        if (next == current) return false
+        applyAmiiboInteraction { it.copy(amiiboInteraction = next) }
+        return true
+    }
+
+    private fun interact(transition: (AmiiboInteractionState) -> AmiiboInteractionState) =
+        applyAmiiboInteraction { it.copy(amiiboInteraction = transition(it.amiiboInteraction)) }
+
+    /**
+     * Commit an interaction change, and re-read details only when focus moved.
+     *
+     * Decoding a tag is AES work; doing it because a tick appeared somewhere
+     * would be pure waste, and the decode of the focused item is what the
+     * details surface needs the moment it opens.
+     */
+    private fun applyAmiiboInteraction(update: (CompanionUiState) -> CompanionUiState) {
+        val before = _ui.value.selectedAmiiboId
+        _ui.update(update)
+        val after = _ui.value.selectedAmiiboId
+        if (before == after) return
+        savedState[KEY_AMIIBO] = after
         refreshSelectedAmiiboDetails()
     }
 
@@ -2048,7 +2146,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         } ?: error("Could not read selected file")
         val name = uri.lastPathSegment?.substringAfterLast('/') ?: "amiibo.bin"
         val result = library.import(displayName, name, bytes)
-        _ui.update { it.copy(selectedAmiiboId = result.item.id, section = AppSection.Amiibo) }
+        _ui.update { it.focusAmiibo(result.item.id).copy(section = AppSection.Amiibo) }
         savedState[KEY_AMIIBO] = result.item.id
         refreshSelectedAmiiboDetails()
         notice(if (result.duplicate) "That exact backup is already in the library" else "Imported ${result.item.displayName}")
@@ -2152,7 +2250,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         // out of four hundred is noise.
         if (result.imported.size == 1) {
             val id = result.imported.first().id
-            _ui.update { it.copy(selectedAmiiboId = id, section = AppSection.Amiibo) }
+            _ui.update { it.focusAmiibo(id).copy(section = AppSection.Amiibo) }
             savedState[KEY_AMIIBO] = id
             refreshSelectedAmiiboDetails()
         }
@@ -2245,7 +2343,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         } ?: error("Could not read Amiibo library archive")
         val result = library.importArchive(bytes)
         val selected = result.selectedId ?: result.items.firstOrNull()?.id
-        _ui.update { it.copy(selectedAmiiboId = selected, section = AppSection.Amiibo) }
+        _ui.update { it.focusAmiibo(selected).copy(section = AppSection.Amiibo) }
         savedState[KEY_AMIIBO] = selected
         refreshSelectedAmiiboDetails()
         notice("Imported ${result.items.size} Amiibo backups from a private ZIP")
@@ -2321,8 +2419,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                 require(rejection == null) { rejection?.description ?: "Invalid NTAG215 image" }
                 val imported = library.import("Phone NFC Amiibo", "phone NFC", result.bytes)
                 _ui.update {
-                    it.copy(
-                        selectedAmiiboId = imported.item.id,
+                    it.focusAmiibo(imported.item.id).copy(
                         section = AppSection.Amiibo,
                         operation = OperationProgress("Saving phone NFC backup", result.bytes.size, result.bytes.size),
                         nfcScan = NfcScanStatus(
@@ -2397,7 +2494,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         // updateFromAdapter is the same atomic file/index replacement used by
         // Sync, but this path never sends the result to the adapter.
         val item = library.updateFromAdapter(id, initialized)
-        _ui.update { it.copy(selectedAmiiboId = item.id, amiiboKeysLoaded = true) }
+        _ui.update { it.focusAmiibo(item.id).copy(amiiboKeysLoaded = true) }
         savedState[KEY_AMIIBO] = item.id
         refreshSelectedAmiiboDetails()
         notice("${item.displayName} initialized locally; the adapter was not changed")
@@ -2408,7 +2505,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         // Dirty protection is acknowledged only after the private file and index are durable.
         val item = library.updateFromAdapter(_ui.value.selectedAmiiboId, download.bytes)
         adapter.acknowledgeDownloadedAmiibo(download)
-        _ui.update { it.copy(selectedAmiiboId = item.id) }
+        _ui.update { it.focusAmiibo(item.id) }
         savedState[KEY_AMIIBO] = item.id
         refreshSelectedAmiiboDetails()
         notice("Synced console-written data into ${item.displayName}")
@@ -2421,6 +2518,113 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         val id = _ui.value.selectedAmiiboId ?: return@launch
         library.delete(id)
         notice("Local backup deleted; the adapter was not changed")
+    }
+
+    // ------------------------------------------------------------------
+    // Bulk
+    // ------------------------------------------------------------------
+
+    /**
+     * Delete every selected backup.
+     *
+     * LOCAL ONLY, exactly like the single-item Delete. The adapter is a separate
+     * place with a separate command, and a batch that quietly cleared the
+     * resident tag as well would be doing something nobody asked for.
+     */
+    fun deleteSelectedAmiibos() = launch("Deleting local Amiibo") {
+        val chosen = _ui.value.amiiboInteraction.selection
+        if (chosen.isEmpty()) return@launch
+
+        val ordered = _ui.value.library.map { it.id }
+        val outcome = batchAmiibo(chosen) { library.delete(it) }
+
+        // Settled here rather than left to the library reload, so the focus
+        // lands on the neighbour of what was removed instead of wherever a
+        // rebuild happens to put it.
+        _ui.update {
+            it.copy(
+                amiiboInteraction =
+                    AmiiboInteraction.afterRemoval(it.amiiboInteraction, ordered, outcome.succeeded),
+            )
+        }
+        savedState[KEY_AMIIBO] = _ui.value.selectedAmiiboId
+        notice(outcome.summary("deleted") + "; the adapter was not changed")
+        reportBulkFailures(outcome)
+    }
+
+    /**
+     * Initialize every selected backup.
+     *
+     * ENTIRELY LOCAL, and deliberately so: the single-item Initialize rewrites
+     * the stored bytes and never touches the adapter, and a batch has no reason
+     * to behave differently. No adapter traffic is introduced here.
+     *
+     * Per-item failures are expected rather than exceptional — a dump the
+     * imported key cannot verify will refuse to re-sign — so each entry is
+     * attempted independently and the ones that worked are kept.
+     */
+    fun initializeSelectedAmiibos() = launch("Initializing Amiibo") {
+        val chosen = _ui.value.amiiboInteraction.selection
+        if (chosen.isEmpty()) return@launch
+        val keys = amiiboKeyStore.read()
+            ?: error("Import your own key_retail.bin before initializing an Amiibo")
+
+        val outcome = batchAmiibo(chosen) { id ->
+            library.updateFromAdapter(id, AmiiboCrypto.initialize(library.bytes(id), keys))
+        }
+
+        _ui.update {
+            it.copy(
+                amiiboInteraction = AmiiboInteraction.clearSelection(it.amiiboInteraction),
+                amiiboKeysLoaded = true,
+            )
+        }
+        refreshSelectedAmiiboDetails()
+        notice(outcome.summary("initialized") + "; the adapter was not changed")
+        reportBulkFailures(outcome)
+    }
+
+    /**
+     * Run one operation over a set, keeping what worked and recording what did
+     * not.
+     *
+     * No transaction and no rollback: undoing a successful initialize would mean
+     * restoring bytes that have already been overwritten, and undoing a delete
+     * means the same. Partial progress is the honest outcome, so it is the
+     * reported one — "12 Amiibo initialized" after three of them failed is a lie
+     * the user only discovers much later, from a tag that did not change.
+     */
+    private suspend fun batchAmiibo(
+        ids: List<String>,
+        operation: suspend (String) -> Unit,
+    ): AmiiboBulkOutcome {
+        val done = mutableListOf<String>()
+        val failed = mutableListOf<AmiiboBulkFailure>()
+        val names = _ui.value.library.associate { it.id to it.displayName }
+
+        ids.forEachIndexed { index, id ->
+            _ui.update {
+                it.copy(operation = OperationProgress("Working through ${ids.size} Amiibo", index, ids.size))
+            }
+            runCatching { operation(id) }
+                .onSuccess { done += id }
+                .onFailure { error ->
+                    failed += AmiiboBulkFailure(
+                        id,
+                        names[id] ?: id,
+                        error.message ?: error::class.simpleName.orEmpty(),
+                    )
+                }
+        }
+
+        return AmiiboBulkOutcome(done, failed)
+    }
+
+    /** Name the failures, so "3 failed" is actionable rather than alarming. */
+    private fun reportBulkFailures(outcome: AmiiboBulkOutcome) {
+        outcome.failed.take(3).forEach {
+            diagnostics.event("amiibo", "bulk operation failed", "${it.name}: ${it.reason}")
+        }
     }
 
     fun renameSelectedAmiibo(name: String) = launch("Renaming local Amiibo") {
