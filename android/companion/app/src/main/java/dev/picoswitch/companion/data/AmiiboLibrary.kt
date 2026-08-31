@@ -22,6 +22,38 @@ data class AmiiboArchiveImportResult(
     val selectedId: String?,
 )
 
+/** One file handed to a bulk import, before anything has looked at it. */
+data class AmiiboImportSource(val name: String, val bytes: ByteArray)
+
+/**
+ * What a bulk import did, in the terms a one-line summary needs.
+ *
+ * SKIPPED IS NOT A FAILURE. Pointing this at a folder is expected to sweep up
+ * readmes, cover art and other tools' metadata, and reporting those as errors
+ * would make a successful import of four hundred tags look broken. The counts
+ * are what the user sees; [problems] is for diagnostics.
+ */
+data class AmiiboBulkImportResult(
+    val imported: List<AmiiboLibraryItem>,
+    val duplicates: Int,
+    val skipped: Int,
+    val problems: List<String>,
+) {
+    val considered: Int get() = imported.size + duplicates + skipped
+
+    /** One line, in the order a person cares about. */
+    val summary: String
+        get() {
+            if (considered == 0) return "Nothing to import."
+            val parts = buildList {
+                if (imported.isNotEmpty()) add("${imported.size} added")
+                if (duplicates > 0) add("$duplicates already in your library")
+                if (skipped > 0) add("$skipped skipped")
+            }
+            return if (parts.isEmpty()) "Nothing to import." else parts.joinToString(", ") + "."
+        }
+}
+
 /** Private, versioned, crash-resistant Amiibo storage. Raw dumps never leave app-private files. */
 class AmiiboLibrary(context: Context) {
     private val store = AmiiboLibraryStore(File(context.filesDir, "amiibo-library"))
@@ -35,6 +67,7 @@ class AmiiboLibrary(context: Context) {
     suspend fun bytes(id: String) = store.bytes(id)
     suspend fun exportArchive(selectedId: String? = null) = store.exportArchive(selectedId)
     suspend fun importArchive(raw: ByteArray) = store.importArchive(raw)
+    suspend fun importMany(sources: List<AmiiboImportSource>) = store.importMany(sources)
 }
 
 /** File-root implementation is Android-independent so recovery and transaction behavior are host-testable. */
@@ -243,6 +276,63 @@ class AmiiboLibraryStore(private val root: File) {
         _items.value = next
         val selected = parsed.zip(next).firstOrNull { it.first.loaded }?.second?.id
         AmiiboArchiveImportResult(next, selected)
+    }
+
+    /**
+     * Import many files at once: tag dumps, archives, or any mix of the two.
+     *
+     * THE ONE ENTRY POINT EVERY PLATFORM'S BULK IMPORT USES — files a user
+     * multi-selected, or everything found under a folder. Importing one tag at a
+     * time is fine for a first tag and useless for a collection, and the
+     * difference between "pick a file" and "pick two hundred files" should be the
+     * picker, not the app.
+     *
+     * A `.zip` is expanded and its tags imported, so a user never has to know
+     * whether what they were given is a dump or an archive of them. That includes
+     * archives from other tools: see [AmiiboLibraryArchive.read].
+     *
+     * NOTHING HERE IS FATAL. Anything unreadable is counted as skipped and
+     * recorded in [AmiiboBulkImportResult.problems], because a folder import is
+     * expected to meet files that are not tags, and one of them must never cost
+     * the user the rest.
+     */
+    suspend fun importMany(sources: List<AmiiboImportSource>): AmiiboBulkImportResult = ioLocked {
+        val imported = mutableListOf<AmiiboLibraryItem>()
+        val problems = mutableListOf<String>()
+        var duplicates = 0
+        var skipped = 0
+
+        fun add(displayName: String, sourceName: String, bytes: ByteArray) {
+            runCatching { importUnlocked(displayName, sourceName, bytes) }
+                .onSuccess { result ->
+                    if (result.duplicate) duplicates++ else imported += result.item
+                }
+                .onFailure { error ->
+                    skipped++
+                    problems += "'$sourceName' was not imported: ${error.safeMessage()}"
+                }
+        }
+
+        sources.forEach { source ->
+            val looksLikeZip = source.bytes.size >= 2 &&
+                source.bytes[0] == 'P'.code.toByte() &&
+                source.bytes[1] == 'K'.code.toByte()
+
+            if (looksLikeZip) {
+                runCatching { AmiiboLibraryArchive.read(source.bytes) }
+                    .onSuccess { entries ->
+                        entries.forEach { add(it.displayName, it.fileName, it.bytes) }
+                    }
+                    .onFailure { error ->
+                        skipped++
+                        problems += "'${source.name}' could not be read: ${error.safeMessage()}"
+                    }
+            } else {
+                add(source.name.substringBeforeLast('.'), source.name, source.bytes)
+            }
+        }
+
+        AmiiboBulkImportResult(imported, duplicates, skipped, problems)
     }
 
     private suspend fun <T> ioLocked(block: suspend () -> T): T = withContext(Dispatchers.IO) { lock.withLock { block() } }

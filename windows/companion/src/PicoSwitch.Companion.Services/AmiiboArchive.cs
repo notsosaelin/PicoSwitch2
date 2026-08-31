@@ -36,11 +36,17 @@ public static class AmiiboArchive
     public const string Format = "PicoSwitch2 Amiibo Library";
     public const int Version = 3;
 
-    public const int MaxArchiveBytes = 8 * 1024 * 1024;
-    public const int MaxEntries = 128;
-    public const int MaxManifestBytes = 128 * 1024;
+    // Sized for a real collection rather than a handful of favourites. Someone
+    // with a thousand tags is an ordinary user of this feature, and the previous
+    // 128-entry / 256 KB ceilings turned that into an unexplained refusal.
+    // 4096 tags at the 2048-byte maximum is 8 MB of images, comfortably inside
+    // these bounds, and the bounds still exist because a ZIP is attacker-shaped
+    // input.
+    public const int MaxArchiveBytes = 64 * 1024 * 1024;
+    public const int MaxEntries = 4096;
+    public const int MaxManifestBytes = 1024 * 1024;
     public const int MaxImageBytes = 2048;
-    public const int MaxTotalImageBytes = 256 * 1024;
+    public const int MaxTotalImageBytes = 16 * 1024 * 1024;
     public const int MaxNameChars = 120;
 
     public sealed record ExportItem(AmiiboLibraryItem Item, byte[] Bytes, bool Loaded);
@@ -122,12 +128,21 @@ public static class AmiiboArchive
     }
 
     /// <summary>
-    /// Parse and validate every entry, touching no local state.
+    /// Read every tag image out of a ZIP, ours or anyone else's.
     /// </summary>
     /// <remarks>
-    /// Deliberately a pure read: the caller decides what to keep. An import that
-    /// half-applied and then threw would leave a library the user cannot reason
-    /// about, so validation finishes completely before anything is written.
+    /// DELIBERATELY NOT LIMITED TO OUR OWN EXPORT FORMAT. People keep amiibo
+    /// dumps in ordinary zips, usually in folders, usually alongside readme and
+    /// image files. Refusing those and demanding a re-export from another tool
+    /// would make this the most annoying way to move a collection, so the rule
+    /// is simply: take every <c>.bin</c> that is a valid tag, ignore everything
+    /// else, and fail only when there was nothing usable at all.
+    ///
+    /// Our <c>library.json</c> is still read when present, and still supplies
+    /// names and the loaded marker. It is metadata, never a gate.
+    ///
+    /// A pure read: the caller decides what to keep. An import that half-applied
+    /// and then threw would leave a library the user cannot reason about.
     /// </remarks>
     public static IReadOnlyList<ImportedEntry> Read(byte[] raw)
     {
@@ -156,19 +171,20 @@ public static class AmiiboArchive
                 if (entryCount > MaxEntries + 1)
                 {
                     throw new InvalidOperationException(
-                        "Amiibo library archive has too many entries");
+                        "This archive has too many entries to import");
                 }
 
-                var name = SafeEntryName(entry.FullName);
-                if (!names.Add(name))
+                // A directory entry has an empty name; skip it before anything
+                // else looks at it.
+                if (entry.FullName.EndsWith('/') || entry.FullName.EndsWith('\\') ||
+                    entry.Name.Length == 0)
                 {
-                    throw new InvalidOperationException(
-                        "Amiibo library archive contains duplicate entries");
+                    continue;
                 }
 
-                // A directory entry ends in a separator, which SafeEntryName has
-                // already refused, so anything reaching here is a file.
-                if (string.Equals(name, "library.json", StringComparison.OrdinalIgnoreCase))
+                // OUR manifest sits at the root. One found anywhere else belongs
+                // to some other tool and is not ours to interpret.
+                if (string.Equals(entry.FullName, "library.json", StringComparison.OrdinalIgnoreCase))
                 {
                     if (manifestBytes is not null)
                     {
@@ -177,29 +193,54 @@ public static class AmiiboArchive
                     }
 
                     manifestBytes = ReadBounded(entry, MaxManifestBytes, "library manifest");
+                    continue;
                 }
-                else if (name.EndsWith(".bin", StringComparison.OrdinalIgnoreCase))
+
+                if (!entry.Name.EndsWith(".bin", StringComparison.OrdinalIgnoreCase) &&
+                    !entry.Name.EndsWith(".nfc", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (images.Count >= MaxEntries)
-                    {
-                        throw new InvalidOperationException(
-                            "Amiibo library archive has too many images");
-                    }
-
-                    var bytes = ReadBounded(entry, MaxImageBytes, "Amiibo image");
-                    totalImageBytes += bytes.Length;
-                    if (totalImageBytes > MaxTotalImageBytes)
-                    {
-                        throw new InvalidOperationException(
-                            "Amiibo library archive contains too much image data");
-                    }
-
-                    images.Add((name, AmiiboFiles.NormalizeImport(bytes)));
+                    // Readmes, cover images, other tools' metadata. Not an error:
+                    // a collection zip is full of them.
+                    continue;
                 }
-                else
+
+                if (images.Count >= MaxEntries)
                 {
                     throw new InvalidOperationException(
-                        $"Unsupported Amiibo library entry: {name}");
+                        "This archive has too many Amiibo images to import");
+                }
+
+                // The LAST path segment, so a dump inside "Animal Crossing/" is
+                // taken on its merits. Only used for display and for matching our
+                // own manifest -- the library stores every image under a
+                // generated name, so an archive path never reaches the
+                // filesystem and cannot traverse out of anywhere.
+                var name = DisplayEntryName(entry.Name);
+                if (!names.Add(name))
+                {
+                    // Two folders holding a same-named dump. Both are kept: they
+                    // may well be different tags, and content de-duplication
+                    // happens on import where it can compare bytes.
+                    name = UniqueName(name, names);
+                }
+
+                var bytes = ReadBounded(entry, MaxImageBytes, "Amiibo image");
+                totalImageBytes += bytes.Length;
+                if (totalImageBytes > MaxTotalImageBytes)
+                {
+                    throw new InvalidOperationException(
+                        "This archive contains too much image data to import");
+                }
+
+                // A file that is not a tag is SKIPPED, not fatal. One stray .bin
+                // in a folder of five hundred good ones must not cost the user
+                // the other four hundred and ninety-nine.
+                try
+                {
+                    images.Add((name, AmiiboFiles.NormalizeImport(bytes)));
+                }
+                catch (ArgumentException)
+                {
                 }
             }
         }
@@ -207,7 +248,7 @@ public static class AmiiboArchive
         if (images.Count == 0)
         {
             throw new InvalidOperationException(
-                "Amiibo library archive contains no valid .bin files");
+                "This archive contains no Amiibo dumps this app can read");
         }
 
         // A manifest that cannot be read costs the display names and nothing
@@ -382,6 +423,38 @@ public static class AmiiboArchive
     /// path-traversal vector. No separators, no leading dot, no control
     /// characters — checked before the name is used for anything at all.
     /// </remarks>
+    /// <summary>
+    /// A safe display name for an entry in someone else's archive.
+    /// </summary>
+    /// <remarks>
+    /// TOTAL, unlike <see cref="SafeEntryName"/>. This runs on names from
+    /// arbitrary collection zips, where an over-long or oddly-punctuated
+    /// filename is a normal thing to meet — throwing would cost the user the
+    /// whole import over one badly named file. The name is display-only: the
+    /// library stores every image under a generated name, so nothing here
+    /// reaches the filesystem.
+    /// </remarks>
+    private static string DisplayEntryName(string name)
+    {
+        var builder = new StringBuilder(Math.Min(name.Length, MaxNameChars));
+        foreach (var c in name)
+        {
+            if (c == '\0' || char.IsControl(c) || c == '/' || c == '\\')
+            {
+                continue;
+            }
+
+            builder.Append(c);
+            if (builder.Length >= MaxNameChars)
+            {
+                break;
+            }
+        }
+
+        var cleaned = builder.ToString().Trim().TrimStart('.');
+        return cleaned.Length == 0 ? "amiibo.bin" : cleaned;
+    }
+
     private static string SafeEntryName(string name)
     {
         if (string.IsNullOrWhiteSpace(name) || name.Length > MaxNameChars + 16)

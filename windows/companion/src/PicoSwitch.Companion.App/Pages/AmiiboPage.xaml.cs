@@ -51,6 +51,7 @@ public sealed partial class AmiiboPage : Page
     private readonly AdapterConnectionService adapters = AppServices.Adapters;
     private readonly AmiiboLibrary library = AppServices.AmiiboLibrary;
     private readonly WindowsAmiiboKeyStore keys = AppServices.AmiiboKeys;
+    private readonly AmiiboCatalog catalog = AppServices.AmiiboCatalog;
 
     private string? selectedId;
     private bool suppressSelection;
@@ -74,6 +75,13 @@ public sealed partial class AmiiboPage : Page
 
             Render();
             ReportLibraryWarnings();
+
+            // Fire and forget: the catalog is enrichment, so the page is fully
+            // usable before it answers and simply gets better if it does. It
+            // sends nothing about this user -- see AmiiboCatalog.
+            _ = catalog.EnsureLoadedAsync().ContinueWith(
+                _ => AppServices.OnUiThread(Render),
+                TaskScheduler.Default);
 
             if (adapters.Connection.Value.Phase == ConnectionPhase.Connected)
             {
@@ -232,60 +240,125 @@ public sealed partial class AmiiboPage : Page
 
     // ----------------------------------------------------------------- library
 
+    /// <summary>
+    /// Import any number of dumps and archives, in one go.
+    /// </summary>
+    /// <remarks>
+    /// ONE button for every kind of file. The picker is multi-select and accepts
+    /// dumps and zips together, and the library works out which is which — asking
+    /// the user to first classify what they have, and then pick a matching menu
+    /// item, is work the app can simply do.
+    /// </remarks>
     private async void OnImport(object sender, RoutedEventArgs e) =>
         await GuardAsync(async () =>
         {
-            var file = await PickFileAsync(".bin", ".nfc");
-            if (file is null)
+            var files = await PickFilesAsync(".bin", ".nfc", ".zip");
+            if (files.Count == 0)
             {
                 return;
             }
 
-            var bytes = await ReadFileAsync(file);
-            var result = library.Import(
-                Path.GetFileNameWithoutExtension(file.Name), file.Name, bytes);
+            var sources = new List<AmiiboImportSource>();
+            foreach (var file in files)
+            {
+                sources.Add(new AmiiboImportSource(file.Name, await ReadFileAsync(file)));
+            }
 
-            selectedId = result.Item.Id;
-            Report(
-                result.Duplicate
-                    ? $"'{result.Item.DisplayName}' is already in your library."
-                    : $"'{result.Item.DisplayName}' added to your library.",
-                InfoBarSeverity.Success);
-            Render();
+            ApplyBulkImport(library.ImportMany(sources));
         });
 
-    private async void OnImportArchive(object sender, RoutedEventArgs e) =>
+    /// <summary>
+    /// Import everything under a folder, including subfolders.
+    /// </summary>
+    /// <remarks>
+    /// How a collection actually arrives: a directory tree, usually one folder
+    /// per series, usually with readmes and cover art mixed in. Those are skipped
+    /// silently rather than reported as failures.
+    /// </remarks>
+    private async void OnImportFolder(object sender, RoutedEventArgs e) =>
         await GuardAsync(async () =>
         {
-            var file = await PickFileAsync(".zip");
-            if (file is null)
+            var picker = new FolderPicker();
+            picker.FileTypeFilter.Add("*");
+            InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(App.Window));
+
+            var folder = await picker.PickSingleFolderAsync();
+            if (folder is null)
             {
                 return;
             }
 
-            var result = library.ImportArchive(await ReadFileAsync(file));
-            var parts = new List<string>();
-            if (result.Imported.Count > 0)
+            // Enumerated with the plain filesystem API rather than through the
+            // StorageFolder tree: it recurses in one call and does not cost a
+            // WinRT round trip per file, which matters at a few hundred of them.
+            var paths = Directory
+                .EnumerateFiles(folder.Path, "*", SearchOption.AllDirectories)
+                .Where(path => IsImportable(Path.GetExtension(path)))
+                .Take(AmiiboArchive.MaxEntries)
+                .ToList();
+
+            if (paths.Count == 0)
             {
-                parts.Add($"{result.Imported.Count} added");
+                Report("No Amiibo dumps or archives were found in that folder.",
+                       InfoBarSeverity.Informational);
+                return;
             }
 
-            if (result.Duplicates > 0)
+            var sources = new List<AmiiboImportSource>();
+            foreach (var path in paths)
             {
-                parts.Add($"{result.Duplicates} already present");
+                try
+                {
+                    sources.Add(new AmiiboImportSource(
+                        Path.GetFileName(path), await File.ReadAllBytesAsync(path)));
+                }
+                catch (IOException error)
+                {
+                    adapters.Diagnostics.Warn(
+                        "amiibo", $"{Path.GetFileName(path)} could not be read: {error.Message}");
+                }
             }
 
-            Report(
-                parts.Count == 0 ? "Nothing to import." : string.Join(", ", parts) + ".",
-                result.Warnings.Count > 0 ? InfoBarSeverity.Warning : InfoBarSeverity.Success);
-
-            foreach (var warning in result.Warnings)
-            {
-                adapters.Diagnostics.Warn("amiibo", warning);
-            }
-
-            Render();
+            ApplyBulkImport(library.ImportMany(sources));
         });
+
+    private static bool IsImportable(string extension) =>
+        extension.Equals(".bin", StringComparison.OrdinalIgnoreCase) ||
+        extension.Equals(".nfc", StringComparison.OrdinalIgnoreCase) ||
+        extension.Equals(".zip", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Report a bulk import as one line, and select the result when it is one tag.
+    /// </summary>
+    /// <remarks>
+    /// The detail goes to diagnostics rather than to a wall of InfoBars: someone
+    /// importing four hundred tags wants to know it worked, not to dismiss forty
+    /// notices about files that were never tags.
+    /// </remarks>
+    private void ApplyBulkImport(AmiiboBulkImportResult result)
+    {
+        foreach (var problem in result.Problems)
+        {
+            adapters.Diagnostics.Warn("amiibo", problem);
+        }
+
+        // Selecting the single new tag is helpful; selecting one arbitrary tag
+        // out of four hundred is noise.
+        if (result.Imported.Count == 1)
+        {
+            selectedId = result.Imported[0].Id;
+        }
+
+        Report(
+            result.Problems.Count == 0
+                ? result.Summary
+                : $"{result.Summary} See Diagnostics for what was skipped.",
+            result.Imported.Count > 0
+                ? InfoBarSeverity.Success
+                : InfoBarSeverity.Informational);
+
+        Render();
+    }
 
     private async void OnExportArchive(object sender, RoutedEventArgs e) =>
         await GuardAsync(async () =>
@@ -515,7 +588,7 @@ public sealed partial class AmiiboPage : Page
             .Select(item => new AmiiboLibraryRow(
                 item.Id,
                 item.DisplayName,
-                Describe(item, item.Id == loadedId)))
+                Describe(item, item.Id == loadedId, catalog.Find(item.FigureId))))
             .ToList();
 
         // Rebuilt wholesale, so the selection is restored by ID rather than by
@@ -537,13 +610,33 @@ public sealed partial class AmiiboPage : Page
         ExportArchiveButton.IsEnabled = rows.Count > 0;
     }
 
-    private static string Describe(AmiiboLibraryItem item, bool onAdapter)
+    /// <summary>
+    /// The second line of a library row.
+    /// </summary>
+    /// <remarks>
+    /// Leads with what the figure IS when the catalog knows — "Tom Nook · Animal
+    /// Crossing" reads as a collection, where the raw figure id reads as a
+    /// database. The id is still shown when there is nothing better, because a
+    /// correct-but-unhelpful answer beats an invented one.
+    /// </remarks>
+    private static string Describe(
+        AmiiboLibraryItem item, bool onAdapter, AmiiboCatalogEntry? catalog)
     {
-        var parts = new List<string>
+        var parts = new List<string>();
+
+        var known = catalog?.Name is { Length: > 0 } name
+            ? name
+            : catalog?.Character is { Length: > 0 } character
+                ? character
+                : null;
+
+        parts.Add(known ?? item.FigureId);
+        if (catalog?.GameSeries is { Length: > 0 } series)
         {
-            item.TagType == AmiiboTagType.FigureV3 ? "Figure v3" : "NTAG215",
-            item.FigureId,
-        };
+            parts.Add(series);
+        }
+
+        parts.Add(item.TagType == AmiiboTagType.FigureV3 ? "Figure v3" : "NTAG215");
 
         if (onAdapter)
         {
@@ -569,7 +662,19 @@ public sealed partial class AmiiboPage : Page
 
         DetailCard.Visibility = Visibility.Visible;
         AddDetail("Name", item.DisplayName);
-        AddDetail("Figure", item.FigureId);
+
+        // Public catalog metadata, when it is known. Absent offline, and the
+        // rest of the card is unaffected.
+        var known = catalog.Find(item.FigureId);
+        if (known is not null)
+        {
+            AddDetail("Figure", known.Name.Length > 0 ? known.Name : known.Character);
+            AddDetail("Series", known.GameSeries);
+            AddDetail("Collection", known.AmiiboSeries);
+            AddDetail("Released", known.ReleaseDate);
+        }
+
+        AddDetail("Figure id", item.FigureId);
         AddDetail("Tag", item.TagType == AmiiboTagType.FigureV3 ? "Figure v3" : "NTAG215");
         AddDetail("UID", item.Uid);
         AddDetail("Size", $"{item.Size} bytes");
@@ -602,7 +707,10 @@ public sealed partial class AmiiboPage : Page
             AddDetail("Last written", written);
         }
 
-        AddDetail("Game data", details.AppDataLabel);
+        // The catalog can name the game the tag's app data belongs to, which the
+        // firmware's small built-in table cannot.
+        var game = details.TitleId.Length > 0 ? catalog.GameForTitleId(details.TitleId) : null;
+        AddDetail("Game data", game ?? details.AppDataLabel);
     }
 
     private void AddDetail(string label, string value)
@@ -711,6 +819,18 @@ public sealed partial class AmiiboPage : Page
         // WinUI 3 pickers are window-owned and throw without a parent handle.
         InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(App.Window));
         return await picker.PickSingleFileAsync();
+    }
+
+    private async Task<IReadOnlyList<StorageFile>> PickFilesAsync(params string[] extensions)
+    {
+        var picker = new FileOpenPicker();
+        foreach (var extension in extensions)
+        {
+            picker.FileTypeFilter.Add(extension);
+        }
+
+        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(App.Window));
+        return await picker.PickMultipleFilesAsync() ?? [];
     }
 
     private async Task SaveFileAsync(

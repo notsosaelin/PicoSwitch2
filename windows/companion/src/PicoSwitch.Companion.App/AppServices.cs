@@ -21,6 +21,7 @@ public static class AppServices
     private static KbmLibraryRepository? kbmLibrary;
     private static AmiiboLibrary? amiiboLibrary;
     private static WindowsAmiiboKeyStore? amiiboKeys;
+    private static AmiiboCatalog? amiiboCatalog;
     private static DiagnosticLog? diagnostics;
     private static DispatcherQueue? dispatcher;
     private static WindowsDocumentStore? documents;
@@ -110,6 +111,26 @@ public static class AppServices
             {
                 return amiiboKeys ??= new WindowsAmiiboKeyStore(
                     Path.Combine(Documents.Directory, "amiibo-private"));
+            }
+        }
+    }
+
+    /// <summary>
+    /// AmiiboAPI enrichment: what a figure is actually called.
+    /// </summary>
+    /// <remarks>
+    /// Cached beside the library rather than in the private key directory: this
+    /// is public catalog data about every amiibo that exists, not anything of
+    /// the user's, and nothing about which figures they own reaches the network.
+    /// </remarks>
+    public static AmiiboCatalog AmiiboCatalog
+    {
+        get
+        {
+            lock (Gate)
+            {
+                return amiiboCatalog ??=
+                    new AmiiboCatalog(Path.Combine(Documents.Directory, "amiibo"));
             }
         }
     }

@@ -136,6 +136,10 @@ dependencies {
     androidTestImplementation(composeBom)
 
     implementation("androidx.core:core-ktx:1.17.0")
+    // Walking a picked folder tree. The Storage Access Framework hands back an
+    // opaque tree Uri; DocumentFile is what turns that into an enumerable
+    // directory without hand-rolling DocumentsContract queries.
+    implementation("androidx.documentfile:documentfile:1.1.0")
     // The framework's ExifInterface only understands JPEG. The system photo
     // picker hands back HEIC on most modern phones, whose orientation tag the
     // framework class silently cannot read -- so a sideways background would be

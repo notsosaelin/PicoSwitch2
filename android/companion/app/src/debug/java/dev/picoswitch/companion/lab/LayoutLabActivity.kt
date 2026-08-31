@@ -79,7 +79,7 @@ class LayoutLabActivity : ComponentActivity() {
             CompanionApp(
                 viewModel = viewModel,
                 onConnectAdapter = {}, onPairAdapter = {}, onRepairAdapter = {}, onImportAmiibo = {},
-                onImportAmiiboArchive = {}, onExportAmiiboArchive = {}, onScanAmiibo = {},
+                onImportAmiiboFolder = {}, onExportAmiiboArchive = {}, onScanAmiibo = {},
                 onImportAmiiboKeys = {}, onPrepareController = {}, onOpenTouchGamepad = {},
                 onPickTouchBackground = {}, onExportDiagnostics = {},
             )

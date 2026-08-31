@@ -77,12 +77,18 @@ class MainActivity : ComponentActivity() {
         else Toast.makeText(this, "Nearby devices permission is required for the controller bridge", Toast.LENGTH_LONG).show()
     }
 
-    private val importAmiibo = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let { viewModel.importAmiibo(it, "") }
+    // Multi-select, and dumps and ZIPs together: which kind of file the user has
+    // is the app's problem to work out, not theirs to declare before picking.
+    private val importAmiibo = registerForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isNotEmpty()) viewModel.importAmiiboFiles(uris)
     }
 
-    private val importAmiiboArchive = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let(viewModel::importAmiiboArchive)
+    private val importAmiiboFolder = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        uri?.let(viewModel::importAmiiboFolder)
     }
 
     private val exportAmiiboArchive = registerForActivityResult(
@@ -123,7 +129,7 @@ class MainActivity : ComponentActivity() {
                 onPairAdapter = ::requestNewAdapterPairing,
                 onRepairAdapter = ::requestAdapterRepair,
                 onImportAmiibo = { importAmiibo.launch(arrayOf("*/*")) },
-                onImportAmiiboArchive = { importAmiiboArchive.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
+                onImportAmiiboFolder = { importAmiiboFolder.launch(null) },
                 onExportAmiiboArchive = { exportAmiiboArchive.launch("PicoSwitch2-Amiibo-Library.zip") },
                 onScanAmiibo = ::requestNfcScan,
                 onImportAmiiboKeys = { importAmiiboKeys.launch(arrayOf("application/octet-stream", "application/*", "*/*")) },

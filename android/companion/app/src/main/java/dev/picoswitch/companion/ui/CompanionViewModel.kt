@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import androidx.core.content.ContextCompat
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
@@ -2037,6 +2038,123 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         } ?: error("Could not create Amiibo library archive")
         notice("Exported ${_ui.value.library.size} Amiibo backups as a private ZIP")
     }
+
+    /**
+     * Import any number of picked files: dumps, ZIPs, or a mix.
+     *
+     * ONE path for every kind of file, so the user never has to classify what
+     * they are holding before choosing a menu item. Anything unreadable is
+     * counted and reported, never fatal — a folder of four hundred tags must not
+     * be lost to one stray file.
+     */
+    fun importAmiiboFiles(uris: List<Uri>) = launch("Importing Amiibo") {
+        if (uris.isEmpty()) return@launch
+        applyBulkImport(uris.mapNotNull(::readImportSource))
+    }
+
+    /**
+     * Import every dump and archive under a picked folder, including subfolders.
+     *
+     * How a collection actually arrives: a directory tree, usually one folder per
+     * series, with readmes and cover art mixed in. Those are skipped silently.
+     */
+    fun importAmiiboFolder(tree: Uri) = launch("Importing Amiibo folder") {
+        val sources = mutableListOf<AmiiboImportSource>()
+        collectImportSources(tree, sources)
+        if (sources.isEmpty()) {
+            notice("No Amiibo dumps or archives were found in that folder")
+            return@launch
+        }
+        applyBulkImport(sources)
+    }
+
+    /**
+     * Run a bulk import and report it as one line.
+     *
+     * The detail goes to diagnostics rather than to a stack of notices: someone
+     * importing four hundred tags wants to know it worked, not to dismiss forty
+     * messages about files that were never tags.
+     */
+    private suspend fun applyBulkImport(sources: List<AmiiboImportSource>) {
+        val result = library.importMany(sources)
+        result.problems.forEach { diagnostics.event("amiibo", "import-skipped", it) }
+
+        // Selecting the single new tag is helpful; selecting one arbitrary tag
+        // out of four hundred is noise.
+        if (result.imported.size == 1) {
+            val id = result.imported.first().id
+            _ui.update { it.copy(selectedAmiiboId = id, section = AppSection.Amiibo) }
+            savedState[KEY_AMIIBO] = id
+            refreshSelectedAmiiboDetails()
+        }
+
+        notice(
+            if (result.problems.isEmpty()) result.summary
+            else "${result.summary} See Diagnostics for what was skipped.",
+        )
+    }
+
+    /**
+     * Read one picked file, or null when it is unreadable or absurdly large.
+     *
+     * The ceiling is the ARCHIVE limit rather than the tag limit, because a
+     * picked file may legitimately be a ZIP of a whole collection.
+     */
+    private fun readImportSource(uri: Uri): AmiiboImportSource? {
+        val resolver = getApplication<Application>().contentResolver
+        return runCatching {
+            val bytes = resolver.openInputStream(uri)?.use { stream ->
+                val output = ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                while (true) {
+                    val count = stream.read(buffer)
+                    if (count < 0) break
+                    if (output.size() + count > MAX_LIBRARY_ARCHIVE_BYTES) {
+                        error("File is too large to be an Amiibo backup or archive")
+                    }
+                    output.write(buffer, 0, count)
+                }
+                output.toByteArray()
+            } ?: error("Could not read the selected file")
+            AmiiboImportSource(displayNameOf(uri), bytes)
+        }.onFailure {
+            diagnostics.event("amiibo", "import-unreadable", it.message.orEmpty())
+        }.getOrNull()
+    }
+
+    /**
+     * Walk a picked folder, gathering every dump and archive inside it.
+     *
+     * Bounded by the archive entry ceiling so a user who points this at their
+     * whole drive gets a large import rather than an unbounded one.
+     */
+    private fun collectImportSources(tree: Uri, into: MutableList<AmiiboImportSource>) {
+        val root = DocumentFile.fromTreeUri(getApplication(), tree) ?: return
+
+        // Iterative rather than recursive, with an explicit queue: a folder tree
+        // is user-supplied and could be arbitrarily deep, and a recursive walk
+        // would put that depth on the stack.
+        val pending = ArrayDeque(listOf(root))
+        while (pending.isNotEmpty() && into.size < AmiiboLibraryArchive.MAX_ENTRIES) {
+            val folder = pending.removeFirst()
+            for (entry in folder.listFiles()) {
+                if (into.size >= AmiiboLibraryArchive.MAX_ENTRIES) break
+                if (entry.isDirectory) {
+                    pending.addLast(entry)
+                } else if (isImportableName(entry.name.orEmpty())) {
+                    readImportSource(entry.uri)?.let(into::add)
+                }
+            }
+        }
+    }
+
+    private fun isImportableName(name: String): Boolean =
+        name.endsWith(".bin", ignoreCase = true) ||
+            name.endsWith(".nfc", ignoreCase = true) ||
+            name.endsWith(".zip", ignoreCase = true)
+
+    private fun displayNameOf(uri: Uri): String =
+        uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "amiibo.bin"
 
     fun importAmiiboArchive(uri: Uri) = launch("Importing Amiibo library") {
         val resolver = getApplication<Application>().contentResolver
