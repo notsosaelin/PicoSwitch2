@@ -111,6 +111,19 @@ android {
     sourceSets.getByName("test").resources.srcDir("../../../tools/fixtures/management")
 }
 
+// Amiibo crypto fixture generation needs the user's own key_retail.bin, which is
+// never in the repository and never committed. Gradle does not forward -D to the
+// test JVM, so these two are passed through explicitly; declaring them as inputs
+// also stops an up-to-date check from silently skipping a regeneration run.
+//
+// Absent them, the fixture generator assumes out and the keyless fixture check
+// still runs, which is what keeps CI meaningful without any key material.
+tasks.withType<Test>().configureEach {
+    listOf("amiibo.retailKey", "amiibo.regenerate").forEach { name ->
+        System.getProperty(name)?.let { systemProperty(name, it) }
+    }
+}
+
 dependencies {
     // Bridge Core: the platform-neutral definition of the PicoSwitch Bridge. This
     // app is one backend for it, not the definition itself. `api` so the Compose

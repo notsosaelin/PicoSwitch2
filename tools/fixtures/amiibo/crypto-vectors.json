@@ -1,0 +1,373 @@
+{
+    "note": "Amiibo crypto vectors, generated from the Kotlin implementation in android/companion/app/src/main/java/dev/picoswitch/companion/data/AmiiboCrypto.kt by AmiiboCryptoFixtureTool. One artifact for all implementations (Kotlin, web/index.html, C#), because a wrong HMAC produces a tag the console silently rejects. NO KEY MATERIAL: the key set is named by fingerprint only. NO PERSONAL DATA: decrypted Mii names are recorded as a digest, never as text.",
+    "generator": "android/companion/app/src/test/java/dev/picoswitch/companion/data/AmiiboCryptoFixtureTool.kt",
+    "regenerate": "gradlew :app:testDebugUnitTest --tests '*AmiiboCryptoFixtureTool*' -Damiibo.retailKey=<path> -Damiibo.regenerate=true",
+    "nameDigest": "sha256(nickname + owner), UTF-8. A complete equality check on the decoded names that discloses neither. Both empty digests as sha256 of the empty string, so producing a name where there is none fails just as loudly.",
+    "coverage": {
+        "figureV3": true,
+        "ntag215": false,
+        "gap": "The tracked corpus contains no 540- or 572-byte NTAG215 image, so the NTAG215 path is NOT covered by these vectors. An implementation verified only against this fixture is unverified for that path. Adding one genuine NTAG215 dump to dumps/amiibo/ and regenerating closes it."
+    },
+    "keySet": {
+        "fingerprint": "sha256:7f9283654ec1097fbdff31de946651ae60c2854afb544abe8963d389639c710e",
+        "note": "SHA-256 of key_retail.bin, so a verifier can prove it holds the same key set. key_retail.bin is never committed."
+    },
+    "vectors": [
+        {
+            "label": "v3-air-riders-king-dedede-tank-after-2115-0096-2026-07-28",
+            "source": "dumps/amiibo/v3-air-riders-king-dedede-tank-after-2115-0096-2026-07-28.bin",
+            "sourceSha256": "e9a7bbab1284336ef32a936853872d4e3e41e90f59bcda6f8b6d5fc7ec719f13",
+            "size": 2048,
+            "identity": {
+                "uid": "0465B0228F2190",
+                "figureId": "1F02000004C71E03",
+                "tagType": "FigureV3",
+                "characterGameCode": "1F02",
+                "characterVariant": 0,
+                "typeName": "Figure",
+                "modelNumber": "04C7",
+                "seriesCode": 30,
+                "formatVersion": 3,
+                "extendedVariant": "AABBCCDD"
+            },
+            "crypto": "Valid",
+            "register": {
+                "setUp": true,
+                "hasAppData": true,
+                "writeCounter": 1,
+                "setupDate": "2026-07-28",
+                "lastWriteDate": "2026-07-28",
+                "titleId": "040077203BE50000",
+                "appId": "42C40700",
+                "appDataLabel": "Unrecognised game (title 040077203BE50000)",
+                "nameDigest": "f4acf8fb854f785cb750bed5a2fcf42243823ec1c64a488f5fbda0a49951c4eb"
+            },
+            "initialized": {
+                "sha256": "87b6a7939b3998b0ed7636e615e9cbd6f401a19712263b8c81631731bdd185ef",
+                "crypto": "Valid",
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+        },
+        {
+            "label": "v3-air-riders-learned-state-after-save-2026-07-28",
+            "source": "dumps/amiibo/v3-air-riders-learned-state-after-save-2026-07-28.bin",
+            "sourceSha256": "5fe31a5342b67654a3f0e6f60b27f645bf79f575be19fc9be1a575563b7576bc",
+            "size": 2048,
+            "identity": {
+                "uid": "049011CADB1F90",
+                "figureId": "1F00000004C41E03",
+                "tagType": "FigureV3",
+                "characterGameCode": "1F00",
+                "characterVariant": 0,
+                "typeName": "Figure",
+                "modelNumber": "04C4",
+                "seriesCode": 30,
+                "formatVersion": 3,
+                "extendedVariant": "AABBCCDD"
+            },
+            "crypto": "Valid",
+            "register": {
+                "setUp": true,
+                "hasAppData": true,
+                "writeCounter": 5,
+                "setupDate": "2026-07-28",
+                "lastWriteDate": "2026-07-28",
+                "titleId": "040077203BE50000",
+                "appId": "42C40700",
+                "appDataLabel": "Unrecognised game (title 040077203BE50000)",
+                "nameDigest": "7704e2f6f2bf4f3c94ddb1422bed0bf156a222f7f9031eea936e3965b8fabe40"
+            },
+            "initialized": {
+                "sha256": "92e27e9f2addbabff968e86999860ec322e3dbd99c6ca4db36aa15c93cb4ecd5",
+                "crypto": "Valid",
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+        },
+        {
+            "label": "v3-air-riders-trained-before-save-2026-07-28",
+            "source": "dumps/amiibo/v3-air-riders-trained-before-save-2026-07-28.bin",
+            "sourceSha256": "42589e7ccee275045c2da1d75c53ab5752daf89a3db6c836eef88748ec448c2d",
+            "size": 2048,
+            "identity": {
+                "uid": "049011CADB1F90",
+                "figureId": "1F00000004C41E03",
+                "tagType": "FigureV3",
+                "characterGameCode": "1F00",
+                "characterVariant": 0,
+                "typeName": "Figure",
+                "modelNumber": "04C4",
+                "seriesCode": 30,
+                "formatVersion": 3,
+                "extendedVariant": "AABBCCDD"
+            },
+            "crypto": "Valid",
+            "register": {
+                "setUp": true,
+                "hasAppData": true,
+                "writeCounter": 4,
+                "setupDate": "2026-07-28",
+                "lastWriteDate": "2026-07-28",
+                "titleId": "040077203BE50000",
+                "appId": "42C40700",
+                "appDataLabel": "Unrecognised game (title 040077203BE50000)",
+                "nameDigest": "7704e2f6f2bf4f3c94ddb1422bed0bf156a222f7f9031eea936e3965b8fabe40"
+            },
+            "initialized": {
+                "sha256": "92e27e9f2addbabff968e86999860ec322e3dbd99c6ca4db36aa15c93cb4ecd5",
+                "crypto": "Valid",
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+        },
+        {
+            "label": "v3-dedede-fix1-after-2115-0096-2026-07-28",
+            "source": "dumps/amiibo/v3-dedede-fix1-after-2115-0096-2026-07-28.bin",
+            "sourceSha256": "f3c9c8f20f40debb9499c32fe9873a391bded779871ad6b39683b3e7e5de1d74",
+            "size": 2048,
+            "identity": {
+                "uid": "0465B0228F2190",
+                "figureId": "1F02000004C71E03",
+                "tagType": "FigureV3",
+                "characterGameCode": "1F02",
+                "characterVariant": 0,
+                "typeName": "Figure",
+                "modelNumber": "04C7",
+                "seriesCode": 30,
+                "formatVersion": 3,
+                "extendedVariant": "AABBCCDD"
+            },
+            "crypto": "Valid",
+            "register": {
+                "setUp": true,
+                "hasAppData": true,
+                "writeCounter": 1,
+                "setupDate": "2026-07-28",
+                "lastWriteDate": "2026-07-28",
+                "titleId": "040077203BE50000",
+                "appId": "42C40700",
+                "appDataLabel": "Unrecognised game (title 040077203BE50000)",
+                "nameDigest": "f4acf8fb854f785cb750bed5a2fcf42243823ec1c64a488f5fbda0a49951c4eb"
+            },
+            "initialized": {
+                "sha256": "87b6a7939b3998b0ed7636e615e9cbd6f401a19712263b8c81631731bdd185ef",
+                "crypto": "Valid",
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+        },
+        {
+            "label": "v3-dynamic-sector1-page0-write-output-2026-07-28",
+            "source": "dumps/amiibo/v3-dynamic-sector1-page0-write-output-2026-07-28.bin",
+            "sourceSha256": "3763c38def3f7ff03cc172d26d507bb54192fdad78683766a8cf0674ae7ae127",
+            "size": 2048,
+            "identity": {
+                "uid": "049011CADB1F90",
+                "figureId": "1F00000004C41E03",
+                "tagType": "FigureV3",
+                "characterGameCode": "1F00",
+                "characterVariant": 0,
+                "typeName": "Figure",
+                "modelNumber": "04C4",
+                "seriesCode": 30,
+                "formatVersion": 3,
+                "extendedVariant": "AABBCCDD"
+            },
+            "crypto": "Valid",
+            "register": {
+                "setUp": true,
+                "hasAppData": true,
+                "writeCounter": 3,
+                "setupDate": "2026-07-28",
+                "lastWriteDate": "2026-07-28",
+                "titleId": "040077203BE50000",
+                "appId": "42C40700",
+                "appDataLabel": "Unrecognised game (title 040077203BE50000)",
+                "nameDigest": "9d559d82d13ee582b0affb0dc167556e67bf3f63afdbd0c6028372240b100979"
+            },
+            "initialized": {
+                "sha256": "92e27e9f2addbabff968e86999860ec322e3dbd99c6ca4db36aa15c93cb4ecd5",
+                "crypto": "Valid",
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+        },
+        {
+            "label": "v3-extended-build-valid-read-write-output-2026-07-28",
+            "source": "dumps/amiibo/v3-extended-build-valid-read-write-output-2026-07-28.bin",
+            "sourceSha256": "6c8c7fddbbfbe4007ec4aeed7b3f4a1a318ca3a3afb2cc65af455323e2cc6c6d",
+            "size": 2048,
+            "identity": {
+                "uid": "049011CADB1F90",
+                "figureId": "1F00000004C41E03",
+                "tagType": "FigureV3",
+                "characterGameCode": "1F00",
+                "characterVariant": 0,
+                "typeName": "Figure",
+                "modelNumber": "04C4",
+                "seriesCode": 30,
+                "formatVersion": 3,
+                "extendedVariant": "AABBCCDD"
+            },
+            "crypto": "Valid",
+            "register": {
+                "setUp": true,
+                "hasAppData": false,
+                "writeCounter": 1,
+                "setupDate": "2026-07-28",
+                "lastWriteDate": "2026-07-28",
+                "titleId": "",
+                "appId": "",
+                "appDataLabel": "None",
+                "nameDigest": "9d559d82d13ee582b0affb0dc167556e67bf3f63afdbd0c6028372240b100979"
+            },
+            "initialized": {
+                "sha256": "92e27e9f2addbabff968e86999860ec322e3dbd99c6ca4db36aa15c93cb4ecd5",
+                "crypto": "Valid",
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+        },
+        {
+            "label": "v3-extended-persist-2115-0096-output-2026-07-28",
+            "source": "dumps/amiibo/v3-extended-persist-2115-0096-output-2026-07-28.bin",
+            "sourceSha256": "8a09d836f73edc12aab33eac04311ece81b674ad311cd57c2f488f1a436b96b0",
+            "size": 2048,
+            "identity": {
+                "uid": "049011CADB1F90",
+                "figureId": "1F00000004C41E03",
+                "tagType": "FigureV3",
+                "characterGameCode": "1F00",
+                "characterVariant": 0,
+                "typeName": "Figure",
+                "modelNumber": "04C4",
+                "seriesCode": 30,
+                "formatVersion": 3,
+                "extendedVariant": "AABBCCDD"
+            },
+            "crypto": "Valid",
+            "register": {
+                "setUp": true,
+                "hasAppData": true,
+                "writeCounter": 1,
+                "setupDate": "2026-07-28",
+                "lastWriteDate": "2026-07-28",
+                "titleId": "040077203BE50000",
+                "appId": "42C40700",
+                "appDataLabel": "Unrecognised game (title 040077203BE50000)",
+                "nameDigest": "9d559d82d13ee582b0affb0dc167556e67bf3f63afdbd0c6028372240b100979"
+            },
+            "initialized": {
+                "sha256": "92e27e9f2addbabff968e86999860ec322e3dbd99c6ca4db36aa15c93cb4ecd5",
+                "crypto": "Valid",
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+        },
+        {
+            "label": "v3-extended-two-stage-success-output-2026-07-28",
+            "source": "dumps/amiibo/v3-extended-two-stage-success-output-2026-07-28.bin",
+            "sourceSha256": "4d42e08a17afba41a6ccc01ca6755968aff198f41073ccc241e24432644ad1fd",
+            "size": 2048,
+            "identity": {
+                "uid": "049011CADB1F90",
+                "figureId": "1F00000004C41E03",
+                "tagType": "FigureV3",
+                "characterGameCode": "1F00",
+                "characterVariant": 0,
+                "typeName": "Figure",
+                "modelNumber": "04C4",
+                "seriesCode": 30,
+                "formatVersion": 3,
+                "extendedVariant": "AABBCCDD"
+            },
+            "crypto": "Valid",
+            "register": {
+                "setUp": true,
+                "hasAppData": true,
+                "writeCounter": 2,
+                "setupDate": "2026-07-28",
+                "lastWriteDate": "2026-07-28",
+                "titleId": "040077203BE50000",
+                "appId": "42C40700",
+                "appDataLabel": "Unrecognised game (title 040077203BE50000)",
+                "nameDigest": "9d559d82d13ee582b0affb0dc167556e67bf3f63afdbd0c6028372240b100979"
+            },
+            "initialized": {
+                "sha256": "92e27e9f2addbabff968e86999860ec322e3dbd99c6ca4db36aa15c93cb4ecd5",
+                "crypto": "Valid",
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+        },
+        {
+            "label": "v3-reuse-dynamic-header-success-output-2026-07-28",
+            "source": "dumps/amiibo/v3-reuse-dynamic-header-success-output-2026-07-28.bin",
+            "sourceSha256": "760d263991b453e5fa8376e5b55d212021d158bd6349636ca79d62b4e3629253",
+            "size": 2048,
+            "identity": {
+                "uid": "049011CADB1F90",
+                "figureId": "1F00000004C41E03",
+                "tagType": "FigureV3",
+                "characterGameCode": "1F00",
+                "characterVariant": 0,
+                "typeName": "Figure",
+                "modelNumber": "04C4",
+                "seriesCode": 30,
+                "formatVersion": 3,
+                "extendedVariant": "AABBCCDD"
+            },
+            "crypto": "Valid",
+            "register": {
+                "setUp": true,
+                "hasAppData": true,
+                "writeCounter": 3,
+                "setupDate": "2026-07-28",
+                "lastWriteDate": "2026-07-28",
+                "titleId": "040077203BE50000",
+                "appId": "42C40700",
+                "appDataLabel": "Unrecognised game (title 040077203BE50000)",
+                "nameDigest": "9d559d82d13ee582b0affb0dc167556e67bf3f63afdbd0c6028372240b100979"
+            },
+            "initialized": {
+                "sha256": "92e27e9f2addbabff968e86999860ec322e3dbd99c6ca4db36aa15c93cb4ecd5",
+                "crypto": "Valid",
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+        }
+    ],
+    "rejected": [
+        {
+            "source": "dumps/amiibo/Kirby.bin",
+            "sourceSha256": "2d1840b3dea812a0e13eaaf49f1d3b0d723cadd5c6854615fb50020f5af705fe",
+            "size": 668,
+            "reason": "not a supported tag image size (540, 572 or 2048)"
+        },
+        {
+            "source": "dumps/amiibo/genuine-kirby-warp-after-air-riders-2026-07-28.bin",
+            "sourceSha256": "86a29d2354f3a04c8377b9da9a52c3d70ec9b434f97ee3f27b4251b3f476ef27",
+            "size": 668,
+            "reason": "not a supported tag image size (540, 572 or 2048)"
+        }
+    ]
+}
