@@ -1352,8 +1352,53 @@ public sealed class AdapterConnectionService
         }
         finally
         {
+            ReconcileCarrierLoss();
             operationGate.Release();
         }
+    }
+
+    /// <summary>
+    /// The relationship may never say Connected while the carrier is not.
+    ///
+    /// **This is what made a force-close the only way out.** The transport retires
+    /// its GATT session on any failure after transmit — a reply timeout, most
+    /// often — and that is correct: management replies carry no request id, so a
+    /// late one is indistinguishable from the next one's. But the retirement is
+    /// invisible above the transport, and the coordinator stayed in Connected.
+    /// <c>RequestReconnect</c> is deliberately inert while Connected, so Reconnect
+    /// then did nothing, every command threw "No adapter is connected", and only
+    /// restarting the process — which rebuilds the coordinator from the registry —
+    /// cleared it. Observed 2026-08-31 during a KB/M resident upload.
+    ///
+    /// Reconciling here rather than by subscribing to the transport's state is
+    /// deliberate: it runs under the operation gate, after the operation that
+    /// observed the loss, so it cannot race a connect that is still walking
+    /// Connecting → Validating → Connected.
+    ///
+    /// It does NOT touch the registry, the pairing, or the local library. Losing a
+    /// link is not a change to the relationship — the row stays selected and the
+    /// adapter stays paired, which is exactly what makes plain Reconnect the right
+    /// recovery.
+    /// </summary>
+    private void ReconcileCarrierLoss()
+    {
+        if (relationship.Value.Phase != AdapterRelationshipPhase.Connected ||
+            repository.Connection.Value.Connected)
+        {
+            return;
+        }
+
+        if (!lifecycle.ConnectionEnded("The adapter's management link dropped. Reconnect to continue."))
+        {
+            return;
+        }
+
+        active.MarkDisconnected();
+        Publish();
+        diagnostics.Warn(
+            "app",
+            "management carrier lost; relationship returned to Idle so Reconnect works " +
+            "(pairing, registry and local library untouched)");
     }
 
     private Task RunExclusiveAsync(Func<Task<object?>> operation) =>

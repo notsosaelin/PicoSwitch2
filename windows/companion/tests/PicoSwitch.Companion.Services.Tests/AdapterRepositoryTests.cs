@@ -384,7 +384,7 @@ public abstract class FakeTransportBase : IManagementTransport
 
     public abstract TransportTrustSnapshot Trust { get; }
 
-    public void PrepareConnection(ManagementConnectionContext context) => LastContext = context;
+    public virtual void PrepareConnection(ManagementConnectionContext context) => LastContext = context;
 
     public Task<DiscoveredManagementPeer> DiscoverAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult(new DiscoveredManagementPeer(0xAABBCCDDEE01, "AA:BB:CC:DD:EE:01"));
@@ -407,10 +407,31 @@ public abstract class FakeTransportBase : IManagementTransport
     {
         Disconnects++;
         Validated = false;
+        connection.Set(new ConnectionState());
         return Task.CompletedTask;
     }
 
-    public void MarkValidated() => Validated = true;
+    public void MarkValidated()
+    {
+        Validated = true;
+        connection.Set(new ConnectionState { Phase = ConnectionPhase.Connected });
+    }
+
+    /// <summary>
+    /// The transport retires its GATT session from underneath a live caller —
+    /// what <c>RetireAsync("reply-timeout")</c> does after a command goes
+    /// unanswered.
+    ///
+    /// Modelled here because the CARRIER state is the fact the service layer has
+    /// to reconcile against. A fake that never published a connection phase let
+    /// the app-scoped relationship sit in Connected forever with nothing beneath
+    /// it, which is exactly the state that made a force-close the only recovery.
+    /// </summary>
+    public void RetireCarrier(string reason = "reply-timeout")
+    {
+        Validated = false;
+        connection.Set(new ConnectionState { Message = reason });
+    }
 
     /// <summary>
     /// Forget what happened during fixture setup.
