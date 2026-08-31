@@ -3,6 +3,8 @@
 **Date:** 2026-08-31
 **Status:** **Partial.** B1 and B2 are answered and both **pass**. B3–B6 are
 **unmeasured**, blocked on a failure `WINDOWS_PASS.md` §14.5 did not anticipate.
+The package-identity explanation for that failure has since been **falsified**;
+the radio/driver explanation stands unrefuted and untested on a second radio.
 Phase 6 remains gated. Phase 6a is not, and is unaffected.
 
 ## Question
@@ -59,11 +61,11 @@ dotnet run -c Release -- --seconds 120 --out findings.json  # full run, B3–B6
 | `IsPeripheralRoleSupported` | **true** |
 | `IsAdvertisementOffloadSupported` | true |
 | `MaxAdvertisementDataLength` | 160 |
-| Probe process | unpackaged console app, **no package identity** |
+| Probe process | run BOTH unpackaged and under a package identity declaring `runFullTrust` + `bluetooth` |
 | Report descriptor | 161 bytes, sha256 `f27315bfdf48b7ab5f76336f065fa27d9e04a45fdd17f96e4e752473a6725054` |
 | Bridge contract | 4 |
 | Adapter firmware | `71373293+dirty`, `bridge_contract` 4 |
-| Live LE links during the run | four (two Xbox controllers, an 8BitDo keyboard, the adapter) |
+| Live LE links during the run | five (two Xbox controllers, an 8BitDo keyboard, an OhSnap MCON I, the adapter) |
 
 ## Results
 
@@ -153,14 +155,16 @@ is currently supported over the other.
 manifest and therefore no declared `bluetooth` capability. The shipping companion
 is a packaged WinUI 3 app whose `Package.appxmanifest` declares exactly that
 capability, with a comment already anticipating this use. Windows gates several
-peripheral-role behaviours on app identity. If this is the cause, **Path B is
-alive** and the only consequence is that Controller Link requires the packaged
-build — which matters, because §33.2 requires the unpackaged build to run too.
+peripheral-role behaviours on app identity. If this were the cause, **Path B
+would be alive** and the only consequence would be that Controller Link requires
+the packaged build — which would matter, because §33.2 requires the unpackaged
+build to run too.
 
-*Against H1:* `GattServiceProvider.CreateAsync` and `CreateCharacteristicAsync`
-both succeeded from the same unpackaged process, through the same broker. An
-identity gate that permits publishing a GATT server but not advertising it would
-be an odd boundary.
+*Predicted against H1 before testing:* `GattServiceProvider.CreateAsync` and
+`CreateCharacteristicAsync` both succeeded from the same unpackaged process,
+through the same broker; an identity gate permitting a GATT server to be
+published but not advertised would be an odd boundary. **That prediction held —
+see below.**
 
 **H2 — radio or driver.** `IsPeripheralRoleSupported` reports true, but that
 property describes the radio's claimed capability, not the driver's willingness
@@ -172,18 +176,49 @@ LE link plus advertising-set budgets.
 looks more like a policy than a resource race — though the link count did not
 change between attempts, so the two are not separated.
 
-**What would settle it, cheaply:**
+### H1 was tested, and is FALSIFIED
 
-- Run the identical probe **with package identity** (developer mode plus
-  `Add-AppxPackage -Register`, or a signed MSIX). Distinguishes H1 from H2 in one
-  run. Developer mode is a machine-wide administrative change and was **not**
-  made for this experiment.
+Developer Mode was enabled and the **identical executable** was registered under
+a minimal package identity — `tools/hogp_probe/package/AppxManifest.xml`,
+declaring `runFullTrust` and the `bluetooth` device capability, the same
+capability the shipping companion declares — and launched through
+`Invoke-CommandInDesktopPackage` so it ran inside that identity.
+
+Identity was the only variable. The result is byte-for-byte the same:
+
+```
+B1.error                  = Success
+advertisementStatus       = Aborted
+advertisementTransitions  = [ "Aborted/Success" ]
+```
+
+**Package identity does not change the outcome.** H1 is dead, and with it the
+comfortable reading that Controller Link would simply require the MSIX build.
+
+*(A deliberately separate package, not the companion's: putting a lab probe in
+the product's layout would contaminate what ships, and the identity question does
+not care whose identity it is. The registration is per-user and was removed again
+after the run — `run-packaged.ps1 -Unregister`.)*
+
+### What remains
+
+**H2 stands unrefuted.** The radio or its driver will not accept a connectable
+peripheral advertisement, whatever `IsPeripheralRoleSupported` reports. Five live
+LE links were present throughout (`8BitDo Retro 87 Keyboard X`, `OhSnap MCON I`,
+two `Xbox Wireless Controller`, and the adapter), so the resource-budget form of
+H2 is not separated from the outright-refusal form.
+
+**What would settle it:**
+
 - Run the identical probe on a **second radio**, per §14.5's own instruction that
   a single-machine result is not a product claim. A different vendor advertising
   successfully falsifies H2 for that radio; a second Intel part failing the same
-  way strengthens it.
+  way strengthens it. **No second radio is available on this bench**, so this
+  remains open.
 - Re-run with the other LE peripherals disconnected, holding everything else
-  fixed. Cheap, and separates the resource-budget form of H2.
+  fixed — separates the resource-budget form of H2 from an outright refusal.
+- Try an Intel driver other than 24.40.10.8, since the abort carries no error and
+  a driver-level refusal is invisible from user mode.
 
 ## Conclusion
 
@@ -194,7 +229,14 @@ and B2 passed; B3 and B4 were not reached.
 **No §14.6 branch is taken.** The decision table maps outcomes to product
 decisions, and every branch requires knowing *which* question failed. Escalating
 to Path C now would commit a joint firmware + Windows pass on the strength of an
-advertiser abort that is not even specific to HID.
+advertiser abort that is not even specific to HID, and that is now known not to
+be about app identity either.
+
+**One product requirement is already established, whatever B3 turns out to be.**
+Controller Link must be gated on an ACTUAL advertising attempt, not on
+`IsPeripheralRoleSupported`. That property reports true on the only radio tested
+while every connectable advertisement aborts, so a capability check built on it
+would offer the user a feature that cannot work and would report no reason.
 
 **Phase 6a is unaffected and remains available.** Its entry gate is "None beyond
 Phase 3" and §31 states explicitly that it is independent of §14's outcome:
@@ -210,7 +252,11 @@ Windows. §31 also states that Phase 6a and 6b still run even when the gate fail
   an unpackaged process — Confirmed** for this machine, this driver and this
   build. Reproduced five times consecutively and across four parameter
   combinations, with a control service and a control advertiser.
-- **The cause — Unknown.** H1 and H2 are both plausible and neither is supported.
+- **H1 (package identity) — Disproven.** The identical executable under a package
+  identity declaring `runFullTrust` and `bluetooth` produced the identical abort.
+- **H2 (radio or driver) — Hypothesis.** The only surviving explanation, and
+  unfalsified rather than confirmed: one radio is not a product claim, and the
+  resource-budget form was not separated from an outright refusal.
 - **B3, B4, B5, B6 — Unknown.** Not attempted, not failed.
 
 ## Negative knowledge preserved
@@ -223,20 +269,34 @@ from that property alone that the peripheral path is available; the probe's
 `--advertiser-control` and the connectable/discoverable matrix are what
 distinguish the claim from the behaviour.
 
+## Negative knowledge, second entry
+
+**Package identity is not what blocks connectable peripheral advertising.** It is
+the obvious first suspect — the probe is unpackaged, the product is not, and
+Windows does gate peripheral behaviours on identity elsewhere — and it is wrong
+here. A future reader should not spend the packaging work again on this symptom.
+`tools/hogp_probe/run-packaged.ps1` reproduces the disproof in one command if the
+question is ever reopened on different hardware.
+
 ## Remaining unknowns
 
-- Whether package identity changes the advertising outcome (H1).
 - Whether another radio advertises connectably (H2), and how peripheral quality
   varies by vendor — §14.5 asks for this explicitly and one machine cannot answer
-  it.
-- Whether the live-LE-link count affects the abort.
+  it. **No second radio is available on this bench.**
+- Whether the live-LE-link count affects the abort. Five links were up throughout.
+- Whether a different Intel driver behaves differently. The abort carries no
+  error, so a driver-level refusal is invisible from user mode.
 - Everything B3 was designed to ask: whether BTstack's `hids_client` proceeds
-  without DIS. This remains the decisive question for Path B and is untouched.
+  without DIS. This remains the decisive question for Path B and is **untouched**.
 
 ## Suggested follow-up
 
-1. Enable developer mode, register the probe under the companion's package
-   identity, re-run. One run, decides H1 vs H2.
-2. Re-run on a second radio of a different vendor.
+1. Re-run on a second radio of a different vendor — the single highest-value
+   next step, and the only one that can move H2.
+2. Re-run with the other LE peripherals disconnected, to separate the
+   resource-budget form of H2.
 3. Only then read `bridge` over UART for the B3/B4 verdict, and take the §14.6
    branch the evidence actually supports.
+4. Independently of all of the above: when Phase 6 is eventually implemented,
+   gate the Controller Link capability on a real advertising attempt rather than
+   on `IsPeripheralRoleSupported`.

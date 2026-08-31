@@ -22,17 +22,24 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   the firmware. B3-B6 are recorded as **unmeasured, not failed** — the adapter was never given a
   chance to connect, so `bridge` over UART would necessarily read `calls == 0` and would mean only
   "nothing connected".
+  **Package identity was the obvious suspect, and it is DISPROVEN.** The identical executable, run
+  under a package identity declaring `runFullTrust` and the same `bluetooth` capability the shipping
+  companion declares, produced a byte-identical abort. So Controller Link is not merely
+  "MSIX-only" — the comfortable reading is gone, and the only surviving explanation is the radio or
+  its driver. That is unfalsified rather than confirmed: §14.5 asks for a per-radio result and no
+  second radio is available on this bench.
   **No §14.6 branch is taken.** Every branch maps a SPECIFIC failed question to a product decision,
   and escalating to Path C on an advertiser abort would commit a joint firmware + Windows pass on no
-  evidence. Two explanations remain untested and lead to different answers: package identity (the
-  probe is an unpackaged console app, the product is a packaged WinUI 3 app that already declares the
-  `bluetooth` capability) and the radio/driver. One packaged run separates them; §14.5 also asks for
-  a second radio, because a single-machine result is not a product claim.
-  **Negative knowledge:** `IsPeripheralRoleSupported == true` is NOT sufficient evidence that a
-  Windows PC can advertise connectably. It reports true on this machine while every connectable
-  advertisement aborts.
+  evidence.
+  **One product requirement is already settled, whatever B3 turns out to be:** Controller Link must
+  be gated on an ACTUAL advertising attempt, never on `IsPeripheralRoleSupported`.
+  **Negative knowledge, two entries:** `IsPeripheralRoleSupported == true` is NOT sufficient evidence
+  that a Windows PC can advertise connectably — it reports true here while every connectable
+  advertisement aborts; and package identity is NOT what blocks it, so nobody should spend the
+  packaging work again on this symptom.
   `tools/hogp_probe/` is kept and re-runnable per radio, with controls for service, encryption,
-  connectability, discoverability and a no-GATT advertiser baseline.
+  connectability, discoverability, a no-GATT advertiser baseline, and `run-packaged.ps1` for the
+  identity comparison (which registers per-user and unregisters again).
   [`docs/experiments/windows-hogp-bridge-feasibility-2026-08-31.md`](docs/experiments/windows-hogp-bridge-feasibility-2026-08-31.md)
 
 - **The management carrier stopped answering while the adapter looked for a controller. Fixed
