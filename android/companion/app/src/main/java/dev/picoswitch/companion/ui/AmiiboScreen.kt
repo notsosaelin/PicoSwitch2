@@ -11,12 +11,18 @@ import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -33,6 +39,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.picoswitch.companion.data.AmiiboCard
+import dev.picoswitch.companion.data.AmiiboCategory
+import dev.picoswitch.companion.data.AmiiboGallery
+import dev.picoswitch.companion.data.AmiiboInspection
+import dev.picoswitch.companion.data.AmiiboGalleryFilters
+import dev.picoswitch.companion.data.AmiiboGalleryOptions
+import dev.picoswitch.companion.data.AmiiboSort
+import dev.picoswitch.companion.data.AmiiboViewMode
 import dev.picoswitch.companion.model.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -55,56 +69,67 @@ fun AmiiboScreen(
     onImportKeys: () -> Unit,
     onScan: () -> Unit,
 ) {
-    var query by rememberSaveable { mutableStateOf("") }
+    // The query lives in the ViewModel, not here. As Compose locals these reset
+    // whenever the screen left composition, and — the reason that matters — the
+    // card list would be rebuilt from state a selection could reach, which is
+    // exactly how the Windows page lost its scroll position on every click.
+    val filters = ui.amiiboFilters
+    val query = filters.search
     var searchOpen by rememberSaveable { mutableStateOf(false) }
-    var sortOrder by rememberSaveable { mutableStateOf(AmiiboSortOrder.Name) }
-    var gameSeriesFilter by rememberSaveable { mutableStateOf("") }
     var detailOpen by rememberSaveable { mutableStateOf(false) }
 
     val adapter = ui.snapshot.amiibo
     val adapterLoaded = adapter.loaded || adapter.v3Loaded
     val selected = ui.library.firstOrNull { it.id == ui.selectedAmiiboId }
-    val adapterMatchesSelected = selected != null && adapterLoaded &&
-        selected.uid.isNotBlank() && selected.uid.equals(adapter.uid, ignoreCase = true)
+    val adapterMatchesSelected = selected != null &&
+        AmiiboGallery.residentOn(selected, adapter.uid, adapterLoaded)
     val adapterOnly = adapterLoaded && !adapterMatchesSelected
 
-    val filtered = remember(ui.library, ui.amiiboCatalogEntries, query, sortOrder, gameSeriesFilter) {
-        sortAmiiboLibrary(
-            ui.library.filter { item ->
-                val catalog = ui.amiiboCatalogEntries[item.id]
-                val matchesQuery = query.isBlank() || listOf(
-                    item.displayName, item.figureId, item.uid, item.typeName, item.characterGameCode,
-                    catalog?.name.orEmpty(), catalog?.character.orEmpty(),
-                    catalog?.gameSeries.orEmpty(), catalog?.amiiboSeries.orEmpty(),
-                ).joinToString(" ").contains(query.trim(), ignoreCase = true)
-                matchesQuery &&
-                    (gameSeriesFilter.isBlank() || catalog?.gameSeries.equals(gameSeriesFilter, ignoreCase = true))
-            },
-            ui.amiiboCatalogEntries,
-            sortOrder,
+    // Indexed by FIGURE id once, not scanned per item. amiiboCatalogEntries is
+    // keyed by library item id, so looking a figure up by scanning its values
+    // was a full catalog walk for each of a thousand-plus rows.
+    val byFigureId = remember(ui.amiiboCatalogEntries) {
+        ui.amiiboCatalogEntries.values.associateBy { it.id.uppercase() }
+    }
+    val catalogFor: (String) -> AmiiboCatalogEntry? = { byFigureId[it.uppercase()] }
+
+    // ONE projection, shared by all three views. Keyed on the library, the
+    // catalog and the QUERY — not on the selection, so selecting cannot rebuild
+    // the list and cannot move the scroll position.
+    //
+    // The catalog IS a key: it arrives asynchronously, long after the first
+    // projection, and it carries the title and artwork every card shows. A
+    // signature that omitted it would leave a library of placeholders that never
+    // resolved. The Windows companion shipped exactly that bug.
+    val cards = remember(ui.library, ui.amiiboCatalogEntries, filters.queryIdentity, adapterLoaded) {
+        AmiiboGallery.build(
+            ui.library,
+            catalogFor,
+            AmiiboGallery.residentId(ui.library, adapter.uid, adapterLoaded),
+            filters,
         )
     }
-    val seriesOptions = remember(ui.amiiboCatalogEntries) {
-        ui.amiiboCatalogEntries.values.mapNotNull { it.gameSeries.takeIf(String::isNotBlank) }.distinct().sorted()
+    val options = remember(ui.library, ui.amiiboCatalogEntries) {
+        AmiiboGallery.options(ui.library, catalogFor)
     }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val twoColumn = twoColumnLayout(maxWidth)
+
+        // Unfolding or rotating into a two-pane width while the compact sheet is
+        // up would leave the same figure described twice, once over the other.
+        LaunchedEffect(twoColumn) { if (twoColumn) detailOpen = false }
+
         Column(Modifier.fillMaxSize()) {
             AmiiboToolbar(
                 ui = ui,
                 viewModel = viewModel,
                 count = ui.library.size,
-                matches = filtered.size,
-                query = query,
-                onQuery = { query = it },
+                matches = cards.size,
+                filters = filters,
+                options = options,
                 searchOpen = searchOpen,
-                onSearchOpen = { searchOpen = it; if (!it) query = "" },
-                sortOrder = sortOrder,
-                onSort = { sortOrder = it },
-                seriesOptions = seriesOptions,
-                seriesFilter = gameSeriesFilter,
-                onSeriesFilter = { gameSeriesFilter = it },
+                onSearchOpen = { searchOpen = it; if (!it) viewModel.setAmiiboSearch("") },
                 onImport = onImport,
                 onScan = onScan,
             )
@@ -129,9 +154,11 @@ fun AmiiboScreen(
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 if (twoColumn) {
                     Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space3)) {
-                        AmiiboGrid(ui, viewModel, filtered, query, Modifier.weight(1f).fillMaxHeight()) {
-                            detailOpen = true
-                        }
+                        // No sheet here: the inspector beside the grid is
+                        // already showing this figure, and stacking a modal copy
+                        // of it over the top would hide the browser it exists to
+                        // sit next to.
+                        AmiiboBrowser(ui, viewModel, cards, Modifier.weight(1f).fillMaxHeight()) {}
                         Column(
                             Modifier.width(LayoutTokens.DetailWidth).fillMaxHeight()
                                 .verticalScroll(rememberScrollState()),
@@ -147,7 +174,7 @@ fun AmiiboScreen(
                             AdapterAmiiboCard(ui, viewModel)
                             Spacer(Modifier.height(LayoutTokens.Space2))
                         }
-                        AmiiboGrid(ui, viewModel, filtered, query, Modifier.weight(1f).fillMaxWidth()) {
+                        AmiiboBrowser(ui, viewModel, cards, Modifier.weight(1f).fillMaxWidth()) {
                             detailOpen = true
                         }
                     }
@@ -194,20 +221,18 @@ private fun AmiiboToolbar(
     viewModel: CompanionViewModel,
     count: Int,
     matches: Int,
-    query: String,
-    onQuery: (String) -> Unit,
+    filters: AmiiboGalleryFilters,
+    options: AmiiboGalleryOptions,
     searchOpen: Boolean,
     onSearchOpen: (Boolean) -> Unit,
-    sortOrder: AmiiboSortOrder,
-    onSort: (AmiiboSortOrder) -> Unit,
-    seriesOptions: List<String>,
-    seriesFilter: String,
-    onSeriesFilter: (String) -> Unit,
     onImport: () -> Unit,
     onScan: () -> Unit,
 ) {
+    val query = filters.search
+    val onQuery: (String) -> Unit = viewModel::setAmiiboSearch
     var sortOpen by remember { mutableStateOf(false) }
     var filterOpen by remember { mutableStateOf(false) }
+    var viewOpen by remember { mutableStateOf(false) }
     var overflowOpen by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
     // An Android build with no usable NFC reader hides the action entirely
@@ -248,8 +273,7 @@ private fun AmiiboToolbar(
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            if (query.isBlank() && seriesFilter.isBlank()) "$count saved"
-                            else "$matches of $count",
+                            if (!filters.any) "$count saved" else "$matches of $count",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -259,21 +283,34 @@ private fun AmiiboToolbar(
                     IconButton(onClick = { onSearchOpen(true) }) {
                         Icon(Icons.Default.Search, "Search library")
                     }
+                    // View mode sits with search rather than in the overflow:
+                    // it is the control someone reaches for most after finding
+                    // nothing looks the way they want.
+                    Box {
+                        IconButton(onClick = { viewOpen = true }) {
+                            Icon(filters.view.icon(), "Change how the library is shown")
+                        }
+                        ViewMenu(viewOpen, { viewOpen = false }, filters.view, viewModel::setAmiiboView)
+                    }
                     if (roomy) {
                         Box {
-                            IconButton(onClick = { filterOpen = true }, enabled = seriesOptions.isNotEmpty()) {
+                            IconButton(
+                                onClick = { filterOpen = true },
+                                enabled = options.gameSeries.isNotEmpty() ||
+                                    options.amiiboSeries.isNotEmpty() || options.types.isNotEmpty(),
+                            ) {
                                 Icon(
-                                    if (seriesFilter.isBlank()) Icons.Default.FilterList else Icons.Default.FilterAlt,
-                                    "Filter by series",
+                                    if (filters.any) Icons.Default.FilterAlt else Icons.Default.FilterList,
+                                    "Filter the library",
                                 )
                             }
-                            SeriesMenu(filterOpen, { filterOpen = false }, seriesOptions, seriesFilter, onSeriesFilter)
+                            FilterMenu(filterOpen, { filterOpen = false }, filters, options, viewModel)
                         }
                         Box {
                             IconButton(onClick = { sortOpen = true }) {
                                 Icon(Icons.AutoMirrored.Filled.Sort, "Sort library")
                             }
-                            SortMenu(sortOpen, { sortOpen = false }, sortOrder, onSort)
+                            SortMenu(sortOpen, { sortOpen = false }, filters, viewModel)
                         }
                         if (nfcAvailable) {
                             IconButton(onClick = onScan, enabled = !ui.busy) {
@@ -291,14 +328,15 @@ private fun AmiiboToolbar(
                         DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
                             if (!roomy) {
                                 DropdownMenuItem(
-                                    text = { Text("Sort: ${sortOrder.label()}") },
+                                    text = { Text("Sort: ${filters.sort.label()}") },
                                     leadingIcon = { Icon(Icons.AutoMirrored.Filled.Sort, null) },
                                     onClick = { overflowOpen = false; sortOpen = true },
                                 )
                                 DropdownMenuItem(
-                                    text = { Text(if (seriesFilter.isBlank()) "Filter by series" else seriesFilter) },
+                                    text = { Text(if (filters.any) "Filters applied" else "Filter the library") },
                                     leadingIcon = { Icon(Icons.Default.FilterList, null) },
-                                    enabled = seriesOptions.isNotEmpty(),
+                                    enabled = options.gameSeries.isNotEmpty() ||
+                                        options.amiiboSeries.isNotEmpty() || options.types.isNotEmpty(),
                                     onClick = { overflowOpen = false; filterOpen = true },
                                 )
                                 if (nfcAvailable) {
@@ -320,74 +358,167 @@ private fun AmiiboToolbar(
                         // Anchored here so the collapsed menus open near the
                         // overflow button they were reached through.
                         if (!roomy) {
-                            SortMenu(sortOpen, { sortOpen = false }, sortOrder, onSort)
-                            SeriesMenu(filterOpen, { filterOpen = false }, seriesOptions, seriesFilter, onSeriesFilter)
+                            SortMenu(sortOpen, { sortOpen = false }, filters, viewModel)
+                            FilterMenu(filterOpen, { filterOpen = false }, filters, options, viewModel)
                         }
                     }
                 }
             }
-            if (seriesFilter.isNotBlank() && !searchOpen) {
+            // Active filters as removable chips. A filter you cannot see is a
+            // library that looks mysteriously incomplete.
+            if (filters.any && !searchOpen) {
                 Spacer(Modifier.height(LayoutTokens.Space1))
-                FilterChip(
-                    selected = true,
-                    onClick = { onSeriesFilter("") },
-                    label = { Text(seriesFilter, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    trailingIcon = { Icon(Icons.Default.Close, "Clear series filter", Modifier.size(16.dp)) },
-                )
+                Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space1)) {
+                    listOfNotNull(
+                        filters.gameSeries.takeIf { it.isNotBlank() }
+                            ?.let { it to { viewModel.setAmiiboGameSeries("") } },
+                        filters.amiiboSeries.takeIf { it.isNotBlank() }
+                            ?.let { it to { viewModel.setAmiiboSeries("") } },
+                        filters.type.takeIf { it.isNotBlank() }
+                            ?.let { it to { viewModel.setAmiiboType("") } },
+                    ).forEach { (label, clear) ->
+                        FilterChip(
+                            selected = true,
+                            onClick = clear,
+                            label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            trailingIcon = {
+                                Icon(Icons.Default.Close, "Clear filter", Modifier.size(16.dp))
+                            },
+                        )
+                    }
+                }
             }
         }
     }
 }
 
+/**
+ * Sort mode, and the direction alongside it.
+ *
+ * Direction belongs with the selector rather than as a separate control: it is
+ * meaningless on its own, and a stray "reverse" button with no visible sort is
+ * a puzzle.
+ */
 @Composable
 private fun SortMenu(
     expanded: Boolean,
     onDismiss: () -> Unit,
-    sortOrder: AmiiboSortOrder,
-    onSort: (AmiiboSortOrder) -> Unit,
+    filters: AmiiboGalleryFilters,
+    viewModel: CompanionViewModel,
 ) {
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
-        // Only orders the local library can actually be sorted by. Import time
-        // is recorded per item; "recently used" and "last modified" are not, so
-        // they are not offered.
-        AmiiboSortOrder.entries.forEach { order ->
+        AmiiboSort.entries.forEach { sort ->
             DropdownMenuItem(
-                text = { Text(order.label()) },
-                onClick = { onSort(order); onDismiss() },
-                leadingIcon = if (order == sortOrder) ({ Icon(Icons.Default.Check, null) }) else null,
+                text = { Text(sort.label()) },
+                onClick = { viewModel.setAmiiboSort(sort); onDismiss() },
+                leadingIcon = if (sort == filters.sort) ({ Icon(Icons.Default.Check, null) }) else null,
+            )
+        }
+        HorizontalDivider()
+        DropdownMenuItem(
+            text = { Text(if (filters.descending) "Descending" else "Ascending") },
+            leadingIcon = { Icon(Icons.AutoMirrored.Filled.Sort, null) },
+            onClick = { viewModel.toggleAmiiboSortDirection(); onDismiss() },
+        )
+    }
+}
+
+/**
+ * The three filters, each offering only values the user's library contains.
+ *
+ * A menu listing every Amiibo series in existence when the library holds three
+ * figures is a worse control than one listing those three's series.
+ */
+@Composable
+private fun FilterMenu(
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    filters: AmiiboGalleryFilters,
+    options: AmiiboGalleryOptions,
+    viewModel: CompanionViewModel,
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        FilterGroup("Game series", options.gameSeries, filters.gameSeries) {
+            viewModel.setAmiiboGameSeries(it); onDismiss()
+        }
+        FilterGroup("Collection", options.amiiboSeries, filters.amiiboSeries) {
+            viewModel.setAmiiboSeries(it); onDismiss()
+        }
+        FilterGroup("Type", options.types, filters.type) {
+            viewModel.setAmiiboType(it); onDismiss()
+        }
+        if (filters.any) {
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text("Clear filters") },
+                leadingIcon = { Icon(Icons.Default.Close, null) },
+                onClick = { viewModel.clearAmiiboFilters(); onDismiss() },
             )
         }
     }
 }
 
 @Composable
-private fun SeriesMenu(
-    expanded: Boolean,
-    onDismiss: () -> Unit,
-    options: List<String>,
+private fun FilterGroup(
+    title: String,
+    values: List<String>,
     selected: String,
     onSelect: (String) -> Unit,
 ) {
-    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+    if (values.isEmpty()) return
+    HorizontalDivider()
+    Text(
+        title,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = LayoutTokens.Space3, vertical = LayoutTokens.Space1),
+    )
+    values.forEach { value ->
         DropdownMenuItem(
-            text = { Text("All series") },
-            onClick = { onSelect(""); onDismiss() },
-            leadingIcon = if (selected.isBlank()) ({ Icon(Icons.Default.Check, null) }) else null,
+            text = { Text(value) },
+            onClick = { onSelect(if (value == selected) "" else value) },
+            leadingIcon = if (value == selected) ({ Icon(Icons.Default.Check, null) }) else null,
         )
-        options.forEach { series ->
+    }
+}
+
+/** Grid, Carousel or Detailed list. Presentation only. */
+@Composable
+private fun ViewMenu(
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    view: AmiiboViewMode,
+    onSelect: (AmiiboViewMode) -> Unit,
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        AmiiboViewMode.entries.forEach { mode ->
             DropdownMenuItem(
-                text = { Text(series) },
-                onClick = { onSelect(series); onDismiss() },
-                leadingIcon = if (series == selected) ({ Icon(Icons.Default.Check, null) }) else null,
+                text = { Text(mode.label()) },
+                leadingIcon = { Icon(mode.icon(), null) },
+                onClick = { onSelect(mode); onDismiss() },
+                trailingIcon = if (mode == view) ({ Icon(Icons.Default.Check, null) }) else null,
             )
         }
     }
 }
 
-private fun AmiiboSortOrder.label(): String = when (this) {
-    AmiiboSortOrder.Name -> "Name"
-    AmiiboSortOrder.Series -> "Series"
-    AmiiboSortOrder.RecentlyAdded -> "Recently imported"
+private fun AmiiboSort.label(): String = when (this) {
+    AmiiboSort.Default -> "Recently added"
+    AmiiboSort.Name -> "Name"
+    AmiiboSort.Number -> "Figure number"
+    AmiiboSort.Release -> "Release date"
+}
+
+private fun AmiiboViewMode.label(): String = when (this) {
+    AmiiboViewMode.Grid -> "Grid"
+    AmiiboViewMode.Carousel -> "Carousel"
+    AmiiboViewMode.List -> "Detailed list"
+}
+
+private fun AmiiboViewMode.icon() = when (this) {
+    AmiiboViewMode.Grid -> Icons.Default.GridView
+    AmiiboViewMode.Carousel -> Icons.Default.ViewCarousel
+    AmiiboViewMode.List -> Icons.AutoMirrored.Filled.List
 }
 
 // ---------------------------------------------------------------------------
@@ -402,26 +533,58 @@ private fun AmiiboSortOrder.label(): String = when (this) {
  * narrow one. Each cell is artwork, then name, then one subordinate line --
  * nothing else competes with the figure.
  */
+/**
+ * The library browser, in whichever view the user chose.
+ *
+ * THREE VIEWS, ONE CARD LIST. All of them are handed the same projected
+ * [cards] and differ only in how they lay them out, so switching view neither
+ * re-runs the query nor loses the selection. Every one is lazy: a 1000-entry
+ * library composes only what is on screen.
+ *
+ * Tapping selects. Tapping an already-selected item opens the details, so
+ * browsing never costs two taps on a phone.
+ */
 @Composable
-private fun AmiiboGrid(
+private fun AmiiboBrowser(
     ui: CompanionUiState,
     viewModel: CompanionViewModel,
-    items: List<AmiiboLibraryItem>,
-    query: String,
+    cards: List<AmiiboCard>,
     modifier: Modifier,
     onOpenDetail: () -> Unit,
 ) {
-    if (items.isEmpty()) {
+    if (cards.isEmpty()) {
         EmptyStateBlock(
             icon = Icons.Default.Contactless,
             title = if (ui.library.isEmpty()) "No Amiibo yet" else "Nothing matches",
             body = if (ui.library.isEmpty()) {
-                "Import a 540, 572, or 2048-byte backup to start your private library."
-            } else "No Amiibo matches \"${query.trim()}\" or the current filter.",
+                "Import a 540, 572, or 2048-byte backup, a folder of them, or a library ZIP."
+            } else {
+                "Nothing matches the current search and filters."
+            },
             modifier = modifier,
         )
         return
     }
+
+    val onTap: (AmiiboCard) -> Unit = { card ->
+        if (card.id == ui.selectedAmiiboId) onOpenDetail() else viewModel.selectAmiibo(card.id)
+    }
+
+    when (ui.amiiboFilters.view) {
+        AmiiboViewMode.Grid -> AmiiboGridView(cards, ui.selectedAmiiboId, modifier, onTap)
+        AmiiboViewMode.Carousel -> AmiiboCarouselView(cards, ui.selectedAmiiboId, modifier, onTap)
+        AmiiboViewMode.List -> AmiiboListView(cards, ui.selectedAmiiboId, modifier, onTap)
+    }
+}
+
+/** Adaptive card grid: artwork first, for recognising a figure at a glance. */
+@Composable
+private fun AmiiboGridView(
+    cards: List<AmiiboCard>,
+    selectedId: String?,
+    modifier: Modifier,
+    onTap: (AmiiboCard) -> Unit,
+) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(LayoutTokens.AmiiboCellMinWidth),
         modifier = modifier,
@@ -429,49 +592,182 @@ private fun AmiiboGrid(
         verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space2),
         contentPadding = PaddingValues(bottom = LayoutTokens.Space5),
     ) {
-        items(items, key = { it.id }) { item ->
-            val selected = item.id == ui.selectedAmiiboId
-            val catalog = ui.amiiboCatalogEntries[item.id]
-            Card(
-                Modifier.fillMaxWidth().clickable {
-                    // Tapping selects, which is the primary action; opening the
-                    // detail is the same gesture on an already-selected item so
-                    // browsing never costs two taps.
-                    if (selected) onOpenDetail() else viewModel.selectAmiibo(item.id)
-                },
-                colors = CardDefaults.cardColors(
-                    containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surfaceVariant,
-                ),
-                border = if (selected) CardDefaults.outlinedCardBorder() else null,
+        items(cards, key = { it.id }) { card ->
+            AmiiboCardTile(card, card.id == selectedId, Modifier.fillMaxWidth()) { onTap(card) }
+        }
+    }
+}
+
+/**
+ * Large-art, low-density browsing.
+ *
+ * A horizontal lazy row rather than a pager: a pager loads its neighbours
+ * eagerly, which is the wrong trade at a thousand items, and swiping a row still
+ * reads as a carousel. Only what is on screen is composed, so the artwork memory
+ * cost stays bounded.
+ */
+@Composable
+private fun AmiiboCarouselView(
+    cards: List<AmiiboCard>,
+    selectedId: String?,
+    modifier: Modifier,
+    onTap: (AmiiboCard) -> Unit,
+) {
+    val state = rememberLazyListState()
+
+    // Follow the selection when it changes from elsewhere — switching into this
+    // view, or a sync selecting the synced tag — so the carousel is never
+    // showing one Amiibo while the details pane describes another.
+    LaunchedEffect(selectedId, cards) {
+        val index = cards.indexOfFirst { it.id == selectedId }
+        if (index >= 0) state.animateScrollToItem(index)
+    }
+
+    LazyRow(
+        state = state,
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space3),
+        contentPadding = PaddingValues(horizontal = LayoutTokens.Space3),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        items(cards, key = { it.id }) { card ->
+            AmiiboCardTile(
+                card,
+                card.id == selectedId,
+                // A fraction of the viewport, not a fixed width: the carousel
+                // shows ONE figure at a time with the next one peeking, which
+                // is the only thing it does that the grid does not. A fixed
+                // 220dp card left most of a phone page empty and most of a
+                // tablet pane empty too.
+                Modifier
+                    .fillParentMaxWidth(if (cards.size > 1) 0.78f else 1f)
+                    .widthIn(max = LayoutTokens.AmiiboCarouselMaxWidth)
+                    .fillMaxHeight(),
+                large = true,
+            ) { onTap(card) }
+        }
+    }
+}
+
+/**
+ * The dense scanning mode.
+ *
+ * A compact row with a thumbnail and the fields worth sorting by. Deliberately
+ * not a desktop multi-column table: on a phone the useful columns are the name,
+ * what it is, and its state.
+ */
+@Composable
+private fun AmiiboListView(
+    cards: List<AmiiboCard>,
+    selectedId: String?,
+    modifier: Modifier,
+    onTap: (AmiiboCard) -> Unit,
+) {
+    LazyColumn(
+        modifier = modifier,
+        contentPadding = PaddingValues(bottom = LayoutTokens.Space5),
+    ) {
+        items(cards, key = { it.id }) { card ->
+            val selected = card.id == selectedId
+            Row(
+                Modifier.fillMaxWidth()
+                    .background(
+                        if (selected) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surface,
+                    )
+                    .clickable { onTap(card) }
+                    .padding(horizontal = LayoutTokens.Space2, vertical = LayoutTokens.Space2),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space3),
             ) {
-                Column(
-                    Modifier.padding(LayoutTokens.Space2).fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    AmiiboArtwork(
-                        catalog?.imageUrl.orEmpty(),
-                        catalogTitle(catalog, item.displayName),
-                        Modifier.fillMaxWidth().height(LayoutTokens.AmiiboArtHeight),
-                    )
-                    Spacer(Modifier.height(LayoutTokens.Space2))
+                AmiiboArtwork(card.imageUrl, card.title, Modifier.size(36.dp))
+                Column(Modifier.weight(1f)) {
                     Text(
-                        catalogTitle(catalog, item.displayName),
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 2,
+                        card.title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.Center,
                     )
                     Text(
-                        catalogSubtitle(catalog).ifBlank { item.typeName.ifBlank { "Figure" } },
+                        card.subtitle,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.Center,
+                    )
+                }
+                if (card.badge.isNotEmpty()) {
+                    StatusChip(card.badge, tone = ChipTone.Positive)
+                }
+            }
+            HorizontalDivider()
+        }
+    }
+}
+
+/**
+ * One card, in grid or carousel size.
+ *
+ * Selection is a filled container plus a border rather than a hairline outline:
+ * on a wall of artwork a barely-visible border is not a state anyone can see.
+ */
+@Composable
+private fun AmiiboCardTile(
+    card: AmiiboCard,
+    selected: Boolean,
+    modifier: Modifier,
+    large: Boolean = false,
+    onClick: () -> Unit,
+) {
+    Card(
+        modifier.clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer
+            else MaterialTheme.colorScheme.surfaceVariant,
+        ),
+        border = if (selected) CardDefaults.outlinedCardBorder() else null,
+    ) {
+        Column(
+            Modifier.padding(LayoutTokens.Space2).fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            // In the carousel the artwork takes whatever height the row was
+            // given: the whole reason to leave the grid is to see the figure
+            // larger, and a fixed art height left a phone-sized page mostly
+            // empty around one small card. In the grid it stays fixed, because
+            // there every tile must agree on a row height.
+            Box(if (large) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth()) {
+                AmiiboArtwork(
+                    card.imageUrl,
+                    card.title,
+                    if (large) Modifier.fillMaxSize()
+                    else Modifier.fillMaxWidth().height(LayoutTokens.AmiiboArtHeight),
+                )
+                if (card.badge.isNotEmpty()) {
+                    StatusChip(
+                        card.badge,
+                        tone = ChipTone.Positive,
+                        modifier = Modifier.align(Alignment.TopEnd),
                     )
                 }
             }
+            Spacer(Modifier.height(LayoutTokens.Space2))
+            Text(
+                card.title,
+                style = if (large) MaterialTheme.typography.titleMedium
+                else MaterialTheme.typography.titleSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                card.subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+            )
         }
     }
 }
@@ -505,15 +801,26 @@ private fun AmiiboDetailPanel(
     var renameOpen by rememberSaveable(item.id) { mutableStateOf(false) }
     var deleteOpen by rememberSaveable(item.id) { mutableStateOf(false) }
     var initializeOpen by rememberSaveable(item.id) { mutableStateOf(false) }
-    var detailsOpen by rememberSaveable(item.id) { mutableStateOf(false) }
     var name by rememberSaveable(item.id) { mutableStateOf(item.displayName) }
     var menuOpen by remember { mutableStateOf(false) }
+
+    // Survives selection changes on purpose: someone comparing the UIDs of two
+    // dumps should not be dropped back to Overview between them.
+    var category by rememberSaveable { mutableStateOf(AmiiboCategory.Overview) }
 
     val catalog = ui.selectedAmiiboCatalog
     val details = ui.selectedAmiiboDetails
     val amiibo = ui.snapshot.amiibo
     val adapterHasAmiibo = amiibo.loaded || amiibo.v3Loaded
     val online = ui.connection.connected && !ui.busy
+
+    // The adapter holds THIS figure, not merely some figure. Every adapter
+    // command below acts on whatever is resident, so the distinction decides
+    // whether they are the user's Amiibo's commands or someone else's.
+    val adapterMatches = AmiiboGallery.residentOn(item, amiibo.uid, adapterHasAmiibo)
+
+    // A key is held but this dump has not been decoded yet.
+    val decodePending = details == null && ui.amiiboKeysLoaded
 
     val body: @Composable ColumnScope.() -> Unit = {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -557,11 +864,6 @@ private fun AmiiboDetailPanel(
                             if (ui.amiiboKeysLoaded) initializeOpen = true else onImportKeys()
                         },
                     )
-                    DropdownMenuItem(
-                        text = { Text("Technical details") },
-                        leadingIcon = { Icon(Icons.Default.Info, null) },
-                        onClick = { menuOpen = false; detailsOpen = true },
-                    )
                     HorizontalDivider()
                     DropdownMenuItem(
                         text = { Text("Delete from phone") },
@@ -572,10 +874,17 @@ private fun AmiiboDetailPanel(
             }
         }
 
-        if (details?.crypto == AmiiboCryptoState.Valid) {
-            LabelValueRow("Owner", details.owner.ifBlank { "Not set" })
-            LabelValueRow("Nickname", details.nickname.ifBlank { "Not set" })
-        }
+        // Adapter state, right under the identity, so the hero answers "what is
+        // this and where is it" in one glance.
+        Text(
+            when {
+                adapterMatches && amiibo.dirty -> "On the adapter · changed by the console"
+                adapterMatches -> "On the adapter"
+                else -> "Not on the adapter"
+            },
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
 
         if (amiibo.dirty) {
             InlineNotice(
@@ -585,31 +894,115 @@ private fun AmiiboDetailPanel(
             )
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
-            Button(
-                onClick = viewModel::loadSelectedAmiibo,
-                enabled = online,
-                modifier = Modifier.weight(1f),
-            ) { Text("Load") }
-            OutlinedButton(
-                onClick = viewModel::syncSelectedAmiibo,
-                enabled = online && adapterHasAmiibo,
-                modifier = Modifier.weight(1f),
-            ) { Text("Sync") }
+        // PRIMARY ACTION. Visible and disabled with its reason when there is no
+        // adapter, because this is the control the user is reaching for.
+        Button(
+            onClick = viewModel::loadSelectedAmiibo,
+            enabled = online && !amiibo.dirty,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Send to adapter") }
+        if (!online || amiibo.dirty) {
+            Text(
+                if (amiibo.dirty) "Sync the adapter's changed Amiibo first."
+                else "Connect the adapter to send this Amiibo.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
-            FilledTonalButton(
-                onClick = { viewModel.setPresented(!amiibo.presented) },
-                enabled = online && adapterHasAmiibo,
-                modifier = Modifier.weight(1f),
-            ) { Text(if (amiibo.presented) "Eject" else "Present") }
+
+        // CATEGORIES, not one giant scroll.
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            AmiiboCategory.entries.forEachIndexed { index, entry ->
+                SegmentedButton(
+                    selected = category == entry,
+                    onClick = { category = entry },
+                    shape = SegmentedButtonDefaults.itemShape(index, AmiiboCategory.entries.size),
+                ) { Text(entry.name) }
+            }
+        }
+
+        val groups = remember(item.id, catalog, details, adapterMatches, amiibo.dirty) {
+            AmiiboInspection.build(item, catalog, details, adapterMatches, amiibo.dirty && adapterMatches)
+        }
+        val shown = AmiiboInspection.forCategory(category, groups)
+
+        shown.forEach { group ->
+            // The heading earns its space only when the category holds more than
+            // one group; over a lone list it just repeats the tab above it.
+            if (shown.size > 1) {
+                Text(
+                    group.title,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            group.rows.forEach { row ->
+                LabelValueRow(
+                    row.label,
+                    // The shared model describes a FIGURE, not what the app is
+                    // currently doing to it, so it reads an absent decode as
+                    // "no key imported". While a key is in fact held the decode
+                    // is merely still running, and telling the user to import
+                    // the key they already imported is the one answer that is
+                    // certainly wrong. Presentation-time state, so it stays here
+                    // rather than diverging the model from Windows.
+                    if (decodePending && row.label == "Contents") "Reading…" else row.value,
+                    monospace = row.monospace,
+                    // Identifiers are copied to compare against a dump or a bug
+                    // report; prose is not.
+                    copyable = row.monospace,
+                )
+            }
+        }
+
+        if (category == AmiiboCategory.Overview && catalog == null) {
+            Text(
+                if (ui.amiiboCatalogLoading) "Looking this figure up in the catalog…"
+                else "Catalog unavailable; the identity stored on this phone is authoritative.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        // The adapter category's commands, exposed only when they can be used.
+        // A wall of five disabled buttons teaches nobody that a capability
+        // exists; the concise state above already said the adapter is away.
+        //
+        // ADAPTERMATCHES, NOT ADAPTERHASAMIIBO. Present, Eject and Sync all act
+        // on whatever the adapter is holding, which need not be this figure.
+        // Offering them under a detail pane headed "Link" while the adapter
+        // holds Zelda invites the user to eject a figure they are not looking
+        // at, or to overwrite Link's backup with Zelda's bytes. The card above
+        // the browser owns the resident figure's controls.
+        if (category == AmiiboCategory.Adapter && online && adapterMatches) {
+            Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+                FilledTonalButton(
+                    onClick = { viewModel.setPresented(!amiibo.presented) },
+                    modifier = Modifier.weight(1f),
+                ) { Text(if (amiibo.presented) "Eject" else "Present") }
+                OutlinedButton(
+                    onClick = viewModel::syncSelectedAmiibo,
+                    modifier = Modifier.weight(1f),
+                ) { Text("Sync") }
+            }
             if (amiibo.hasSave2) {
                 OutlinedButton(
                     onClick = { viewModel.selectCopy(!amiibo.usingSave2) },
-                    enabled = online,
-                    modifier = Modifier.weight(1f),
-                ) { Text(if (amiibo.usingSave2) "Use clean" else "Use written") }
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(if (amiibo.usingSave2) "Use clean copy" else "Use console copy") }
             }
+        }
+
+        // One sentence in place of the commands, saying which of the two reasons
+        // applies. Both are things the user can act on.
+        if (category == AmiiboCategory.Adapter && !adapterMatches) {
+            Text(
+                if (!online) "Adapter unavailable. Connect the adapter to send this Amiibo."
+                else "Send this Amiibo to the adapter to present, eject or sync it.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 
@@ -654,48 +1047,6 @@ private fun AmiiboDetailPanel(
         onConfirm = { initializeOpen = false; viewModel.initializeSelectedAmiibo() },
     )
 
-    if (detailsOpen) PicoDialog(
-        onDismiss = { detailsOpen = false },
-        title = catalogTitle(catalog, item.displayName),
-        dismissLabel = "Close",
-    ) {
-        Column(
-            Modifier.fillMaxWidth().heightIn(max = LayoutTokens.DialogListMaxHeight)
-                .verticalScroll(rememberScrollState()),
-        ) {
-            LabelValueRow("UID", item.uid, monospace = true, copyable = true)
-            LabelValueRow("Figure ID", item.figureId, monospace = true, copyable = true)
-            LabelValueRow("CRC32", item.crc32, monospace = true)
-            LabelValueRow("Format", if (item.size == 2048) "Figure v3 · 2 KB" else "NTAG215 · ${item.size} B")
-            LabelValueRow("Type", item.typeName.ifBlank { "Figure" })
-            if (item.characterGameCode.isNotBlank()) LabelValueRow("Character code", item.characterGameCode)
-            if (item.modelNumber.isNotBlank()) LabelValueRow("Model", item.modelNumber)
-            catalog?.let {
-                if (it.character.isNotBlank()) LabelValueRow("Character", it.character)
-                if (it.gameSeries.isNotBlank()) LabelValueRow("Game series", it.gameSeries)
-                if (it.amiiboSeries.isNotBlank()) LabelValueRow("Amiibo series", it.amiiboSeries)
-                if (it.releaseDate.isNotBlank()) LabelValueRow("First release", it.releaseDate)
-            }
-            when {
-                details == null && ui.amiiboKeysLoaded ->
-                    LabelValueRow("Private data", "Reading…")
-                details?.crypto == AmiiboCryptoState.Invalid ->
-                    LabelValueRow("Private data", "Key did not verify this dump")
-                details?.crypto == AmiiboCryptoState.Valid -> {
-                    LabelValueRow("Registered", details.setupDate ?: "Not registered")
-                    LabelValueRow("Last written", details.lastWriteDate ?: "Never")
-                    LabelValueRow("Write count", details.writeCounter?.toString() ?: "—")
-                    LabelValueRow("Game data", ui.selectedAmiiboTitleGame ?: details.appDataLabel.ifBlank { "None" })
-                }
-                else -> LabelValueRow("Private data", "Import a key to read")
-            }
-            if (ui.amiiboCatalogLoading) {
-                LabelValueRow("Catalog", "Looking up…")
-            } else if (catalog == null) {
-                LabelValueRow("Catalog", "Offline; local identity is authoritative")
-            }
-        }
-    }
 }
 
 /**
@@ -799,6 +1150,8 @@ fun AmiiboSettingsScreen(
     onExportArchive: () -> Unit,
     onImportKeys: () -> Unit,
 ) {
+    var forgetKeysOpen by rememberSaveable { mutableStateOf(false) }
+
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4),
@@ -864,10 +1217,29 @@ fun AmiiboSettingsScreen(
                         tone = if (ui.amiiboKeysLoaded) ChipTone.Positive else ChipTone.Neutral,
                     ) },
             )
+            // Offered only once there is something to forget.
+            if (ui.amiiboKeysLoaded) {
+                SettingsRow(
+                    title = "Forget key file",
+                    supporting = "Removes the key from this phone; your backups are kept",
+                    leading = Icons.Default.DeleteOutline,
+                    enabled = !ui.busy,
+                    onClick = { forgetKeysOpen = true },
+                )
+            }
         }
 
         Spacer(Modifier.height(LayoutTokens.Space5))
     }
+
+    if (forgetKeysOpen) ConfirmDialog(
+        onDismiss = { forgetKeysOpen = false },
+        title = "Forget the key file?",
+        body = "Owner, nickname, registration and game-data fields become unreadable until you import a key again. Your saved Amiibo backups are not changed or deleted.",
+        confirmLabel = "Forget",
+        destructive = true,
+        onConfirm = { forgetKeysOpen = false; viewModel.forgetAmiiboKeys() },
+    )
 
     // No confirmation any more: importing is ADDITIVE. The old library-ZIP path
     // replaced the phone's library wholesale, which needed a destructive warning;
@@ -931,12 +1303,17 @@ internal fun AmiiboArtwork(imageUrl: String, contentDescription: String, modifie
             contentScale = ContentScale.Fit,
         )
     } else {
-        Box(modifier, contentAlignment = Alignment.Center) {
+        // Scales with the space it was given. A fixed 36dp mark is right on a
+        // grid tile and reads as a broken image when the same composable is
+        // handed a full-height carousel card, so the placeholder takes a share
+        // of the box and stops before it becomes a billboard.
+        BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
+            val size = (minOf(maxWidth, maxHeight) * 0.4f).coerceIn(28.dp, 96.dp)
             Icon(
                 Icons.Default.Contactless,
                 contentDescription,
                 tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(36.dp),
+                modifier = Modifier.size(size),
             )
         }
     }
