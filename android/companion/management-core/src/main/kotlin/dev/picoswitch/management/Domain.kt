@@ -457,6 +457,12 @@ data class KbmProfilePage(
 object KbmLimits {
     const val MAX_MAPPING_ITEMS = 96
     const val MAX_PROFILES = 6
+
+    /**
+     * Custom positions in ONE layout's bank. Six records is exactly three
+     * positions in each of two layouts.
+     */
+    const val POSITIONS_PER_LAYOUT = 3
 }
 
 /** Reserved profile identities. Custom profiles are numbered from 2. */
@@ -479,6 +485,11 @@ object KbmProfileIds {
  * revision it was based on, and a mismatch is a conflict rather than a silent
  * overwrite of what another companion stored.
  */
+/**
+ * @param position which position of its layout's bank this profile occupies
+ * (1..3), or [KbmPositions.DEFAULT] for the synthesised built-in. This is the
+ * user-facing identity; [id] is the stable internal handle.
+ */
 data class KbmProfileInfo(
     val id: Int,
     val layout: KbmProfile,
@@ -486,10 +497,42 @@ data class KbmProfileInfo(
     val revision: Int,
     val overrides: Int,
     val fingerprint: Long,
+    val position: Int = KbmPositions.DEFAULT,
 ) {
     /** Built-in Defaults are synthesised locally, never stored. */
     val builtin: Boolean get() = id == KbmProfileIds.DEFAULT
+
+    /** "Profile 2", as the bank list shows it. */
+    val positionLabel: String get() = KbmPositions.label(position)
 }
+
+/**
+ * A profile POSITION within a layout's bank — what the user selects and what a
+ * switch key names.
+ *
+ * Deliberately not a storage slot or a profile id. "Profile 1" means the same
+ * thing to a person in both layouts, and the layout derived from what is
+ * connected decides which bank it is read from; exposing ids would force the
+ * user to know which record lives where.
+ */
+object KbmPositions {
+    /** The built-in template. Occupies no record. */
+    const val DEFAULT = 0
+
+    fun label(position: Int): String =
+        if (position == DEFAULT) "Default" else "Profile $position"
+
+    val all: List<Int> get() = (0..KbmLimits.POSITIONS_PER_LAYOUT).toList()
+}
+
+/**
+ * One profile-switch key assignment.
+ *
+ * @param position the semantic action: [KbmPositions.DEFAULT] or 1..3.
+ * Layout-free by design — the adapter resolves it through the derived layout at
+ * press time, so one set of keys serves both banks.
+ */
+data class KbmSwitchBinding(val source: KbmSource, val position: Int)
 
 /**
  * What a layout is REALLY resolving against.
@@ -499,12 +542,21 @@ data class KbmProfileInfo(
  * legacy per-binding write changes the realized mapping without touching any
  * saved profile at all.
  */
+/**
+ * @param bootPosition the position this layout realizes at POWER-UP. Persisted.
+ * @param runtimePosition the position it is realizing RIGHT NOW. A
+ * profile-switch key moves this and not the boot choice, so the two differ for
+ * the rest of a session after one key press — and a client that assumed the
+ * persisted choice was live would report the wrong profile as active.
+ */
 data class KbmActiveMapping(
     val layout: KbmProfile,
     val sourceId: Int,
     val revision: Int,
     val fingerprint: Long,
     val matchesSaved: Boolean,
+    val bootPosition: Int = KbmPositions.DEFAULT,
+    val runtimePosition: Int = KbmPositions.DEFAULT,
 )
 
 /** The adapter's profile library and both realized mappings. */
@@ -522,6 +574,24 @@ data class KbmProfiles(
         active.firstOrNull { it.layout == layout }
 
     fun find(id: Int): KbmProfileInfo? = profiles.firstOrNull { it.id == id }
+
+    /**
+     * What occupies one position of a layout's bank, or null when it is empty.
+     *
+     * Position is scoped to a layout, so the same number in the other bank is a
+     * different profile — which is exactly what makes one switch key work for
+     * both.
+     */
+    fun at(layout: KbmProfile, position: Int): KbmProfileInfo? =
+        if (position == KbmPositions.DEFAULT) {
+            null
+        } else {
+            profiles.firstOrNull { it.layout == layout && it.position == position }
+        }
+
+    /** Positions in this layout's bank with nothing assigned. */
+    fun freePositions(layout: KbmProfile): List<Int> =
+        (1..KbmLimits.POSITIONS_PER_LAYOUT).filter { at(layout, it) == null }
 
     /**
      * Every profile a layout can offer, with its built-in Default first.

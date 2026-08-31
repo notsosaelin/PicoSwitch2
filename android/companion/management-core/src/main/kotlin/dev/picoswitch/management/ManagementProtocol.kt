@@ -239,6 +239,7 @@ object ManagementProtocol {
                         revision = item.int("revision"),
                         overrides = item.int("overrides"),
                         fingerprint = item.long("fingerprint"),
+                        position = item.int("position"),
                     )
                 }
             }
@@ -270,7 +271,32 @@ object ManagementProtocol {
                     revision = item.int("revision"),
                     fingerprint = item.long("fingerprint"),
                     matchesSaved = item.bool("matchesSaved"),
+                    bootPosition = item.int("bootPosition"),
+                    runtimePosition = item.int("runtimePosition"),
                 )
+            }
+        }
+
+    /**
+     * The profile-switch key assignments. ONE table for both layouts: a binding
+     * names a semantic position and the adapter resolves it through whichever
+     * layout is derived at press time.
+     */
+    fun kbmSwitches(command: String, response: String): List<KbmSwitchBinding> =
+        decode(command, response) { value ->
+            val entries = value["switches"] as? JsonArray
+            requireShape(entries != null && value.containsKey("positions"), command)
+            entries!!.mapNotNull { element ->
+                val item = element.jsonObject
+                val source = KbmSource.parse(item.string("src"))
+                val position = item.int("position")
+                // A binding this build cannot read is skipped rather than shown
+                // as a key that does nothing when pressed.
+                if (source == null || position < 0 || position > KbmLimits.POSITIONS_PER_LAYOUT) {
+                    null
+                } else {
+                    KbmSwitchBinding(source, position)
+                }
             }
         }
 
@@ -826,6 +852,51 @@ object ManagementCommands {
         } else {
             "kbm draft begin ${layout.wire} $id $baseRevision $name"
         }
+
+    /**
+     * Begin an upload targeting a specific BANK POSITION.
+     *
+     * The assignment form: "put this local profile in Keyboard Profile 2". If
+     * that position holds a profile the upload replaces its content and keeps its
+     * stable id, so a switch key bound to the position keeps working; if it is
+     * empty the profile is created there. The adapter refuses a position it
+     * cannot honour rather than landing somewhere else.
+     */
+    fun kbmDraftBeginAt(layout: KbmProfile, position: Int, baseRevision: Int, name: String): String {
+        require(position in 1..KbmLimits.POSITIONS_PER_LAYOUT)
+        return "kbm draft begin ${layout.wire} pos:$position $baseRevision $name"
+    }
+
+    /** Empty one bank position. The local library copy is untouched. */
+    fun kbmRemove(layout: KbmProfile, position: Int): String {
+        require(position in 1..KbmLimits.POSITIONS_PER_LAYOUT)
+        return "kbm remove ${layout.wire} $position"
+    }
+
+    /** The persisted boot position for one layout. */
+    fun kbmBoot(layout: KbmProfile, position: Int): String =
+        if (position == KbmPositions.DEFAULT) {
+            "kbm boot ${layout.wire} default"
+        } else {
+            "kbm boot ${layout.wire} $position"
+        }
+
+    /** The profile-switch key assignments. One table for both layouts. */
+    const val KBM_SWITCHES = "kbm switches"
+
+    /**
+     * Assign or clear one profile-switch key.
+     *
+     * No layout argument, deliberately: the binding names a semantic POSITION and
+     * the adapter resolves it through whichever layout is derived when the key is
+     * pressed. Requiring a layout would force the user to configure two disjoint
+     * key ranges for the same four actions.
+     */
+    fun kbmSwitchBind(source: KbmSource, position: Int?): String = when (position) {
+        null -> "kbm switch ${source.wire} none"
+        KbmPositions.DEFAULT -> "kbm switch ${source.wire} default"
+        else -> "kbm switch ${source.wire} $position"
+    }
 
     fun kbmDraftBind(source: KbmSource, destination: KbmDestination) =
         "kbm draft bind ${source.wire} ${destination.wire}"

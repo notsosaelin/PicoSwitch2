@@ -28,3 +28,19 @@ kotlin {
 sourceSets.test {
     resources.srcDir("../../../tools/fixtures/management")
 }
+
+// The firmware's canonical KB/M default mappings, shipped in the artifact.
+//
+// A companion must be able to create and edit a profile with NO adapter
+// connected: the library belongs to the user, not to a device. A local profile
+// stores only sparse overrides, so drawing one needs the table those overrides
+// are applied against — and that table is firmware data.
+//
+// Linked from tools/fixtures rather than copied, so there is one authority, and
+// filtered to the single file: the rest of that directory is test vectors.
+// KbmDefaultsTest asserts the shipped copy still matches what the firmware
+// emits. This module has no other main resources.
+sourceSets.main {
+    resources.srcDir("../../../tools/fixtures/management")
+    resources.include("kbm-default-mappings.json")
+}
