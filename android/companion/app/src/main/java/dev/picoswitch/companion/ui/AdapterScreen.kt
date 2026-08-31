@@ -48,32 +48,43 @@ fun AdapterScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
         val short = LocalShortWindow.current
         val gap = if (short) LayoutTokens.Space3 else LayoutTokens.Space4
 
-        val overview: @Composable () -> Unit = { AdapterOverviewCard(ui, viewModel) }
-        val personality: @Composable () -> Unit = { PersonalityCard(ui, viewModel) }
-        val appearance: @Composable () -> Unit = { AppearanceCard(ui) { colorTarget = it } }
+        // FOUR TILES, ONE SUBJECT EACH: what the adapter is and what the console
+        // sees it as, how it looks, what it can press, and what tag it holds.
+        // Controller mode used to be a fifth card of its own, which separated
+        // "this is your adapter" from "this is what it pretends to be" — two
+        // halves of the same sentence.
+        val controller: @Composable () -> Unit = { AdapterOverviewCard(ui, viewModel) }
+        // Half of a two-column page still leaves room for three swatches on a
+        // tablet; a phone in one column does not, and neither does a narrow
+        // window. Decided from the page's own width, which it already knows.
+        val narrowColours = twoColumn && maxWidth < LayoutTokens.ColorTileRowMinWidth * 2
+        val appearance: @Composable () -> Unit = {
+            AppearanceCard(ui, narrowColours) { colorTarget = it }
+        }
         val console: @Composable () -> Unit = { ConsoleButtonsCard(ui, viewModel) }
+        val amiibo: @Composable () -> Unit = { AdapterAmiiboCard(ui, viewModel) }
 
         Column(Modifier.fillMaxSize()) {
             ScreenHeader(AppSection.Adapter.title, subtitle = AppSection.Adapter.subtitle)
             Spacer(Modifier.height(LayoutTokens.Space3))
             if (twoColumn) {
-                Row(
+                // IntrinsicSize.Min so the two tiles in a row agree on a height:
+                // otherwise each column stacks to its own content and the four
+                // tiles form a ragged grid.
+                Column(
                     Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(gap),
+                    verticalArrangement = Arrangement.spacedBy(gap),
                 ) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(gap)) {
-                        overview(); personality()
-                    }
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(gap)) {
-                        appearance(); console()
-                    }
+                    TileRow(gap, controller, appearance)
+                    TileRow(gap, console, amiibo)
+                    Spacer(Modifier.height(LayoutTokens.Space5))
                 }
             } else {
                 Column(
                     Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(gap),
                 ) {
-                    overview(); personality(); appearance(); console()
+                    controller(); appearance(); console(); amiibo()
                     Spacer(Modifier.height(LayoutTokens.Space5))
                 }
             }
@@ -88,6 +99,30 @@ fun AdapterScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
             onDismiss = { colorTarget = null },
             onApply = { viewModel.saveColor(target, it); colorTarget = null },
         )
+    }
+}
+
+/**
+ * Two tiles side by side, sharing a height.
+ *
+ * Each tile is a Row child measured at IntrinsicSize.Min, so the taller of the
+ * pair sets the row and the shorter stretches to match. Without it the two
+ * columns stack independently and the grid goes ragged — the same unevenness a
+ * card whose height follows its content always produces beside one whose does
+ * not.
+ */
+@Composable
+private fun TileRow(
+    gap: androidx.compose.ui.unit.Dp,
+    left: @Composable () -> Unit,
+    right: @Composable () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+        horizontalArrangement = Arrangement.spacedBy(gap),
+    ) {
+        Box(Modifier.weight(1f).fillMaxHeight()) { left() }
+        Box(Modifier.weight(1f).fillMaxHeight()) { right() }
     }
 }
 
@@ -177,6 +212,9 @@ private fun AdapterOverviewCard(ui: CompanionUiState, viewModel: CompanionViewMo
             )
         }
 
+        // What the console sees this adapter as, beside what the adapter IS.
+        PersonalityPicker(ui, viewModel)
+
         // The happy path applies automatically. This recovery action exists only
         // when persistence succeeded but USB re-enumeration did not.
         if (ui.identityRefreshPending) {
@@ -206,29 +244,51 @@ private fun AdapterOverviewCard(ui: CompanionUiState, viewModel: CompanionViewMo
     }
 }
 
+/**
+ * Controller mode, as a single choice rather than a row of buttons.
+ *
+ * A chip per personality put four equally-weighted controls on screen for a
+ * setting with exactly one value, and grew a row every time a personality was
+ * added. A menu states the current mode in one line and keeps the alternatives
+ * one tap away, which is the shape this setting actually has.
+ */
 @Composable
-private fun PersonalityCard(ui: CompanionUiState, viewModel: CompanionViewModel) {
+private fun PersonalityPicker(ui: CompanionUiState, viewModel: CompanionViewModel) {
+    var open by remember { mutableStateOf(false) }
     val choices = ui.snapshot.personality.available.ifEmpty {
         listOf(Personality.Pro2, Personality.GameCube, Personality.JoyConLeft, Personality.JoyConRight)
     }
+    val current = ui.snapshot.personality.current
     val enabled = ui.connection.connected && !ui.busy &&
         ui.snapshot.capabilities.personality != CapabilityState.Unsupported
-    SectionCard(title = "Controller mode", icon = Icons.Default.Cable) {
-        Text(
-            "What the console sees this adapter as.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+
+    Box(Modifier.fillMaxWidth()) {
+        SettingsRow(
+            title = "Controller mode",
+            supporting = if (enabled || current != Personality.Unknown) {
+                current.title
+            } else {
+                "Connect to change"
+            },
+            leading = Icons.Default.Cable,
+            enabled = enabled,
+            onClick = { open = true },
+            trailing = { Icon(Icons.Default.ArrowDropDown, null) },
         )
-        FlowRowCompat {
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             choices.forEach { mode ->
-                FilterChip(
-                    selected = mode == ui.snapshot.personality.current,
-                    onClick = { viewModel.switchPersonality(mode) },
-                    enabled = enabled,
-                    label = { Text(mode.title) },
-                    leadingIcon = if (mode == ui.snapshot.personality.current) {
-                        { Icon(Icons.Default.Check, null, Modifier.size(16.dp)) }
+                DropdownMenuItem(
+                    text = { Text(mode.title) },
+                    leadingIcon = if (mode == current) {
+                        { Icon(Icons.Default.Check, null) }
                     } else null,
+                    onClick = {
+                        open = false
+                        // Switching re-enumerates USB, so asking for the mode it
+                        // is already in would drop the console's controller for
+                        // no change at all.
+                        if (mode != current) viewModel.switchPersonality(mode)
+                    },
                 )
             }
         }
@@ -244,7 +304,12 @@ private fun PersonalityCard(ui: CompanionUiState, viewModel: CompanionViewModel)
  * into a focused dialog.
  */
 @Composable
-private fun AppearanceCard(ui: CompanionUiState, onEdit: (ColorTarget) -> Unit) {
+private fun AppearanceCard(
+    ui: CompanionUiState,
+    /** True when this tile occupies a half-width column and cannot fit three swatches. */
+    narrow: Boolean,
+    onEdit: (ColorTarget) -> Unit,
+) {
     val config = ui.snapshot.config
     val connected = ui.connection.connected
     val enabled = connected && !ui.busy
@@ -262,29 +327,30 @@ private fun AppearanceCard(ui: CompanionUiState, onEdit: (ColorTarget) -> Unit) 
             InlineNotice("Connect to see and change the adapter's colours.")
             return@SectionCard
         }
-        // Measured here rather than from the page: in a two-column layout this
-        // card gets half the width, and the tiles need room for three of them.
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            if (maxWidth >= LayoutTokens.ColorTileRowMinWidth) {
-                Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
-                    targets.forEach { target ->
-                        ColorTile(target, target.current(config), enabled, Modifier.weight(1f)) { onEdit(target) }
-                    }
+        // TOLD, NOT MEASURED. This used BoxWithConstraints, which is a
+        // SubcomposeLayout and cannot answer an intrinsic measurement — so the
+        // moment the page asked the tiles to agree on a height, the card
+        // crashed. The page already knows whether this is a half-width column,
+        // which is the only thing the measurement was ever used to decide.
+        if (!narrow) {
+            Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+                targets.forEach { target ->
+                    ColorTile(target, target.current(config), enabled, Modifier.weight(1f)) { onEdit(target) }
                 }
-            } else {
-                Column {
-                    targets.forEach { target ->
-                        SettingsRow(
-                            title = target.title,
-                            supporting = target.current(config).hex(),
-                            enabled = enabled,
-                            onClick = { onEdit(target) },
-                            trailing = {
-                                ColorSwatch(Color(target.current(config).argb()), "${target.title} colour")
-                                Icon(Icons.Default.ChevronRight, null, Modifier.size(LayoutTokens.IconSize))
-                            },
-                        )
-                    }
+            }
+        } else {
+            Column {
+                targets.forEach { target ->
+                    SettingsRow(
+                        title = target.title,
+                        supporting = target.current(config).hex(),
+                        enabled = enabled,
+                        onClick = { onEdit(target) },
+                        trailing = {
+                            ColorSwatch(Color(target.current(config).argb()), "${target.title} colour")
+                            Icon(Icons.Default.ChevronRight, null, Modifier.size(LayoutTokens.IconSize))
+                        },
+                    )
                 }
             }
         }

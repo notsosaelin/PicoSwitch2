@@ -65,7 +65,18 @@ class LayoutLabActivity : ComponentActivity() {
                     address = "F4:12:FA:9C:03:7B",
                 ),
                 adapterRelationship = null,
-                snapshot = sampleSnapshot(personality),
+                // The resident tag is one the library HOLDS by default. That is
+                // the ordinary case -- you send a figure, so of course you have
+                // it -- and it is the branch that was wrong: the Virtual Amiibo
+                // tile used to offer "Save to phone" for a tag already saved.
+                // `--ez foreignAmiibo true` gives the other branch.
+                snapshot = sampleSnapshot(personality).let { snapshot ->
+                    if (empty || intent.getBooleanExtra("foreignAmiibo", false)) {
+                        snapshot
+                    } else {
+                        snapshot.copy(amiibo = snapshot.amiibo.copy(uid = library.first().uid))
+                    }
+                },
                 kbm = if (empty) emptyKbm() else sampleKbm(),
                 library = if (empty) emptyList() else library,
                 amiiboCatalogEntries = if (empty) emptyMap() else sampleCatalog(library),
