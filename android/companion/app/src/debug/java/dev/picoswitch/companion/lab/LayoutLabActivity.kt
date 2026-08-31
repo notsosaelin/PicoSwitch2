@@ -46,6 +46,11 @@ class LayoutLabActivity : ComponentActivity() {
             ?.let { name -> AppOverlay.entries.firstOrNull { it.name.equals(name, true) } }
             ?: AppOverlay.None
         val empty = intent.getBooleanExtra("empty", false)
+
+        // `--ei library 1200` to browse at the size real collections reach.
+        val library = sampleLibrary(
+            intent.getIntExtra("library", names.size).coerceIn(1, 5000),
+        )
         val personality = Personality.fromWire(intent.getStringExtra("personality"))
             .takeIf { it in TOUCH_LAB_PERSONALITIES }
             ?: Personality.Pro2
@@ -62,12 +67,12 @@ class LayoutLabActivity : ComponentActivity() {
                 adapterRelationship = null,
                 snapshot = sampleSnapshot(personality),
                 kbm = if (empty) emptyKbm() else sampleKbm(),
-                library = if (empty) emptyList() else sampleLibrary(),
-                amiiboCatalogEntries = if (empty) emptyMap() else sampleCatalog(),
+                library = if (empty) emptyList() else library,
+                amiiboCatalogEntries = if (empty) emptyMap() else sampleCatalog(library),
                 amiiboInteraction = AmiiboInteractionState(
-                    focusedId = if (empty) null else sampleLibrary().first().id,
+                    focusedId = if (empty) null else library.first().id,
                 ),
-                selectedAmiiboCatalog = if (empty) null else sampleCatalog().values.first(),
+                selectedAmiiboCatalog = if (empty) null else sampleCatalog(library).values.first(),
                 amiiboKeysLoaded = true,
                 nfcScan = NfcScanStatus(NfcScanPhase.Idle),
             )
@@ -233,24 +238,40 @@ private val names = listOf(
     "Fox McCloud" to "Star Fox",
 )
 
-private fun sampleLibrary(): List<AmiiboLibraryItem> = names.mapIndexed { index, (name, _) ->
-    AmiiboLibraryItem(
-        id = "0100%04X000%04X".format(index, index),
-        displayName = name,
-        fileName = "$name.bin",
-        size = if (index % 5 == 0) 572 else 540,
-        crc32 = "%08X".format(0x1234_5678L + index),
-        uid = "04A1B2C3D4E5%02X".format(index),
-        figureId = "0100%04X000%04X".format(index, index),
-        importedAtMillis = 1_760_000_000_000L - index * 86_400_000L,
-        typeName = "Figure",
-        characterGameCode = "%04X".format(index),
-    )
-}
+/**
+ * A synthetic library of [count] entries.
+ *
+ * SCALE IS A LAYOUT PROPERTY. Fourteen tiles cannot show whether the browser
+ * stays smooth at the size real collections reach — a thousand-plus — and the
+ * difference between "skips recomposition" and "recomposes every visible item on
+ * every state change" is invisible until there are enough items for it to cost
+ * anything. Pass `--ei library 1200` to reproduce that, and measure with
+ * `dumpsys gfxinfo`.
+ *
+ * Beyond the named figures the entries repeat with distinct ids, which is all
+ * the browser needs: it keys on id and renders a name.
+ */
+private fun sampleLibrary(count: Int = names.size): List<AmiiboLibraryItem> =
+    (0 until count).map { index ->
+        val (name, _) = names[index % names.size]
+        val label = if (index < names.size) name else "$name ${index / names.size + 1}"
+        AmiiboLibraryItem(
+            id = "0100%04X000%04X".format(index, index),
+            displayName = label,
+            fileName = "$label.bin",
+            size = if (index % 5 == 0) 572 else 540,
+            crc32 = "%08X".format(0x1234_5678L + index),
+            uid = "04A1B2C3D4%04X".format(index),
+            figureId = "0100%04X000%04X".format(index % names.size, index % names.size),
+            importedAtMillis = 1_760_000_000_000L - index * 86_400_000L,
+            typeName = "Figure",
+            characterGameCode = "%04X".format(index),
+        )
+    }
 
-private fun sampleCatalog(): Map<String, AmiiboCatalogEntry> =
-    sampleLibrary().mapIndexed { index, item ->
-        val (name, series) = names[index]
+private fun sampleCatalog(library: List<AmiiboLibraryItem>): Map<String, AmiiboCatalogEntry> =
+    library.mapIndexed { index, item ->
+        val (name, series) = names[index % names.size]
         item.id to AmiiboCatalogEntry(
             id = item.id,
             character = name,
