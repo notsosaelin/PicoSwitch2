@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A minimal package identity for the §14.5 probe.
+
+  WHY THIS EXISTS. The probe's first run answered B1 and B2 and then hit an
+  advertiser abort that left B3-B6 unmeasured. Two explanations survived: the
+  process has no package identity, or the radio/driver will not take a
+  connectable peripheral advertisement. They lead to different product answers,
+  and this manifest is what separates them in one run.
+
+  It is DELIBERATELY NOT the companion's package. Putting a lab probe inside the
+  product's layout would contaminate the thing being shipped, and the identity
+  question does not care whose identity it is — only that there is one.
+
+  `bluetooth` is the capability under test. It is the same one
+  src/PicoSwitch.Companion.App/Package.appxmanifest declares, whose comment
+  already anticipates exactly this experiment.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="PicoSwitch2.Lab.HogpProbe"
+    Publisher="CN=PicoSwitch2 Lab"
+    Version="1.0.0.0"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>PicoSwitch2 HOGP Probe</DisplayName>
+    <PublisherDisplayName>PicoSwitch2 Lab</PublisherDisplayName>
+    <Logo>logo.png</Logo>
+    <Description>WINDOWS_PASS.md 14.5 gating experiment. Lab tool, not a product.</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22621.0" MaxVersionTested="10.0.26200.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <!--
+      Windows.FullTrustApplication: an ordinary Win32 console executable that
+      runs WITH package identity. That is the entire point — the code under test
+      is byte-identical to the unpackaged run, and identity is the only variable.
+    -->
+    <Application Id="HogpProbe" Executable="HogpProbe.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="PicoSwitch2 HOGP Probe"
+        Description="WINDOWS_PASS.md 14.5 gating experiment"
+        BackgroundColor="transparent"
+        Square150x150Logo="logo.png"
+        Square44x44Logo="logo.png"
+        AppListEntry="none" />
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- Required by Windows.FullTrustApplication: a packaged Win32 process is
+         a restricted capability, independent of what the app then does. -->
+    <rescap:Capability Name="runFullTrust" />
+    <DeviceCapability Name="bluetooth" />
+  </Capabilities>
+
+</Package>

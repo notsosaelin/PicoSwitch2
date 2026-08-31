@@ -2,3 +2,14 @@
 # bin/obj rules; the companion tree is covered elsewhere, this project is not.
 bin/
 obj/
+
+# Findings are evidence for one run on one radio. The conclusions belong in the
+# experiment record, which is where a reader looks; a checked-in JSON would go
+# stale against the next radio and invite being read as current.
+findings*.json
+
+# The package layout is STAGED build output plus two authored files. Everything
+# run-packaged.ps1 copies in is ignored; the manifest and the logo are not.
+package/*
+!package/AppxManifest.xml
+!package/logo.png
