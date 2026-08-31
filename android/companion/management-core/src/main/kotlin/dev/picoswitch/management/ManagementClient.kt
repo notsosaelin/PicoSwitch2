@@ -332,6 +332,81 @@ class ManagementClient(
         }
     }
 
+    /**
+     * ASSIGN a mapping into a specific bank position, in one staged transaction.
+     *
+     * The upload half of the local-library model: content the user composed
+     * locally is copied into the adapter's resident working set. Deliberately
+     * does NOT change what the console is running — if that position is currently
+     * active the realized snapshot is preserved until the user activates it, so
+     * updating a stored copy cannot mutate gameplay mid-session.
+     *
+     * On any failure the draft is aborted, so a half-transferred mapping can
+     * never be left staged for the next caller to commit by accident.
+     */
+    suspend fun assignKbmPosition(
+        layout: KbmProfile,
+        position: Int,
+        baseRevision: Int,
+        name: String,
+        overrides: List<KbmBinding>,
+        mouse: KbmMouseConfig,
+    ): Pair<Int, Int> {
+        acknowledge(ManagementCommands.kbmDraftBeginAt(layout, position, baseRevision, name))
+        try {
+            overrides.forEach {
+                acknowledge(ManagementCommands.kbmDraftBind(it.source, it.destination))
+            }
+            KbmMouseField.profileOwned(mouse).forEach { (field, value) ->
+                acknowledge(ManagementCommands.kbmDraftMouse(field, value))
+            }
+            val reply = raw(ManagementCommands.KBM_DRAFT_COMMIT)
+            return ManagementProtocol.kbmDraftResult(ManagementCommands.KBM_DRAFT_COMMIT, reply)
+        } catch (error: Throwable) {
+            runCatching { acknowledge(ManagementCommands.KBM_DRAFT_ABORT) }
+            throw error
+        }
+    }
+
+    /**
+     * REMOVE a profile from one of the adapter's bank positions.
+     *
+     * The resident copy only. A local library profile of the same content is a
+     * separate store and survives. If the position was running or was the startup
+     * choice, the adapter falls that layout back to Default, so no dangling
+     * selection is left behind.
+     */
+    suspend fun removeKbmPosition(layout: KbmProfile, position: Int): KbmProfiles {
+        acknowledge(ManagementCommands.kbmRemove(layout, position))
+        return kbmProfiles()
+    }
+
+    /**
+     * SET BOOT POSITION. The only profile selection that costs a flash write.
+     *
+     * Distinct from [applyKbmProfile], which is the runtime change a switch key
+     * also makes.
+     */
+    suspend fun setKbmBootPosition(layout: KbmProfile, position: Int): KbmProfiles {
+        acknowledge(ManagementCommands.kbmBoot(layout, position))
+        return kbmProfiles()
+    }
+
+    /** The profile-switch key assignments. */
+    suspend fun kbmSwitches(): List<KbmSwitchBinding> =
+        exchange(ManagementCommands.KBM_SWITCHES, ManagementProtocol::kbmSwitches)
+
+    /**
+     * Assign or clear one profile-switch key, then read the table back.
+     *
+     * Re-read rather than assumed: assigning a key to an action that already has
+     * one MOVES it, so the caller's model is wrong the moment it guesses.
+     */
+    suspend fun bindKbmSwitch(source: KbmSource, position: Int?): List<KbmSwitchBinding> {
+        acknowledge(ManagementCommands.kbmSwitchBind(source, position))
+        return kbmSwitches()
+    }
+
     suspend fun renameKbmProfile(id: Int, name: String): KbmProfiles {
         acknowledge(ManagementCommands.kbmProfileRename(id, name))
         return kbmProfiles()
