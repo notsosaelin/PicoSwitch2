@@ -54,7 +54,7 @@ fun CompanionApp(
     onPairAdapter: () -> Unit,
     onRepairAdapter: (AdapterId?) -> Unit,
     onImportAmiibo: () -> Unit,
-    onImportAmiiboArchive: () -> Unit,
+    onImportAmiiboFolder: () -> Unit,
     onExportAmiiboArchive: () -> Unit,
     onScanAmiibo: () -> Unit,
     onImportAmiiboKeys: () -> Unit,
@@ -176,8 +176,8 @@ fun CompanionApp(
                                     }
                                     OverlayHost(
                                         ui, viewModel, onExportDiagnostics,
-                                        onImportAmiiboArchive, onExportAmiiboArchive,
-                                        onImportAmiiboKeys,
+                                        onImportAmiibo, onImportAmiiboFolder,
+                                        onExportAmiiboArchive, onImportAmiiboKeys,
                                     )
                                 }
                             }
@@ -202,7 +202,8 @@ private fun OverlayHost(
     ui: CompanionUiState,
     viewModel: CompanionViewModel,
     onExportDiagnostics: () -> Unit,
-    onImportAmiiboArchive: () -> Unit,
+    onImportAmiiboFiles: () -> Unit,
+    onImportAmiiboFolder: () -> Unit,
     onExportAmiiboArchive: () -> Unit,
     onImportAmiiboKeys: () -> Unit,
 ) {
@@ -215,7 +216,8 @@ private fun OverlayHost(
             when (ui.overlay) {
                 AppOverlay.Diagnostics -> DiagnosticsScreen(ui, viewModel, onExportDiagnostics)
                 AppOverlay.AmiiboSettings -> AmiiboSettingsScreen(
-                    ui, viewModel, onImportAmiiboArchive, onExportAmiiboArchive, onImportAmiiboKeys,
+                    ui, viewModel, onImportAmiiboFiles, onImportAmiiboFolder,
+                    onExportAmiiboArchive, onImportAmiiboKeys,
                 )
                 AppOverlay.None -> Unit
             }

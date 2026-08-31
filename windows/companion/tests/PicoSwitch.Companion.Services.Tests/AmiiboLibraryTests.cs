@@ -375,31 +375,198 @@ public sealed class AmiiboLibraryTests : IDisposable
     }
 
     [Fact]
-    public void AnArchiveEntryThatEscapesTheDirectoryIsRefused()
+    public void AnyZipHoldingDumpsIsReadable()
     {
-        // Entry names come from outside and are the classic traversal vector.
-        var hostile = BuildZip(("../escaped.bin", Ntag215()));
-        Assert.ThrowsAny<Exception>(() => AmiiboArchive.Read(hostile));
+        // NOT limited to our own export format. People keep amiibo dumps in
+        // ordinary zips, in folders, next to readmes and cover art. Demanding a
+        // re-export from another tool would make this the most annoying way to
+        // move a collection.
+        var collection = BuildZip(
+            ("Animal Crossing/Tom Nook.bin", Ntag215()),
+            ("Kirby/Air Riders/Kirby & Tank Star.bin", FigureV3()),
+            ("readme.txt", Encoding.UTF8.GetBytes("my amiibo dumps")),
+            ("covers/nook.png", [0x89, 0x50, 0x4E, 0x47]));
 
-        var absolute = BuildZip(("nested/dir/thing.bin", Ntag215()));
-        Assert.ThrowsAny<Exception>(() => AmiiboArchive.Read(absolute));
+        var entries = AmiiboArchive.Read(collection);
+
+        Assert.Equal(2, entries.Count);
+        // Named from the file, not the folder path, and without the extension.
+        Assert.Contains(entries, entry => entry.DisplayName == "Tom Nook");
+        Assert.Contains(entries, entry => entry.DisplayName == "Kirby & Tank Star");
+        Assert.DoesNotContain(entries, entry => entry.DisplayName.Contains('/'));
+        Assert.Contains(entries, entry => entry.Bytes.SequenceEqual(Ntag215()));
+        Assert.Contains(entries, entry => entry.Bytes.SequenceEqual(FigureV3()));
     }
 
     [Fact]
-    public void AnArchiveOfSomethingElseIsRefused()
+    public void NestedPathsCannotEscapeBecauseTheyAreNeverUsedAsPaths()
+    {
+        // The classic traversal vector is defused by construction rather than by
+        // rejection: the library stores every image under a generated name, so an
+        // archive path is display text and never reaches the filesystem.
+        var hostile = BuildZip(("../../escaped.bin", Ntag215()));
+
+        var entries = AmiiboArchive.Read(hostile);
+
+        Assert.Single(entries);
+        Assert.DoesNotContain("..", entries[0].DisplayName);
+        Assert.DoesNotContain("/", entries[0].DisplayName);
+
+        var library = Library();
+        var item = library.ImportMany([new AmiiboImportSource("hostile.zip", hostile)])
+            .Imported.Single();
+        // Stored under a generated name inside the library root.
+        Assert.Equal($"{item.Id}.bin", item.FileName);
+        Assert.True(File.Exists(Path.Combine(root, item.FileName)));
+    }
+
+    [Fact]
+    public void OneBadDumpDoesNotCostTheRest()
+    {
+        // A folder of five hundred good dumps and one stray file must import
+        // four hundred and ninety-nine, not zero.
+        var mixed = BuildZip(
+            ("good.bin", Ntag215()),
+            ("bogus.bin", new byte[540]),
+            ("also-good.bin", FigureV3()));
+
+        var entries = AmiiboArchive.Read(mixed);
+
+        Assert.Equal(2, entries.Count);
+    }
+
+    [Fact]
+    public void AnArchiveWithNothingUsableIsStillRefused()
     {
         Assert.ThrowsAny<Exception>(() => AmiiboArchive.Read(Encoding.UTF8.GetBytes("not a zip")));
         Assert.ThrowsAny<Exception>(() => AmiiboArchive.Read(BuildZip(("notes.txt", [1, 2, 3]))));
+        Assert.ThrowsAny<Exception>(() =>
+            AmiiboArchive.Read(BuildZip(("bogus.bin", new byte[540]))));
         // A ZIP with only a manifest and no images has nothing to import.
         Assert.ThrowsAny<Exception>(() =>
             AmiiboArchive.Read(BuildZip(("library.json", Encoding.UTF8.GetBytes("{}")))));
     }
 
+    // ----------------------------------------------------------- bulk import
+
     [Fact]
-    public void AnArchiveImageThatIsNotATagIsRefused()
+    public void ManyLooseDumpsImportInOneGo()
     {
-        Assert.ThrowsAny<Exception>(() =>
-            AmiiboArchive.Read(BuildZip(("bogus.bin", new byte[540]))));
+        var library = Library();
+        var result = library.ImportMany(
+        [
+            new AmiiboImportSource("Tom Nook.bin", Ntag215()),
+            new AmiiboImportSource("Kirby.bin", FigureV3()),
+        ]);
+
+        Assert.Equal(2, result.Imported.Count);
+        Assert.Equal(0, result.Duplicates);
+        Assert.Equal(0, result.Skipped);
+        Assert.Equal(2, library.Items.Value.Count);
+        // Named from the file, with the extension dropped.
+        Assert.Contains(library.Items.Value, item => item.DisplayName == "Tom Nook");
+    }
+
+    [Fact]
+    public void DumpsAndArchivesMixFreelyInOneImport()
+    {
+        // The user should never have to know, or tell the app, which kind of file
+        // they are holding.
+        var library = Library();
+        var archive = BuildZip(("Kirby.bin", FigureV3()));
+
+        var result = library.ImportMany(
+        [
+            new AmiiboImportSource("Tom Nook.bin", Ntag215()),
+            new AmiiboImportSource("collection.zip", archive),
+        ]);
+
+        Assert.Equal(2, result.Imported.Count);
+        Assert.Equal(2, library.Items.Value.Count);
+    }
+
+    [Fact]
+    public void NonTagFilesAreSkippedRatherThanFailing()
+    {
+        // Pointing this at a folder is EXPECTED to sweep up readmes and cover
+        // art. Reporting those as errors would make a successful import of
+        // hundreds of tags look broken.
+        var library = Library();
+        var result = library.ImportMany(
+        [
+            new AmiiboImportSource("Tom Nook.bin", Ntag215()),
+            new AmiiboImportSource("readme.txt", Encoding.UTF8.GetBytes("hello")),
+            new AmiiboImportSource("cover.png", [0x89, 0x50, 0x4E, 0x47]),
+        ]);
+
+        Assert.Single(result.Imported);
+        Assert.Equal(2, result.Skipped);
+        Assert.Equal(2, result.Problems.Count);
+        Assert.Contains("1 added", result.Summary);
+        Assert.Contains("2 skipped", result.Summary);
+    }
+
+    [Fact]
+    public void DuplicatesAcrossABulkImportAreCountedNotStored()
+    {
+        var library = Library();
+        library.Import("Tom Nook", "a.bin", Ntag215());
+
+        var result = library.ImportMany(
+        [
+            new AmiiboImportSource("Tom Nook.bin", Ntag215()),
+            new AmiiboImportSource("Tom Nook copy.bin", Ntag215()),
+            new AmiiboImportSource("Kirby.bin", FigureV3()),
+        ]);
+
+        Assert.Single(result.Imported);
+        Assert.Equal(2, result.Duplicates);
+        Assert.Equal(2, library.Items.Value.Count);
+        Assert.Contains("already in your library", result.Summary);
+    }
+
+    [Fact]
+    public void AnUnreadableArchiveIsOneSkipNotAFailedImport()
+    {
+        var library = Library();
+        var result = library.ImportMany(
+        [
+            new AmiiboImportSource("broken.zip", Encoding.UTF8.GetBytes("PK not really")),
+            new AmiiboImportSource("Tom Nook.bin", Ntag215()),
+        ]);
+
+        Assert.Single(result.Imported);
+        Assert.Equal(1, result.Skipped);
+        Assert.Single(library.Items.Value);
+    }
+
+    [Fact]
+    public void ImportingNothingSaysSoRatherThanClaimingSuccess()
+    {
+        var result = Library().ImportMany([]);
+        Assert.Equal(0, result.Considered);
+        Assert.Equal("Nothing to import.", result.Summary);
+    }
+
+    [Fact]
+    public void ABulkImportOfARealCollectionSucceeds()
+    {
+        // Every tracked dump at once, which is what pointing this at a folder
+        // looks like: a mix of both tag sizes, several states of the same figure,
+        // and two files that are not tags at all.
+        var library = Library();
+        var sources = Directory
+            .EnumerateFiles(RepositoryFile("dumps/amiibo/ntag215-animal-crossing-tom-nook.bin")
+                .Replace("ntag215-animal-crossing-tom-nook.bin", ""), "*.bin")
+            .Select(path => new AmiiboImportSource(Path.GetFileName(path), File.ReadAllBytes(path)))
+            .ToList();
+
+        var result = library.ImportMany(sources);
+
+        // The two 668-byte captures are not tag images and are skipped.
+        Assert.Equal(2, result.Skipped);
+        Assert.Equal(sources.Count - 2, result.Imported.Count);
+        Assert.Equal(result.Imported.Count, library.Items.Value.Count);
     }
 
     [Fact]

@@ -142,11 +142,16 @@
                                 Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                 TextWrapping="Wrap" />
                         </StackPanel>
+                        <!-- Two import buttons, not four. "Import" takes any
+                             number of dumps and archives in one go and works out
+                             what each one is; "Import folder" is the same thing
+                             pointed at a directory. Neither asks the user which
+                             kind of file they have. -->
                         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
                             <Button x:Name="ImportButton" Style="{StaticResource PageButtonStyle}"
-                                    Content="Import" Click="OnImport" />
-                            <Button x:Name="ImportArchiveButton" Style="{StaticResource PageButtonStyle}"
-                                    Content="Import backup" Click="OnImportArchive" />
+                                    Content="Import…" Click="OnImport" />
+                            <Button x:Name="ImportFolderButton" Style="{StaticResource PageButtonStyle}"
+                                    Content="Import folder…" Click="OnImportFolder" />
                             <Button x:Name="ExportArchiveButton" Style="{StaticResource PageButtonStyle}"
                                     Content="Export all" Click="OnExportArchive" />
                         </StackPanel>

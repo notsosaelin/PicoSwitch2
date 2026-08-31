@@ -11,19 +11,29 @@ import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 /**
- * The private Android library exchange is deliberately the same flat archive
- * shape as the portal: a v3 `library.json` plus one `.bin` per entry. The
- * manifest is metadata only; the images are authoritative and are validated
+ * The library exchange archive: a v3 `library.json` plus one `.bin` per entry.
+ *
+ * A CROSS-PLATFORM FORMAT, not this app's private save file. The same shape is
+ * written and read by the Windows companion and by the web portal, so an archive
+ * exported from any of the three opens in the other two.
+ *
+ * The manifest is metadata only; the images are authoritative and are validated
  * before a replacement is committed.
  */
 object AmiiboLibraryArchive {
     const val FORMAT = "PicoSwitch2 Amiibo Library"
     const val VERSION = 3
-    const val MAX_ARCHIVE_BYTES = 8 * 1024 * 1024
-    const val MAX_ENTRIES = 128
-    const val MAX_MANIFEST_BYTES = 128 * 1024
+
+    // Sized for a real collection rather than a handful of favourites. Someone
+    // with a thousand tags is an ordinary user of this feature, and the previous
+    // 128-entry / 256 KB ceilings turned that into an unexplained refusal. 4096
+    // tags at the 2048-byte maximum is 8 MB of images, comfortably inside these
+    // bounds, and the bounds still exist because a ZIP is attacker-shaped input.
+    const val MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
+    const val MAX_ENTRIES = 4096
+    const val MAX_MANIFEST_BYTES = 1024 * 1024
     const val MAX_IMAGE_BYTES = 2048
-    const val MAX_TOTAL_IMAGE_BYTES = 256 * 1024
+    const val MAX_TOTAL_IMAGE_BYTES = 16 * 1024 * 1024
     const val MAX_NAME_CHARS = 120
 
     data class ExportItem(
@@ -78,50 +88,96 @@ object AmiiboLibraryArchive {
         return result
     }
 
-    /** Parse and validate every archive entry without touching the local store. */
+    /**
+     * Read every tag image out of a ZIP, ours or anyone else's.
+     *
+     * DELIBERATELY NOT LIMITED TO OUR OWN EXPORT FORMAT. People keep amiibo
+     * dumps in ordinary zips, usually in folders, usually alongside readme and
+     * image files. Refusing those and demanding a re-export from another tool
+     * would make this the most annoying way to move a collection, so the rule is
+     * simply: take every `.bin` that is a valid tag, ignore everything else, and
+     * fail only when there was nothing usable at all.
+     *
+     * Our `library.json` is still read when present, and still supplies names
+     * and the loaded marker. It is metadata, never a gate.
+     *
+     * A pure read: the caller decides what to keep.
+     */
     fun read(raw: ByteArray): List<ImportedEntry> {
-        require(raw.size <= MAX_ARCHIVE_BYTES) { "Amiibo library archive is too large" }
+        require(raw.size <= MAX_ARCHIVE_BYTES) { "This archive is too large to import" }
         require(raw.size >= 4 && raw[0] == 'P'.code.toByte() && raw[1] == 'K'.code.toByte()) {
-            "Amiibo library backup is not a ZIP archive"
+            "That file is not a ZIP archive"
         }
         val images = mutableListOf<Pair<String, ByteArray>>()
         var manifestBytes: ByteArray? = null
         val names = mutableSetOf<String>()
         var totalImageBytes = 0
-        var imageCount = 0
         var entryCount = 0
         ZipInputStream(ByteArrayInputStream(raw), StandardCharsets.UTF_8).use { zip ->
             while (true) {
                 val entry = zip.nextEntry ?: break
                 entryCount++
-                require(entryCount <= MAX_ENTRIES + 1) { "Amiibo library archive has too many entries" }
-                val name = safeEntryName(entry)
-                require(names.add(name.lowercase())) { "Amiibo library archive contains duplicate entries" }
+                require(entryCount <= MAX_ENTRIES + 1) { "This archive has too many entries to import" }
                 if (entry.isDirectory) {
                     zip.closeEntry()
                     continue
                 }
-                when {
-                    name == "library.json" -> {
-                        require(manifestBytes == null) { "Amiibo library archive has duplicate manifests" }
-                        manifestBytes = readBounded(zip, MAX_MANIFEST_BYTES, "library manifest")
-                    }
-                    name.endsWith(".bin", ignoreCase = true) -> {
-                        imageCount++
-                        require(imageCount <= MAX_ENTRIES) { "Amiibo library archive has too many images" }
-                        val bytes = readBounded(zip, MAX_IMAGE_BYTES, "Amiibo image")
-                        totalImageBytes += bytes.size
-                        require(totalImageBytes <= MAX_TOTAL_IMAGE_BYTES) { "Amiibo library archive contains too much image data" }
-                        val normalized = AmiiboFiles.normalizeImport(bytes)
-                        images += name to normalized
-                    }
-                    else -> error("Unsupported Amiibo library entry: $name")
+
+                // OUR manifest sits at the root. One found anywhere else belongs
+                // to some other tool and is not ours to interpret.
+                if (entry.name.equals("library.json", ignoreCase = true)) {
+                    require(manifestBytes == null) { "Amiibo library archive has duplicate manifests" }
+                    manifestBytes = readBounded(zip, MAX_MANIFEST_BYTES, "library manifest")
+                    zip.closeEntry()
+                    continue
                 }
+
+                val leaf = entry.name.substringAfterLast('/').substringAfterLast('\\')
+                if (!leaf.endsWith(".bin", ignoreCase = true) &&
+                    !leaf.endsWith(".nfc", ignoreCase = true)
+                ) {
+                    // Readmes, cover images, other tools' metadata. Not an error:
+                    // a collection zip is full of them.
+                    zip.closeEntry()
+                    continue
+                }
+
+                require(images.size < MAX_ENTRIES) { "This archive has too many Amiibo images to import" }
+
+                // The LAST path segment, so a dump inside "Animal Crossing/" is
+                // taken on its merits. Display only -- the library stores every
+                // image under a generated name, so an archive path never reaches
+                // the filesystem and cannot traverse out of anywhere.
+                var name = displayEntryName(leaf)
+                if (!names.add(name.lowercase())) {
+                    // Two folders holding a same-named dump. Both are kept: they
+                    // may well be different tags, and content de-duplication
+                    // happens on import where it can compare bytes.
+                    name = uniqueName(name, names)
+                }
+
+                val bytes = readBounded(zip, MAX_IMAGE_BYTES, "Amiibo image")
+                totalImageBytes += bytes.size
+                require(totalImageBytes <= MAX_TOTAL_IMAGE_BYTES) {
+                    "This archive contains too much image data to import"
+                }
+
+                // A file that is not a tag is SKIPPED, not fatal. One stray .bin
+                // in a folder of five hundred good ones must not cost the user
+                // the other four hundred and ninety-nine.
+                runCatching { AmiiboFiles.normalizeImport(bytes) }
+                    .onSuccess { images += name to it }
+
                 zip.closeEntry()
             }
         }
-        require(images.isNotEmpty()) { "Amiibo library archive contains no valid .bin files" }
-        val manifest = manifestBytes?.let(::parseManifest)
+        require(images.isNotEmpty()) { "This archive contains no Amiibo dumps this app can read" }
+
+        // A manifest that cannot be read costs the display names and nothing
+        // else. A foreign archive may well carry a library.json of its own that
+        // means something entirely different, and refusing the images over it
+        // would throw away files that are perfectly valid.
+        val manifest = manifestBytes?.let { runCatching { parseManifest(it) }.getOrNull() }
         val manifestByFile = manifest?.entries?.associateBy { it.fileName }.orEmpty()
         val loadedFile = manifest?.entries?.firstOrNull { it.loaded }?.fileName
             ?: manifest?.loadedKey?.let { wanted ->
@@ -194,6 +250,26 @@ object AmiiboLibraryArchive {
         return output.toByteArray()
     }
 
+    /**
+     * A safe display name for an entry in someone else's archive.
+     *
+     * TOTAL, unlike [safeEntryName]. This runs on names from arbitrary
+     * collection zips, where an over-long or oddly-punctuated filename is a
+     * normal thing to meet — throwing would cost the user the whole import over
+     * one badly named file. The name is display-only: the library stores every
+     * image under a generated name, so nothing here reaches the filesystem.
+     *
+     * `isISOControl` covers NUL, so no separate check for it is needed.
+     */
+    private fun displayEntryName(name: String): String {
+        val cleaned = name
+            .filterNot { it.isISOControl() || it == '/' || it == '\\' }
+            .take(MAX_NAME_CHARS)
+            .trim()
+            .trimStart('.')
+        return cleaned.ifBlank { "amiibo.bin" }
+    }
+
     private fun safeEntryName(entry: ZipEntry): String = safeEntryName(entry.name)
 
     private fun safeEntryName(name: String): String {
@@ -201,7 +277,7 @@ object AmiiboLibraryArchive {
         require(!name.contains('/') && !name.contains('\\') && name != "." && !name.startsWith(".")) {
             "Unsafe Amiibo archive filename"
         }
-        require(name.none { it == '\u0000' || it.isISOControl() }) { "Unsafe Amiibo archive filename" }
+        require(name.none { it.isISOControl() }) { "Unsafe Amiibo archive filename" }
         return name
     }
 

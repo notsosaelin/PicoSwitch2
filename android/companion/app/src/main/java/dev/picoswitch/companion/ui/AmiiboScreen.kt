@@ -794,11 +794,11 @@ private fun AdapterAmiiboCard(ui: CompanionUiState, viewModel: CompanionViewMode
 fun AmiiboSettingsScreen(
     ui: CompanionUiState,
     viewModel: CompanionViewModel,
-    onImportArchive: () -> Unit,
+    onImportFiles: () -> Unit,
+    onImportFolder: () -> Unit,
     onExportArchive: () -> Unit,
     onImportKeys: () -> Unit,
 ) {
-    var importOpen by rememberSaveable { mutableStateOf(false) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4),
@@ -817,12 +817,24 @@ fun AmiiboSettingsScreen(
         }
 
         SectionCard(title = "Import and export", icon = Icons.Default.SwapVert) {
+            // Two rows, not four. One takes any number of dumps and archives at
+            // once and works out what each is; the other is the same thing
+            // pointed at a folder. Neither asks the user to classify their files
+            // first, which is work the app can simply do.
             SettingsRow(
-                title = "Import a library ZIP",
-                supporting = "Replaces the phone library with a portal-compatible archive",
+                title = "Import files",
+                supporting = "Pick any number of .bin dumps or ZIPs, in any mix",
+                leading = Icons.Default.Add,
+                enabled = !ui.busy,
+                onClick = onImportFiles,
+                trailing = { Icon(Icons.Default.ChevronRight, null) },
+            )
+            SettingsRow(
+                title = "Import a folder",
+                supporting = "Adds every dump found inside, including subfolders",
                 leading = Icons.Default.FolderOpen,
                 enabled = !ui.busy,
-                onClick = { importOpen = true },
+                onClick = onImportFolder,
                 trailing = { Icon(Icons.Default.ChevronRight, null) },
             )
             SettingsRow(
@@ -857,14 +869,10 @@ fun AmiiboSettingsScreen(
         Spacer(Modifier.height(LayoutTokens.Space5))
     }
 
-    if (importOpen) ConfirmDialog(
-        onDismiss = { importOpen = false },
-        title = "Replace phone library?",
-        body = "This imports every validated Amiibo in the ZIP and replaces the current private phone library. The adapter is not changed. A failed import leaves the current library untouched.",
-        confirmLabel = "Choose ZIP",
-        destructive = true,
-        onConfirm = { importOpen = false; onImportArchive() },
-    )
+    // No confirmation any more: importing is ADDITIVE. The old library-ZIP path
+    // replaced the phone's library wholesale, which needed a destructive warning;
+    // bulk import only ever adds, and anything already held is reported as a
+    // duplicate rather than written twice.
 }
 
 // ---------------------------------------------------------------------------

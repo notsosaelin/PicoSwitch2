@@ -59,6 +59,57 @@ public sealed record AmiiboArchiveImportResult(
     int Duplicates,
     ValueList<string> Warnings);
 
+/// <summary>One file handed to a bulk import, before anything has looked at it.</summary>
+public sealed record AmiiboImportSource(string Name, byte[] Bytes);
+
+/// <summary>
+/// What a bulk import did, in the terms a one-line summary needs.
+/// </summary>
+/// <remarks>
+/// SKIPPED IS NOT A FAILURE. Pointing this at a folder is expected to sweep up
+/// readmes, cover art and other tools' metadata, and reporting those as errors
+/// would make a successful import of four hundred tags look broken. The counts
+/// are what the user sees; <see cref="Problems"/> is for diagnostics.
+/// </remarks>
+public sealed record AmiiboBulkImportResult(
+    ValueList<AmiiboLibraryItem> Imported,
+    int Duplicates,
+    int Skipped,
+    ValueList<string> Problems)
+{
+    public int Considered => Imported.Count + Duplicates + Skipped;
+
+    /// <summary>One line, in the order a person cares about.</summary>
+    public string Summary
+    {
+        get
+        {
+            if (Considered == 0)
+            {
+                return "Nothing to import.";
+            }
+
+            var parts = new List<string>();
+            if (Imported.Count > 0)
+            {
+                parts.Add($"{Imported.Count} added");
+            }
+
+            if (Duplicates > 0)
+            {
+                parts.Add($"{Duplicates} already in your library");
+            }
+
+            if (Skipped > 0)
+            {
+                parts.Add($"{Skipped} skipped");
+            }
+
+            return parts.Count == 0 ? "Nothing to import." : string.Join(", ", parts) + ".";
+        }
+    }
+}
+
 /// <summary>
 /// The user's local amiibo backups.
 /// </summary>
@@ -361,6 +412,93 @@ public sealed class AmiiboLibrary
             }
 
             return AmiiboArchive.Write(exported);
+        }
+    }
+
+    /// <summary>
+    /// Import many files at once: tag dumps, archives, or any mix of the two.
+    /// </summary>
+    /// <remarks>
+    /// THE ONE ENTRY POINT EVERY PLATFORM'S BULK IMPORT USES — files a user
+    /// multi-selected, or everything found under a folder. Importing one tag at
+    /// a time is fine for a first tag and useless for a collection, and the
+    /// difference between "pick a file" and "pick two hundred files" should be
+    /// the picker, not the app.
+    ///
+    /// A <c>.zip</c> is expanded and its tags imported, so a user never has to
+    /// know whether what they were given is a dump or an archive of them. That
+    /// includes archives from other tools: see <see cref="AmiiboArchive.Read"/>.
+    ///
+    /// NOTHING HERE IS FATAL. Anything unreadable is counted as skipped and
+    /// recorded in <see cref="AmiiboBulkImportResult.Problems"/>, because a
+    /// folder import is expected to meet files that are not tags, and one of
+    /// them must never cost the user the rest.
+    /// </remarks>
+    public AmiiboBulkImportResult ImportMany(IEnumerable<AmiiboImportSource> sources)
+    {
+        var imported = new List<AmiiboLibraryItem>();
+        var problems = new List<string>();
+        var duplicates = 0;
+        var skipped = 0;
+
+        foreach (var source in sources)
+        {
+            var isArchive = source.Bytes.Length >= 2 &&
+                            source.Bytes[0] == (byte)'P' && source.Bytes[1] == (byte)'K';
+
+            if (isArchive)
+            {
+                IReadOnlyList<AmiiboArchive.ImportedEntry> entries;
+                try
+                {
+                    entries = AmiiboArchive.Read(source.Bytes);
+                }
+                catch (Exception error)
+                {
+                    skipped++;
+                    problems.Add($"'{source.Name}' could not be read: {error.Message}");
+                    continue;
+                }
+
+                foreach (var entry in entries)
+                {
+                    Add(entry.DisplayName, entry.FileName, entry.Bytes);
+                }
+
+                continue;
+            }
+
+            Add(Path.GetFileNameWithoutExtension(source.Name), source.Name, source.Bytes);
+        }
+
+        return new AmiiboBulkImportResult(
+            new ValueList<AmiiboLibraryItem>(imported),
+            duplicates,
+            skipped,
+            new ValueList<string>(problems));
+
+        void Add(string displayName, string sourceName, byte[] bytes)
+        {
+            lock (gate)
+            {
+                try
+                {
+                    var result = ImportLocked(displayName, sourceName, bytes);
+                    if (result.Duplicate)
+                    {
+                        duplicates++;
+                    }
+                    else
+                    {
+                        imported.Add(result.Item);
+                    }
+                }
+                catch (Exception error)
+                {
+                    skipped++;
+                    problems.Add($"'{sourceName}' was not imported: {error.Message}");
+                }
+            }
         }
     }
 
