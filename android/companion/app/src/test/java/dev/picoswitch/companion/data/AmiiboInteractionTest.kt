@@ -179,6 +179,47 @@ class AmiiboInteractionTest {
         assertEquals(once, twice)
     }
 
+    /**
+     * THE HIGHLIGHT AND THE TICK ARE INDEPENDENT, and tapping must not care
+     * which item is highlighted.
+     *
+     * A real defect, found on Windows by using the built page rather than
+     * reading it: selection was driven from a host event that only fires when
+     * the highlight MOVES, so the already-highlighted tile could be ticked and
+     * never un-ticked. The domain was always right — this pins the property the
+     * plumbing broke, on both platforms, so no future gesture handler can
+     * quietly reintroduce it.
+     */
+    @Test fun `activating the focused item toggles it like any other`() {
+        // Two, so the set outlives the un-tick: emptying it would leave
+        // selection mode, which is a different rule and is pinned separately.
+        // Selecting leaves the focus on the last item touched, so "b" is both
+        // focused AND selected — precisely the state that could not be undone.
+        val state = selecting("a", "b")
+        assertEquals("b", state.focusedId)
+        assertTrue(state.isSelected("b"))
+
+        val untick = AmiiboInteraction.activate(state, "b")
+        assertFalse(untick.isSelected("b"))
+        assertEquals("b", untick.focusedId)
+        assertTrue(untick.selecting)
+
+        val retick = AmiiboInteraction.activate(untick, "b")
+        assertTrue(retick.isSelected("b"))
+        assertEquals("b", retick.focusedId)
+    }
+
+    /** Toggling the highlighted item must be able to START a selection. */
+    @Test fun `toggling the focused item starts a selection from nothing`() {
+        val browsing = AmiiboInteraction.activate(fresh, "a")
+        assertFalse(browsing.selecting)
+
+        val selecting = AmiiboInteraction.toggleSelection(browsing, "a")
+
+        assertTrue(selecting.selecting)
+        assertTrue(selecting.isSelected("a"))
+    }
+
     /** Un-ticking the last box leaves the mode, as a box would. */
     @Test fun `removing the final item leaves selection mode`() {
         var state = AmiiboInteraction.enterSelection(fresh, "a")

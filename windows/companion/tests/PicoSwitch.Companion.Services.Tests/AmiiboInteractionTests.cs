@@ -222,6 +222,57 @@ public sealed class AmiiboInteractionTests
         Assert.Equal(once, twice);
     }
 
+    /// <summary>
+    /// THE HIGHLIGHT AND THE TICK ARE INDEPENDENT, and clicking must not care
+    /// which item is highlighted.
+    /// </summary>
+    /// <remarks>
+    /// A real defect, found by using the built page rather than reading it.
+    /// Selection was driven from the host's SelectionChanged, which WinUI raises
+    /// only when its OWN selection moves; clicking the already-highlighted tile
+    /// raised nothing, so that one tile could be ticked and never un-ticked. The
+    /// domain was always right — this pins the property the plumbing broke, so a
+    /// future handler cannot quietly reintroduce it.
+    /// </remarks>
+    [Fact]
+    public void ActivatingTheFocusedItemTogglesItLikeAnyOther()
+    {
+        // Two, so the set outlives the un-tick: emptying it would leave
+        // selection mode, which is a different rule and is pinned separately.
+        // Selecting leaves the focus on the last item touched, so "b" is both
+        // focused AND selected — precisely the state that could not be undone.
+        var state = Selecting("a", "b");
+        Assert.Equal("b", state.FocusedId);
+        Assert.True(state.IsSelected("b"));
+
+        // Un-ticking the very item the highlight is on.
+        var untick = AmiiboInteraction.Activate(state, "b");
+        Assert.False(untick.IsSelected("b"));
+        Assert.Equal("b", untick.FocusedId);
+        Assert.True(untick.Selecting);
+
+        // And ticking it again, still without the highlight having moved.
+        var retick = AmiiboInteraction.Activate(untick, "b");
+        Assert.True(retick.IsSelected("b"));
+        Assert.Equal("b", retick.FocusedId);
+    }
+
+    /// <summary>
+    /// The same property for the desktop gesture: Ctrl+click on the highlighted
+    /// item must be able to START a selection.
+    /// </summary>
+    [Fact]
+    public void TogglingTheFocusedItemStartsASelectionFromNothing()
+    {
+        var browsing = AmiiboInteraction.Activate(Fresh, "a");
+        Assert.False(browsing.Selecting);
+
+        var selecting = AmiiboInteraction.ToggleSelection(browsing, "a");
+
+        Assert.True(selecting.Selecting);
+        Assert.True(selecting.IsSelected("a"));
+    }
+
     /// <summary>Un-ticking the last box leaves the mode, as a box would.</summary>
     [Fact]
     public void RemovingTheFinalItemLeavesSelectionMode()
