@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The §14.5 gating experiment for WINDOWS_PASS.md Phase 6.
+
+    DELIBERATELY OUTSIDE PicoSwitch.Companion.sln. WINDOWS_PASS.md §14.5 calls
+    for a throwaway probe that is "not part of the proposed solution", and this
+    honours that: nothing in the companion references it and it is never built
+    with the app.
+
+    It is kept in the repository rather than discarded because §14.5 also says
+    to "record the outcome per radio" — peripheral-role support and LE
+    peripheral quality vary by controller and driver, so a single-machine result
+    is not a product claim and the probe has to be re-runnable on the next
+    radio.
+
+    It project-references PicoSwitch.Bridge.Core for one reason: the 161-byte
+    report map must be the SAME bytes the parity script checks. Pasting a copy
+    here would create a fourth descriptor that
+    tools/check_android_descriptor_parity.py does not know about, and an
+    experiment that answers "does the adapter match this descriptor?" with a
+    descriptor nobody verified would answer nothing.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0-windows10.0.22621.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>13.0</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <AssemblyName>HogpProbe</AssemblyName>
+    <RootNamespace>PicoSwitch.Lab.HogpProbe</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\windows\companion\src\PicoSwitch.Bridge.Core\PicoSwitch.Bridge.Core.csproj" />
+  </ItemGroup>
+
+</Project>
