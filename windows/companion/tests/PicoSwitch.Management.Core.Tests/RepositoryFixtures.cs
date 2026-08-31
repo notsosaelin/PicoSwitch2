@@ -44,6 +44,20 @@ public static class RepositoryFixtures
     /// works against the adapter.
     /// </remarks>
     public const string KbmWireCorpus = "tools/fixtures/management/kbm-wire-corpus.json";
+
+    /// <summary>
+    /// Amiibo crypto vectors, generated from the Kotlin implementation over real
+    /// tags by <c>AmiiboCryptoFixtureTool</c>.
+    /// </summary>
+    /// <remarks>
+    /// The reason a THIRD implementation of this algorithm is tolerable at all.
+    /// Its failure mode is silent — a wrong HMAC produces a tag the console
+    /// simply rejects, with nothing to read — so the C# port is only trustworthy
+    /// to the extent it reproduces these. Carries no key material: the key set is
+    /// named by fingerprint, and the tag bytes are read from the dumps the
+    /// vectors point at.
+    /// </remarks>
+    public const string AmiiboCryptoVectors = "tools/fixtures/amiibo/crypto-vectors.json";
     public const string ControllerLinkFaceMapping = "tools/fixtures/controller_link_face_mapping.csv";
     public const string BridgeReportGoldens = "tools/fixtures/bridge_report_goldens.csv";
     public const string BridgeDescriptorHeader = "tools/fixtures/android_controller_hid.h";
