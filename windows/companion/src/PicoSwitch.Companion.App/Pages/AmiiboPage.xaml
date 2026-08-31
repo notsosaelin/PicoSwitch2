@@ -1,22 +1,207 @@
 <Page
     x:Class="PicoSwitch.Companion.App.Pages.AmiiboPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls">
+
+    <Page.Resources>
+        <Style x:Key="CardStyle" TargetType="Border">
+            <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+            <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="16" />
+        </Style>
+
+        <Style x:Key="PageButtonStyle" TargetType="Button">
+            <Setter Property="MinWidth" Value="96" />
+            <Setter Property="Height" Value="32" />
+            <Setter Property="VerticalAlignment" Value="Bottom" />
+        </Style>
+    </Page.Resources>
 
     <ScrollViewer Padding="24">
         <Grid>
-            <StackPanel MaxWidth="1180" HorizontalAlignment="Stretch" Spacing="8">
-            <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Amiibo" />
-            <TextBlock
-                Style="{StaticResource BodyTextBlockStyle}"
-                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                TextWrapping="Wrap"
-                Text="The local library, and the tag the adapter is presenting." />
-            <TextBlock
-                Margin="0,16,0,0"
-                Style="{StaticResource BodyTextBlockStyle}"
-                TextWrapping="Wrap"
-                Text="Phase 5 fills this page: import, upload with progress, present/eject, save slots, and CRC-verified download. The management session it needs is built." />
+            <StackPanel MaxWidth="1240" HorizontalAlignment="Stretch" Spacing="16">
+
+            <StackPanel Spacing="4">
+                <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Amiibo" />
+                <TextBlock
+                    Style="{StaticResource BodyTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    TextWrapping="Wrap"
+                    Text="Your tag backups, and the one the adapter is holding." />
+            </StackPanel>
+
+            <muxc:InfoBar
+                x:Name="OperationBar"
+                IsOpen="False"
+                IsClosable="True" />
+
+            <!-- The unsynced-changes warning. Deliberately its own bar rather
+                 than a line inside a card: it is the one condition on this page
+                 that blocks other actions, and it must be visible without
+                 scrolling to whichever card the user is looking at. -->
+            <muxc:InfoBar
+                x:Name="DirtyBar"
+                IsOpen="False"
+                IsClosable="False"
+                Severity="Warning"
+                Title="The console changed this Amiibo"
+                Message="The change exists only on the adapter. Sync it to your library before sending another tag or clearing this one." />
+
+            <muxc:InfoBar
+                x:Name="KeyBar"
+                IsOpen="False"
+                IsClosable="False"
+                Severity="Informational" />
+
+            <!-- On adapter -->
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="12">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="2">
+                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="On adapter" />
+                            <TextBlock
+                                x:Name="SlotHeadline"
+                                Style="{StaticResource BodyTextBlockStyle}"
+                                Text="Not read yet" />
+                            <TextBlock
+                                x:Name="SlotDetail"
+                                Style="{StaticResource CaptionTextBlockStyle}"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                TextWrapping="Wrap" />
+                        </StackPanel>
+                        <Button
+                            Grid.Column="1"
+                            x:Name="RefreshButton"
+                            Style="{StaticResource PageButtonStyle}"
+                            Content="Reload"
+                            Click="OnRefresh" />
+                    </Grid>
+
+                    <muxc:ProgressBar
+                        x:Name="TransferProgress"
+                        Visibility="Collapsed"
+                        Minimum="0"
+                        Maximum="100" />
+                    <TextBlock
+                        x:Name="TransferLabel"
+                        Visibility="Collapsed"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="PresentButton" Style="{StaticResource PageButtonStyle}"
+                                Content="Present" Click="OnPresent" />
+                        <Button x:Name="EjectButton" Style="{StaticResource PageButtonStyle}"
+                                Content="Eject" Click="OnEject" />
+                        <Button x:Name="SyncButton" Style="{StaticResource PageButtonStyle}"
+                                Content="Sync to library" Click="OnSync" />
+                        <Button x:Name="ClearButton" Style="{StaticResource PageButtonStyle}"
+                                Content="Clear" Click="OnClear" />
+                        <Button x:Name="CancelButton" Style="{StaticResource PageButtonStyle}"
+                                Content="Cancel" Click="OnCancelTransfer" Visibility="Collapsed" />
+                    </StackPanel>
+
+                    <!-- Only an NTAG215 tag a game has written keeps two copies
+                         side by side, so this whole row disappears otherwise. -->
+                    <StackPanel x:Name="CopySection" Spacing="6" Visibility="Collapsed">
+                        <TextBlock
+                            x:Name="CopyLabel"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="UseOriginalButton" Style="{StaticResource PageButtonStyle}"
+                                    Content="Use original" Click="OnUseOriginal" />
+                            <Button x:Name="UseConsoleCopyButton" Style="{StaticResource PageButtonStyle}"
+                                    Content="Use console copy" Click="OnUseConsoleCopy" />
+                        </StackPanel>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Library -->
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="12">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="2">
+                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Your library" />
+                            <TextBlock
+                                x:Name="LibrarySummary"
+                                Style="{StaticResource CaptionTextBlockStyle}"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                TextWrapping="Wrap" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="ImportButton" Style="{StaticResource PageButtonStyle}"
+                                    Content="Import" Click="OnImport" />
+                            <Button x:Name="ImportArchiveButton" Style="{StaticResource PageButtonStyle}"
+                                    Content="Import backup" Click="OnImportArchive" />
+                            <Button x:Name="ExportArchiveButton" Style="{StaticResource PageButtonStyle}"
+                                    Content="Export all" Click="OnExportArchive" />
+                        </StackPanel>
+                    </Grid>
+
+                    <ListView
+                        x:Name="LibraryList"
+                        SelectionMode="Single"
+                        MaxHeight="360"
+                        SelectionChanged="OnLibrarySelectionChanged" />
+
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="SendButton" Style="{StaticResource PageButtonStyle}"
+                                Content="Send to adapter" Click="OnUpload" />
+                        <Button x:Name="RenameButton" Style="{StaticResource PageButtonStyle}"
+                                Content="Rename" Click="OnRename" />
+                        <Button x:Name="ExportButton" Style="{StaticResource PageButtonStyle}"
+                                Content="Export" Click="OnExportOne" />
+                        <Button x:Name="DeleteButton" Style="{StaticResource PageButtonStyle}"
+                                Content="Delete" Click="OnDelete" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Selected tag detail -->
+            <Border x:Name="DetailCard" Style="{StaticResource CardStyle}" Visibility="Collapsed">
+                <StackPanel Spacing="8">
+                    <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Details" />
+                    <StackPanel x:Name="DetailHost" Spacing="4" />
+                </StackPanel>
+            </Border>
+
+            <!-- Keys -->
+            <Border Style="{StaticResource CardStyle}">
+                <Grid ColumnSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Spacing="2">
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Amiibo keys" />
+                        <TextBlock
+                            x:Name="KeyStatus"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            TextWrapping="Wrap" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="ImportKeysButton" Style="{StaticResource PageButtonStyle}"
+                                Content="Import keys" Click="OnImportKeys" />
+                        <Button x:Name="ForgetKeysButton" Style="{StaticResource PageButtonStyle}"
+                                Content="Forget" Click="OnForgetKeys" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
             </StackPanel>
         </Grid>
     </ScrollViewer>

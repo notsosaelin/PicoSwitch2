@@ -661,6 +661,82 @@ public sealed class AdapterConnectionService
     public Task<KbmMapping> LoadKeyboardMouseProfileAsync(KbmProfileInfo profile) =>
         RunKbmAsync(() => repository.LoadKbmProfileAsync(profile));
 
+    // --------------------------------------------------------------- amiibo
+    //
+    // Diagnostics here are deliberately coarse: a tag's UID and figure id are
+    // identifying, and its decrypted contents are the user's save data. What is
+    // logged is which OPERATION happened and whether it succeeded, never what was
+    // on the tag.
+
+    public Task<AmiiboStatus> RefreshAmiiboAsync() =>
+        RunExclusiveAsync(() => repository.RefreshAmiiboAsync());
+
+    /// <summary>Send a tag image to the adapter, reporting progress per chunk.</summary>
+    public Task<AmiiboStatus> UploadAmiiboAsync(
+        byte[] data,
+        bool useSave2 = false,
+        Action<int, int>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(async () =>
+        {
+            var status = await repository
+                .UploadAmiiboAsync(data, useSave2, progress, cancellationToken)
+                .ConfigureAwait(false);
+            diagnostics.Info("amiibo", $"uploaded {data.Length} bytes");
+            return status;
+        });
+
+    /// <summary>
+    /// Read back what the adapter holds. Does NOT acknowledge.
+    /// </summary>
+    /// <remarks>
+    /// The adapter keeps its dirty flag until the companion confirms the bytes
+    /// are stored, so the caller must write to the library and only then call
+    /// <see cref="AcknowledgeAmiiboDownloadAsync"/>. Acknowledging here would
+    /// clear the flag on data that had not been saved anywhere.
+    /// </remarks>
+    public Task<AmiiboDownload> DownloadAmiiboAsync(
+        Action<int, int>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(() => repository.DownloadAmiiboAsync(progress, cancellationToken));
+
+    public Task<AmiiboStatus> AcknowledgeAmiiboDownloadAsync(AmiiboDownload download) =>
+        RunExclusiveAsync(async () =>
+        {
+            var status = await repository.AcknowledgeAmiiboDownloadAsync(download)
+                .ConfigureAwait(false);
+            diagnostics.Info("amiibo", "synced changes acknowledged and persisted");
+            return status;
+        });
+
+    public Task<AmiiboStatus> SetAmiiboPresentedAsync(bool presented) =>
+        RunExclusiveAsync(async () =>
+        {
+            var status = await repository.SetAmiiboPresentedAsync(presented)
+                .ConfigureAwait(false);
+            diagnostics.Info("amiibo", presented ? "presented to the console" : "ejected");
+            return status;
+        });
+
+    public Task<AmiiboStatus> SelectAmiiboCopyAsync(bool useConsoleCopy) =>
+        RunExclusiveAsync(async () =>
+        {
+            var status = await repository.SelectAmiiboCopyAsync(useConsoleCopy)
+                .ConfigureAwait(false);
+            diagnostics.Info(
+                "amiibo",
+                useConsoleCopy ? "using the console-written copy" : "using the original backup");
+            return status;
+        });
+
+    public Task<AmiiboStatus> ClearAmiiboAsync() =>
+        RunExclusiveAsync(async () =>
+        {
+            var status = await repository.ClearAmiiboAsync().ConfigureAwait(false);
+            diagnostics.Warn("amiibo", "cleared the adapter's tag");
+            return status;
+        });
+
     /// <summary>
     /// Read one bank position's stored content, for copying into the library.
     /// </summary>

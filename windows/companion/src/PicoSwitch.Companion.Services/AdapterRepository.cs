@@ -861,6 +861,119 @@ public sealed class AdapterRepository(IManagementTransport transport)
         return client.LoadKbmProfileMappingAsync(occupant, cancellationToken);
     }
 
+    // --------------------------------------------------------------- amiibo
+    //
+    // Every method here publishes the status the ADAPTER reports back, never a
+    // predicted one. An amiibo can be written by the console at any moment, so a
+    // client that assumed the result of its own command would be describing a
+    // tag that had already moved on.
+
+    public async Task<AmiiboStatus> RefreshAmiiboAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var status = await client.AmiiboStatusAsync(cancellationToken).ConfigureAwait(false);
+        snapshot.Set(snapshot.Value with { Amiibo = status });
+        return status;
+    }
+
+    /// <summary>
+    /// Send a tag image to the adapter.
+    /// </summary>
+    /// <remarks>
+    /// The client refuses outright when the adapter holds unsynced console
+    /// writes, so this cannot be the operation that discards them. Progress is
+    /// reported per chunk because the transfer is slow enough on BLE to look
+    /// hung otherwise, and the cancellation token is honoured mid-transfer.
+    /// </remarks>
+    public async Task<AmiiboStatus> UploadAmiiboAsync(
+        byte[] data,
+        bool useSave2 = false,
+        Action<int, int>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        var status = await client
+            .UploadAmiiboAsync(data, useSave2, progress, cancellationToken)
+            .ConfigureAwait(false);
+        snapshot.Set(snapshot.Value with { Amiibo = status });
+        return status;
+    }
+
+    /// <summary>
+    /// Read back what the adapter holds, CRC-verified.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately does NOT acknowledge. The adapter keeps its dirty flag until
+    /// the companion says the bytes are safely stored, so the sequence is read,
+    /// write to the library, and only then
+    /// <see cref="AcknowledgeAmiiboDownloadAsync"/>. Acknowledging as part of the
+    /// read would clear the flag on data that had not been saved anywhere.
+    /// </remarks>
+    public Task<AmiiboDownload> DownloadAmiiboAsync(
+        Action<int, int>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        client.DownloadAmiiboAsync(progress, cancellationToken);
+
+    /// <summary>
+    /// Tell the adapter the synced bytes are stored, and persist.
+    /// </summary>
+    /// <remarks>
+    /// Guarded by the generation counter and the payload CRC the download
+    /// carried: if the console wrote the tag again between the read and this
+    /// call, the acknowledge is REFUSED rather than clearing a dirty flag that
+    /// now refers to changes nobody has saved.
+    /// </remarks>
+    public async Task<AmiiboStatus> AcknowledgeAmiiboDownloadAsync(
+        AmiiboDownload download, CancellationToken cancellationToken = default)
+    {
+        var status = await client
+            .AcknowledgeDownloadedAmiiboAsync(download, cancellationToken)
+            .ConfigureAwait(false);
+        snapshot.Set(snapshot.Value with { Amiibo = status });
+        return status;
+    }
+
+    /// <summary>Present the tag to the console, or take it away.</summary>
+    public async Task<AmiiboStatus> SetAmiiboPresentedAsync(
+        bool presented, CancellationToken cancellationToken = default)
+    {
+        var status = await client.SetAmiiboPresentedAsync(presented, cancellationToken)
+            .ConfigureAwait(false);
+        snapshot.Set(snapshot.Value with { Amiibo = status });
+        return status;
+    }
+
+    /// <summary>
+    /// Choose between the original backup and the console-written copy.
+    /// </summary>
+    /// <remarks>
+    /// Only meaningful for an NTAG215 tag that has been written by a game: the
+    /// adapter keeps the imported image and the console's version side by side so
+    /// a user can go back. A v3 image has no such pair and the client refuses.
+    /// </remarks>
+    public async Task<AmiiboStatus> SelectAmiiboCopyAsync(
+        bool useConsoleCopy, CancellationToken cancellationToken = default)
+    {
+        var status = await client.SelectAmiiboCopyAsync(useConsoleCopy, cancellationToken)
+            .ConfigureAwait(false);
+        snapshot.Set(snapshot.Value with { Amiibo = status });
+        return status;
+    }
+
+    /// <summary>
+    /// Remove the tag from the adapter entirely.
+    /// </summary>
+    /// <remarks>
+    /// Refused by the client while there are unsynced console writes, which is
+    /// the one path that could destroy data the user has nowhere else.
+    /// </remarks>
+    public async Task<AmiiboStatus> ClearAmiiboAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var status = await client.ClearAmiiboAsync(cancellationToken).ConfigureAwait(false);
+        snapshot.Set(snapshot.Value with { Amiibo = status });
+        return status;
+    }
+
     public async Task<KeyboardMouseState> RenameKbmProfileAsync(
         int id, string name, CancellationToken cancellationToken = default)
     {

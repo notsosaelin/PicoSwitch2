@@ -19,6 +19,8 @@ public static class AppServices
 
     private static AdapterConnectionService? adapters;
     private static KbmLibraryRepository? kbmLibrary;
+    private static AmiiboLibrary? amiiboLibrary;
+    private static WindowsAmiiboKeyStore? amiiboKeys;
     private static DiagnosticLog? diagnostics;
     private static DispatcherQueue? dispatcher;
     private static WindowsDocumentStore? documents;
@@ -68,6 +70,46 @@ public static class AppServices
             {
                 return kbmLibrary ??=
                     new KbmLibraryRepository(new KbmProfileLibraryStore(Documents));
+            }
+        }
+    }
+
+    /// <summary>
+    /// The user's local Amiibo backups.
+    /// </summary>
+    /// <remarks>
+    /// Like <see cref="KbmLibrary"/>, deliberately not reached through
+    /// <see cref="Adapters"/>. These are the user's tag backups; importing,
+    /// renaming, exporting and inspecting them needs no adapter, and several of
+    /// them are the only surviving copy of a save state.
+    /// </remarks>
+    public static AmiiboLibrary AmiiboLibrary
+    {
+        get
+        {
+            lock (Gate)
+            {
+                return amiiboLibrary ??=
+                    new AmiiboLibrary(Path.Combine(Documents.Directory, "amiibo"));
+            }
+        }
+    }
+
+    /// <summary>
+    /// The user's amiibo retail key set, protected at rest by DPAPI.
+    /// </summary>
+    /// <remarks>
+    /// Kept in a directory of its own, away from the tag backups, so that
+    /// exporting or sharing a library folder cannot sweep it along.
+    /// </remarks>
+    public static WindowsAmiiboKeyStore AmiiboKeys
+    {
+        get
+        {
+            lock (Gate)
+            {
+                return amiiboKeys ??= new WindowsAmiiboKeyStore(
+                    Path.Combine(Documents.Directory, "amiibo-private"));
             }
         }
     }
