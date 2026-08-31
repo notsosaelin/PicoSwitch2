@@ -29,49 +29,67 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.picoswitch.companion.data.KbmBankSlot
+import dev.picoswitch.companion.data.KbmBankView
+import dev.picoswitch.companion.data.KbmProfileLibrary
 import dev.picoswitch.companion.model.*
 
 /**
  * The Keyboard & Mouse management surface.
  *
- * Four conceptual areas, in the order someone actually works through them:
- * what is connected, how the adapter should treat it, what each input does,
- * and how the mouse feels. Arbitration internals the firmware also reports --
- * connection indices, generation counters, rejection tallies -- are not here;
- * they belong to Diagnostics.
+ * TWO STORES, KEPT VISIBLY APART. This is the organising idea of the screen and
+ * the correction it exists to express:
  *
- * Every change on this page applies to adapter RAM immediately and is only
- * written to flash by Save. The unsaved marker therefore tracks "changed on
- * this connection", which is the strongest claim the protocol supports.
+ *  - YOUR LIBRARY is the user's collection of profiles. It lives in this app,
+ *    has no size limit, and needs no adapter: creating, editing, renaming,
+ *    duplicating, saving and deleting all work with nothing paired and send zero
+ *    management commands.
+ *  - ON ADAPTER is the adapter's working set — three positions in each of two
+ *    layout banks, plus a built-in Default that consumes none of them. It exists
+ *    so the adapter keeps working with no app attached, and getting content into
+ *    it is always an explicit act.
+ *
+ * The previous screen treated the adapter's six slots as the user's library, so
+ * "New" erased flash, "Save" changed what the console might run, and neither
+ * worked while disconnected. Save now means "keep this in my library", and only
+ * Assign, Update, Remove, Activate and On startup reach the device.
+ *
+ * Arbitration internals the firmware also reports — connection indices,
+ * generation counters, rejection tallies — are not here; they belong to
+ * Diagnostics.
  */
 @Composable
 fun KeyboardMouseScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
     val kbm = ui.kbm
+    val layout = ui.kbmLayout
+    val draft = ui.kbmDraft
     var editing by remember { mutableStateOf<EditTarget?>(null) }
     var resetAllOpen by rememberSaveable { mutableStateOf(false) }
     var resetProfileOpen by rememberSaveable { mutableStateOf<KbmProfile?>(null) }
     var advancedOpen by rememberSaveable { mutableStateOf(false) }
-    var selectedProfile by rememberSaveable { mutableStateOf(kbm.activeProfile) }
     var nameDialog by remember { mutableStateOf<NameDialog?>(null) }
     var deleteOpen by rememberSaveable { mutableStateOf(false) }
+    var assignOpen by rememberSaveable { mutableStateOf(false) }
+    var removeSlot by remember { mutableStateOf<KbmBankSlot?>(null) }
+    var switchKeyFor by rememberSaveable { mutableStateOf<Int?>(null) }
 
-    // Follow the adapter when the active layout changes underneath the page
-    // (plugging a mouse in switches it), but never fight a deliberate choice
-    // made while looking at the other layout.
-    LaunchedEffect(kbm.activeProfile) { selectedProfile = kbm.activeProfile }
+    // Open something on arrival so the editor is never blank. Deliberately the
+    // BUILT-IN DEFAULT rather than whatever the adapter is running: opening a
+    // library profile the user did not choose would make the first Save write
+    // over it.
+    LaunchedEffect(Unit) { if (draft == null) viewModel.openKbmLocalProfile(null) }
 
-    // Open this layout's applied profile on arrival, so what is on screen is
-    // what the console is using rather than an arbitrary row.
-    LaunchedEffect(selectedProfile, kbm.profiles) {
-        if (!kbm.profiles.supported) return@LaunchedEffect
-        if (kbm.draft?.layout == selectedProfile) return@LaunchedEffect
-        val applied = kbm.profiles.activeFor(selectedProfile)?.sourceId
-            ?: KbmProfileIds.DEFAULT
-        val row = kbm.profiles.forLayout(selectedProfile)
-            .firstOrNull { it.id == applied }
-            ?: kbm.profiles.forLayout(selectedProfile).first()
-        viewModel.openKbmProfile(row)
+    // Follow the adapter when the derived layout changes underneath the screen
+    // (plugging a mouse in switches it), but never while an edit is unsaved:
+    // switching layouts reopens the editor, and a hardware event must not throw
+    // away work the user has not saved.
+    LaunchedEffect(kbm.activeProfile) {
+        if (draft?.dirty != true) viewModel.selectKbmLayout(kbm.activeProfile)
     }
+
+    // The adapter half of the screen. The library half never consults this.
+    val adapterReady = ui.connection.connected && kbm.readiness == KbmReadiness.Ready
+    val adapterLive = adapterReady && !ui.kbmBusy
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val twoColumn = twoColumnLayout(maxWidth)
@@ -88,7 +106,7 @@ fun KeyboardMouseScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
                     if (kbm.dirty) {
                         Button(
                             onClick = viewModel::saveAdapterConfiguration,
-                            enabled = ui.connection.connected && !ui.kbmBusy,
+                            enabled = adapterLive,
                         ) {
                             Icon(Icons.Default.Save, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(LayoutTokens.Space2))
@@ -104,17 +122,10 @@ fun KeyboardMouseScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
             Spacer(Modifier.height(LayoutTokens.Space3))
 
             when {
-                !ui.connection.connected -> EmptyStateBlock(
-                    Icons.Default.Keyboard,
-                    "Adapter not connected",
-                    "Connect to the adapter to manage keyboard and mouse settings.",
-                    Modifier.fillMaxSize(),
-                )
-
-                // TOP-LEVEL STATE FIRST, and no legacy editor behind it. When the
-                // profile contract could not be loaded the screen used to fall
-                // through to a pre-profile mapping page, which looked like a
-                // half-built feature rather than a failed read.
+                // TOP-LEVEL STATE FIRST. When the profile contract could not be
+                // loaded the screen used to fall through to a pre-profile mapping
+                // page, which looked like a half-built feature rather than a
+                // failed read.
                 kbm.readiness == KbmReadiness.FirmwareUpdateRequired -> EmptyStateBlock(
                     Icons.Default.Keyboard,
                     "Firmware update required",
@@ -132,44 +143,64 @@ fun KeyboardMouseScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
                     Modifier.fillMaxSize(),
                 )
 
-                kbm.readiness != KbmReadiness.Ready -> EmptyStateBlock(
-                    Icons.Default.Keyboard,
-                    "Not read yet",
-                    "Reload to read this adapter's keyboard and mouse settings.",
-                    Modifier.fillMaxSize(),
-                )
-
                 else -> {
                     val status: @Composable () -> Unit = { KbmStatusCard(kbm, ui, viewModel) }
-                    val profiles: @Composable () -> Unit = {
-                        ProfilesCard(
-                            kbm = kbm,
-                            layout = selectedProfile,
-                            connected = ui.connection.connected,
+                    val library: @Composable () -> Unit = {
+                        LibraryCard(
+                            library = ui.kbmLibrary,
+                            profiles = kbm.profiles,
+                            layout = layout,
+                            draft = draft,
+                            selectedId = ui.kbmSelectedLocalId,
+                            adapterReady = adapterReady,
                             enabled = !ui.kbmBusy,
-                            onOpen = viewModel::openKbmProfile,
-                            onSave = viewModel::saveKbmDraft,
+                            onLayout = viewModel::selectKbmLayout,
+                            onOpen = viewModel::openKbmLocalProfile,
+                            onSave = { viewModel.saveKbmProfile() },
+                            onSaveAsNew = { nameDialog = NameDialog.SaveAsNew },
                             onDiscard = viewModel::discardKbmDraft,
-                            onApply = { viewModel.applyKbmProfile(selectedProfile, it) },
                             onNew = { nameDialog = NameDialog.New },
+                            onDuplicate = { nameDialog = NameDialog.Duplicate },
                             onRename = { nameDialog = NameDialog.Rename },
                             onDelete = { deleteOpen = true },
+                            onAssign = { assignOpen = true },
                         )
                     }
                     val mapping: @Composable () -> Unit = {
                         MappingCard(
-                            kbm = kbm,
-                            profile = selectedProfile,
-                            onProfile = { selectedProfile = it },
+                            layout = layout,
+                            draft = draft,
                             enabled = !ui.kbmBusy,
                             onEdit = { editing = it },
                             onResetProfile = { resetProfileOpen = it },
+                            adapterLive = adapterLive,
+                        )
+                    }
+                    val bank: @Composable () -> Unit = {
+                        BankCard(
+                            kbm = kbm,
+                            layout = layout,
+                            adapterReady = adapterReady,
+                            enabled = adapterLive,
+                            onActivate = viewModel::activateKbmPosition,
+                            onBoot = viewModel::setKbmBootPosition,
+                            onRemove = { removeSlot = it },
+                            onCopy = viewModel::copyKbmPositionToLibrary,
+                        )
+                    }
+                    val switches: @Composable () -> Unit = {
+                        SwitchKeysCard(
+                            switches = kbm.switches,
+                            adapterReady = adapterReady,
+                            enabled = adapterLive,
+                            onChoose = { switchKeyFor = it },
+                            onClear = { key -> viewModel.bindKbmSwitch(key, null) },
                         )
                     }
                     val mouse: @Composable () -> Unit = {
                         MouseTuningCard(
                             kbm = kbm,
-                            enabled = !ui.kbmBusy,
+                            enabled = adapterLive,
                             advancedOpen = advancedOpen,
                             onToggleAdvanced = { advancedOpen = !advancedOpen },
                             onPreview = viewModel::previewMouseField,
@@ -186,18 +217,20 @@ fun KeyboardMouseScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
                             Column(
                                 Modifier.weight(1f),
                                 verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4),
-                            ) { status(); mouse() }
+                            ) { status(); bank(); switches(); mouse() }
                             Column(
                                 Modifier.weight(1f),
                                 verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4),
-                            ) { profiles(); mapping() }
+                            ) { library(); mapping() }
                         }
                     } else {
                         Column(
                             Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4),
                         ) {
-                            status(); profiles(); mapping(); mouse()
+                            // Library first on a phone: it is the half that works
+                            // whether or not anything is paired.
+                            library(); mapping(); bank(); switches(); status(); mouse()
                             Spacer(Modifier.height(LayoutTokens.Space5))
                         }
                     }
@@ -211,23 +244,16 @@ fun KeyboardMouseScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
             target = target,
             onDismiss = { editing = null },
             onApply = { destination ->
-                // With a draft open this edits the LOCAL copy and sends nothing.
-                // Without one -- firmware with no profile library -- the
-                // per-binding command is genuinely the only mapping surface
-                // that adapter has.
-                if (kbm.draft?.layout == target.profile && destination != null) {
-                    viewModel.editKbmBinding(target.source, destination)
-                } else {
-                    viewModel.bindKbm(target.profile, target.source, destination)
-                }
+                // LOCAL ONLY. Every rebind edits the open draft and sends
+                // nothing; thirty edits still cost zero flash erases.
+                viewModel.editKbmBinding(target.source, destination)
                 editing = null
             },
             onRestoreDefault = {
-                if (kbm.draft?.layout == target.profile) {
-                    viewModel.editKbmBinding(target.source, KbmDestination.None)
-                } else {
-                    viewModel.bindKbm(target.profile, target.source, null)
-                }
+                // Distinct from binding None: this REMOVES the override so the
+                // layout's canonical binding applies again, where None is an
+                // override meaning "this input does nothing".
+                viewModel.restoreKbmBinding(target.source)
                 editing = null
             },
         )
@@ -239,7 +265,7 @@ fun KeyboardMouseScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
         // Stated precisely because the firmware's only reset that reaches the
         // mouse settings also clears both mapping profiles. Offering it as a
         // mouse-only reset would be a claim the adapter cannot honour.
-        body = "This restores the adapter's built-in mouse settings and both mapping profiles. Custom bindings are lost. Settings apply immediately; use Save to keep them.",
+        body = "This restores the adapter's built-in mouse settings and both mapping profiles. Custom bindings are lost. Your library is not affected.",
         confirmLabel = "Restore defaults",
         destructive = true,
         icon = Icons.Default.RestartAlt,
@@ -250,7 +276,7 @@ fun KeyboardMouseScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
         ConfirmDialog(
             onDismiss = { resetProfileOpen = null },
             title = "Restore ${profile.title} mapping?",
-            body = "This clears every custom binding in the ${profile.title} profile. Mouse settings and the other profile are not affected.",
+            body = "This clears every custom binding in the ${profile.title} mapping on the adapter. Mouse settings, the other layout, and your library are not affected.",
             confirmLabel = "Restore",
             destructive = true,
             icon = Icons.Default.RestartAlt,
@@ -259,70 +285,119 @@ fun KeyboardMouseScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
     }
 
     nameDialog?.let { which ->
-        val existing = kbm.profiles.forLayout(selectedProfile).map { it.name }
-        val draft = kbm.draft
+        // The LOCAL library, not the adapter's residents: a suggestion drawn from
+        // the adapter would collide with the user's own profiles and would need a
+        // connection to make.
+        val existing = ui.kbmLibrary.forLayout(layout).map { it.name }
         ProfileNameDialog(
-            title = if (which == NameDialog.New) "New profile" else "Rename profile",
-            body = when {
-                which == NameDialog.Rename -> "Only the name changes. The mapping " +
-                    "the console is using is not affected."
-                draft?.isBuiltin != false -> "Starts from the built-in Default mapping."
-                else -> "Starts as a copy of the profile you are viewing."
+            title = when (which) {
+                NameDialog.New -> "New profile"
+                NameDialog.Duplicate -> "Duplicate profile"
+                NameDialog.Rename -> "Rename profile"
+                NameDialog.SaveAsNew -> "Save as new profile"
             },
-            initial = if (which == NameDialog.Rename) draft?.name.orEmpty()
-                      else suggestProfileName(existing, "My mapping"),
-            taken = existing.filter { which == NameDialog.New || it != draft?.name },
+            body = when (which) {
+                NameDialog.New -> "Starts from the built-in Default mapping. It " +
+                    "stays in your library until you assign it to the adapter."
+                NameDialog.Duplicate -> "Copies what you are looking at, including " +
+                    "unsaved changes, into a new library profile."
+                NameDialog.Rename -> "Only the name changes. Nothing on the " +
+                    "adapter is affected."
+                NameDialog.SaveAsNew -> "Default is a template and is never " +
+                    "written into, so this saves your changes as a new profile."
+            },
+            initial = when (which) {
+                NameDialog.Rename -> draft?.name.orEmpty()
+                NameDialog.Duplicate ->
+                    ui.kbmLibrary.suggestName(layout, "${draft?.name.orEmpty()} copy")
+                else -> ui.kbmLibrary.suggestName(layout, "My mapping")
+            },
+            taken = existing.filter { which != NameDialog.Rename || it != draft?.name },
             onDismiss = { nameDialog = null },
             onConfirm = { name ->
                 nameDialog = null
-                when {
-                    which == NameDialog.Rename -> draft?.let {
-                        viewModel.renameKbmProfile(it.profileId, name)
-                    }
-                    // From the built-in template there is nothing stored to
-                    // duplicate: save the draft under a new name instead.
-                    draft?.isBuiltin != false -> {
-                        viewModel.editKbmDraftName(name)
-                        viewModel.saveKbmDraft()
-                    }
-                    else -> viewModel.duplicateKbmProfile(draft.profileId, name)
+                when (which) {
+                    NameDialog.New -> viewModel.newKbmProfile(name)
+                    NameDialog.Duplicate -> viewModel.duplicateKbmProfile(name)
+                    NameDialog.Rename -> viewModel.renameKbmProfile(name)
+                    NameDialog.SaveAsNew -> viewModel.saveKbmProfile(name)
                 }
             },
         )
     }
 
-    if (deleteOpen) {
-        val draft = kbm.draft
-        val applied =
-            kbm.profiles.activeFor(selectedProfile)?.sourceId == draft?.profileId
+    if (deleteOpen && draft != null && !draft.isBuiltin) {
+        // A resident copy is a SEPARATE snapshot the adapter owns and may be
+        // running. Deleting the library profile must not remove it, and the user
+        // is told so rather than left to discover it.
+        val resident = kbm.profiles.profiles.firstOrNull {
+            it.layout == layout && it.fingerprint == draft.fingerprint
+        }
         ConfirmDialog(
             onDismiss = { deleteOpen = false },
-            title = "Delete '${draft?.name.orEmpty()}'?",
-            body = if (applied) {
-                "This profile is what the console is using. Deleting it switches " +
-                    "this layout back to the built-in Default mapping."
+            title = "Delete '${draft.name}' from your library?",
+            body = if (resident == null) {
+                "This removes it from this app. Nothing on the adapter changes."
             } else {
-                "This profile is removed from the adapter. The mapping the console " +
-                    "is using does not change."
+                "This removes it from this app. The copy on the adapter " +
+                    "(${KbmPositions.label(resident.position)}) stays, and the " +
+                    "console keeps working as it does now."
             },
             confirmLabel = "Delete",
             destructive = true,
             icon = Icons.Default.RestartAlt,
-            onConfirm = {
-                deleteOpen = false
-                draft?.let { viewModel.deleteKbmProfile(it.profileId) }
+            onConfirm = { deleteOpen = false; viewModel.deleteKbmProfile() },
+        )
+    }
+
+    if (assignOpen && draft != null) {
+        AssignDialog(
+            name = draft.name,
+            // Default is built in and cannot be assigned into.
+            slots = KbmBankView.bank(kbm.profiles, kbm.switches, layout)
+                .filterNot { it.isDefault },
+            onDismiss = { assignOpen = false },
+            onConfirm = { position ->
+                assignOpen = false
+                viewModel.assignKbmPosition(position)
             },
         )
     }
-}
 
-/** A name that is not already taken in this layout. */
-private fun suggestProfileName(taken: List<String>, basis: String): String {
-    if (taken.none { it.equals(basis, ignoreCase = true) }) return basis
-    return (2..99).asSequence()
-        .map { "$basis $it" }
-        .firstOrNull { candidate -> taken.none { it.equals(candidate, ignoreCase = true) } }
-        ?: basis
+    removeSlot?.let { slot ->
+        ConfirmDialog(
+            onDismiss = { removeSlot = null },
+            title = "Remove '${slot.residentLabel}' from ${slot.positionLabel}?",
+            // The two stores are independent by design, so this is worth saying
+            // out loud: a user who expects Remove to delete their profile, or
+            // Delete to free an adapter position, will be surprised otherwise.
+            body = "The adapter's copy is removed." +
+                (if (slot.isRuntime || slot.isBoot) {
+                    " This layout falls back to the built-in Default."
+                } else {
+                    ""
+                }) +
+                " Your library keeps this profile.",
+            confirmLabel = "Remove",
+            destructive = true,
+            icon = Icons.Default.RestartAlt,
+            onConfirm = {
+                removeSlot = null
+                viewModel.removeKbmPosition(slot.position)
+            },
+        )
+    }
+
+    switchKeyFor?.let { position ->
+        SwitchKeyDialog(
+            position = position,
+            onDismiss = { switchKeyFor = null },
+            onConfirm = { source ->
+                switchKeyFor = null
+                viewModel.bindKbmSwitch(source, position)
+            },
+        )
+    }
 }
 
 /**
@@ -373,10 +448,37 @@ private fun ProfileNameDialog(
 /** Matches NS2_KBM_PROFILE_NAME_MAX minus its NUL. */
 private const val KBM_PROFILE_NAME_MAX = 19
 
-/** Which naming prompt is open. */
-private enum class NameDialog { New, Rename }
+/**
+ * A single-choice row.
+ *
+ * The radio button is real rather than decorative: selection here is a choice
+ * among alternatives, and a row that conveyed it only by highlight would say
+ * nothing to a screen reader.
+ */
+@Composable
+private fun SelectableRow(
+    title: String,
+    supporting: String?,
+    selected: Boolean,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    SettingsRow(
+        title = title,
+        supporting = supporting,
+        enabled = enabled,
+        onClick = onClick,
+        role = Role.RadioButton,
+        trailing = {
+            RadioButton(selected = selected, onClick = null, enabled = enabled)
+        },
+    )
+}
 
-/** Which input, in which profile, the focused editor is currently editing. */
+/** Which naming prompt is open. All four are LOCAL library operations. */
+private enum class NameDialog { New, Duplicate, Rename, SaveAsNew }
+
+/** Which input, in which layout, the focused editor is currently editing. */
 private data class EditTarget(
     val profile: KbmProfile,
     val source: KbmSource,
@@ -452,175 +554,433 @@ private fun KbmStatusCard(kbm: KbmState, ui: CompanionUiState, viewModel: Compan
 // ---------------------------------------------------------------------------
 
 /**
- * The profile library for one layout.
+ * YOUR LIBRARY: the user's own profiles for one layout.
  *
- * Three separate ideas, kept visibly separate because collapsing any two is what
- * made a mapping edit feel like it had silently failed:
+ * NOTHING in this card requires a connection and nothing in it writes to an
+ * adapter. New, Duplicate, Rename, Delete, Save and Discard are all local, so
+ * the whole card stays live with nothing paired — which is the point, because a
+ * mapping is composed rather than measured and never needed a device.
  *
- *  - selecting a profile OPENS it. It does not apply it.
- *  - Save stores it in the adapter's library. It does not change the console.
- *  - Set Active is what changes the console.
+ * The only button here that reaches the adapter is Assign, and it says so.
  *
- * All the rules live in the ViewModel and the draft model; this composable reads
- * state and raises events.
+ * Each row also carries where that profile stands relative to the adapter. That
+ * is a RELATIONSHIP, computed by [KbmBankView], not a property of the draft: a
+ * single flag could not express "I edited this locally, the adapter still has
+ * the old copy, and it is running that old copy".
  */
 @Composable
-private fun ProfilesCard(
-    kbm: KbmState,
+private fun LibraryCard(
+    library: KbmProfileLibrary,
+    profiles: KbmProfiles,
     layout: KbmProfile,
-    connected: Boolean,
+    draft: KbmLocalDraft?,
+    selectedId: String?,
+    adapterReady: Boolean,
     enabled: Boolean,
-    onOpen: (KbmProfileInfo) -> Unit,
+    onLayout: (KbmProfile) -> Unit,
+    onOpen: (String?) -> Unit,
     onSave: () -> Unit,
+    onSaveAsNew: () -> Unit,
     onDiscard: () -> Unit,
-    onApply: (Int) -> Unit,
     onNew: () -> Unit,
+    onDuplicate: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
+    onAssign: () -> Unit,
 ) {
-    // Only ever composed in the Ready state, where the library is loaded and
-    // Default always exists. An adapter without a profile library does not reach
-    // this screen at all: it is reported as needing a firmware update.
-    val rows = kbm.profiles.forLayout(layout)
-    if (rows.isEmpty()) return
+    val rows = KbmBankView.library(library, profiles, layout)
+    val dirty = draft?.dirty == true
+    val builtin = draft?.isBuiltin != false
 
-    val draft = kbm.draft?.takeIf { it.layout == layout }
-    val state = kbm.draftState(connected)
-    // With a draft open the selection is what the draft is editing; without one
-    // it is the profile the console is actually running, never nothing.
-    val selected = rows.firstOrNull { it.id == draft?.profileId }
-        ?: rows.firstOrNull { it.id == kbm.profiles.activeFor(layout)?.sourceId }
-
-    SectionCard(title = "Profile", icon = Icons.Default.Tune) {
+    SectionCard(
+        title = "Your library",
+        icon = Icons.Default.Tune,
+        trailing = {
+            TextButton(onClick = onNew, enabled = enabled) { Text("New") }
+        },
+    ) {
         SegmentedSelector(
-            options = rows,
-            selected = selected ?: rows.first(),
-            label = { if (it.builtin) "${it.name} (built-in)" else it.name },
-            onSelect = onOpen,
+            options = KbmProfile.entries,
+            selected = layout,
+            label = { it.title },
+            onSelect = onLayout,
             enabled = enabled,
         )
+        Text(
+            when (layout) {
+                KbmProfile.Keyboard -> "The keyboard drives both sticks."
+                KbmProfile.KeyboardMouse -> "The mouse aims; the keyboard moves and acts."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
 
-        val (headline, detail) = when (state) {
-            KbmDraftState.Active -> "Active" to null
-            KbmDraftState.Dirty -> "Unsaved changes" to
-                "Nothing has been sent to the adapter yet. Save to store these " +
-                "changes, or Discard to go back to the saved profile."
-            KbmDraftState.SavedNotApplied -> "Saved — not applied" to
-                "The adapter has these changes saved, but the console is still " +
-                "using the mapping that was applied earlier. Set Active to use them."
-            KbmDraftState.Conflict -> "Changed on another device" to
-                "This profile was changed elsewhere since you opened it. Reload " +
-                "to see those changes, or save it as a new profile."
-            KbmDraftState.Disconnected -> "Not connected" to
-                "Showing the last mapping read from this adapter. What the " +
-                "console is using right now cannot be confirmed while disconnected."
-            KbmDraftState.Clean -> "Saved" to null
+        HorizontalDivider()
+
+        // Default is always offered and is never a library row: it is the
+        // template every profile starts from, it consumes no adapter position,
+        // and it cannot be renamed or deleted.
+        SelectableRow(
+            title = "Default (built-in)",
+            supporting = "The adapter's own mapping for this layout.",
+            selected = selectedId == null,
+            enabled = enabled,
+            onClick = { onOpen(null) },
+        )
+
+        rows.forEach { row ->
+            SelectableRow(
+                title = row.profile.name,
+                supporting = row.stateLabel,
+                selected = selectedId == row.profile.id,
+                enabled = enabled,
+                onClick = { onOpen(row.profile.id) },
+            )
         }
 
-        Text(headline, style = MaterialTheme.typography.titleSmall)
-        if (detail != null) InlineNotice(detail)
+        if (rows.isEmpty()) {
+            InlineNotice(
+                "No profiles yet. New starts one from the built-in Default; it " +
+                    "stays here until you assign it to the adapter.",
+            )
+        }
 
-        val live = connected && enabled
+        HorizontalDivider()
+
+        // Only two states, and both are local: there is no third that depends on
+        // a device. Where the profile stands against the adapter is on its row.
+        Text(
+            if (dirty) "Unsaved changes" else "Saved to your library",
+            style = MaterialTheme.typography.titleSmall,
+        )
+        if (dirty) {
+            InlineNotice(
+                if (builtin) {
+                    "Default is a template and is never written into. Save keeps " +
+                        "these changes as a new profile in your library."
+                } else {
+                    "Nothing has been sent to the adapter. Save keeps these " +
+                        "changes in your library; Discard goes back."
+                },
+            )
+        }
+
         Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
             Button(
-                onClick = onSave,
-                // Save is offered for a real edit, and for turning the built-in
-                // Default into a profile of the user's own.
-                enabled = live && (state == KbmDraftState.Dirty || selected?.builtin == true),
-            ) { Text("Save") }
+                onClick = if (builtin) onSaveAsNew else onSave,
+                // Offered for a real edit, and for turning the built-in Default
+                // into a profile of the user's own. Never for an unchanged draft:
+                // there would be nothing to write.
+                enabled = enabled && draft != null && (dirty || builtin),
+            ) { Text(if (builtin) "Save as new" else "Save") }
+            TextButton(onClick = onDiscard, enabled = enabled && dirty) { Text("Discard") }
             TextButton(
-                onClick = onDiscard,
-                enabled = live && state == KbmDraftState.Dirty,
-            ) { Text("Discard") }
-            TextButton(
-                onClick = { selected?.let { onApply(it.id) } },
-                // Never automatic: applying is the user saying "use this now".
-                enabled = live && selected != null &&
-                    state != KbmDraftState.Dirty && state != KbmDraftState.Active,
-            ) { Text("Set Active") }
+                onClick = onDuplicate,
+                enabled = enabled && draft != null,
+            ) { Text("Duplicate") }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
-            TextButton(onClick = onNew, enabled = live && !kbm.profiles.full) { Text("New") }
+            TextButton(onClick = onRename, enabled = enabled && !builtin) { Text("Rename") }
+            TextButton(onClick = onDelete, enabled = enabled && !builtin) { Text("Delete") }
+            // The ONE button in this card that reaches the adapter. Disabled
+            // rather than hidden while offline: a user who cannot see it cannot
+            // tell that connecting would bring it back.
             TextButton(
-                onClick = onRename,
-                enabled = live && selected != null && !selected.builtin,
-            ) { Text("Rename") }
-            TextButton(
-                onClick = onDelete,
-                enabled = live && selected != null && !selected.builtin,
-            ) { Text("Delete") }
+                onClick = onAssign,
+                enabled = enabled && adapterReady && !builtin,
+            ) { Text("Assign to adapter…") }
         }
 
-        if (kbm.profiles.full) {
+        if (!adapterReady) {
             InlineNotice(
-                "All ${kbm.profiles.max} profile slots are in use. Delete one to " +
-                    "make room for another.",
+                "Connect the adapter to assign profiles to it. Everything else " +
+                    "here works offline.",
             )
         }
     }
 }
 
 // ---------------------------------------------------------------------------
+// On adapter
+// ---------------------------------------------------------------------------
+
+/**
+ * ON ADAPTER: the working set, three positions per layout plus Default.
+ *
+ * Every row here is a live device operation. Empty positions are rows rather
+ * than omissions — "Profile 3 · Empty" is what tells a user they have somewhere
+ * to assign to, and a list of only the occupied ones would hide the capacity.
+ *
+ * Activate and On startup are separate buttons because they are separate facts:
+ * a switch key moves the runtime choice and not the startup one, so after one
+ * press they differ for the rest of the session.
+ */
+@Composable
+private fun BankCard(
+    kbm: KbmState,
+    layout: KbmProfile,
+    adapterReady: Boolean,
+    enabled: Boolean,
+    onActivate: (Int) -> Unit,
+    onBoot: (Int) -> Unit,
+    onRemove: (KbmBankSlot) -> Unit,
+    onCopy: (Int) -> Unit,
+) {
+    val slots = KbmBankView.bank(kbm.profiles, kbm.switches, layout)
+    val used = slots.count { !it.empty && !it.isDefault }
+
+    SectionCard(title = "On adapter", icon = Icons.Default.Usb) {
+        Text(
+            if (!adapterReady) {
+                "Connect the adapter to see and manage its profiles."
+            } else {
+                "$used of ${KbmLimits.POSITIONS_PER_LAYOUT} positions used for " +
+                    "${layout.title.lowercase()}. These work with no app connected."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        if (!adapterReady) return@SectionCard
+
+        slots.forEach { slot ->
+            val marks = buildList {
+                if (slot.isRuntime) add("active now")
+                if (slot.isBoot) add("on startup")
+                slot.switchKey?.let { add("key ${it.label}") }
+            }
+
+            Column(Modifier.fillMaxWidth()) {
+                LabelValueRow(slot.positionLabel, slot.residentLabel)
+                if (marks.isNotEmpty()) {
+                    Text(
+                        marks.joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+                    TextButton(
+                        onClick = { onActivate(slot.position) },
+                        // Runtime only: zero flash writes. An empty position has
+                        // nothing to activate, and the one already running does
+                        // not need it.
+                        enabled = enabled && !slot.isRuntime &&
+                            (slot.isDefault || !slot.empty),
+                    ) { Text("Activate") }
+                    TextButton(
+                        onClick = { onBoot(slot.position) },
+                        // The one profile selection worth a flash write, and the
+                        // only reason it is a separate button.
+                        enabled = enabled && !slot.isBoot &&
+                            (slot.isDefault || !slot.empty),
+                    ) { Text("On startup") }
+                    if (!slot.isDefault) {
+                        TextButton(
+                            onClick = { onCopy(slot.position) },
+                            enabled = enabled && !slot.empty,
+                        ) { Text("Copy to library") }
+                        TextButton(
+                            onClick = { onRemove(slot) },
+                            enabled = enabled && !slot.empty,
+                        ) { Text("Remove") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One row per semantic switch action, bound or not.
+ *
+ * Rendered from the ACTIONS rather than from the adapter's bindings: a list
+ * built from the bindings would hide the actions the user has not set up yet,
+ * which are exactly the ones they came here to set up.
+ */
+@Composable
+private fun SwitchKeysCard(
+    switches: List<KbmSwitchBinding>,
+    adapterReady: Boolean,
+    enabled: Boolean,
+    onChoose: (Int) -> Unit,
+    onClear: (KbmSource) -> Unit,
+) {
+    SectionCard(title = "Profile switch keys", icon = Icons.Default.Keyboard) {
+        Text(
+            if (adapterReady) {
+                "Change profile without the app. The same key works in both " +
+                    "layouts and picks that layout's profile."
+            } else {
+                "Connect the adapter to set up profile switch keys."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        if (!adapterReady) return@SectionCard
+
+        KbmBankView.switchActions(switches).forEach { (position, key) ->
+            Column(Modifier.fillMaxWidth()) {
+                LabelValueRow(KbmPositions.label(position), key?.label ?: "Not assigned")
+                Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+                    TextButton(onClick = { onChoose(position) }, enabled = enabled) {
+                        Text(if (key == null) "Assign key" else "Change")
+                    }
+                    if (key != null) {
+                        TextButton(onClick = { onClear(key) }, enabled = enabled) {
+                            Text("Clear")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Choose which bank position to copy the open profile into.
+ *
+ * A free position is preselected: filling an empty one is the common case, and
+ * replacing an occupied one should be a deliberate choice.
+ */
+@Composable
+private fun AssignDialog(
+    name: String,
+    slots: List<KbmBankSlot>,
+    onDismiss: () -> Unit,
+    onConfirm: (Int) -> Unit,
+) {
+    var chosen by rememberSaveable {
+        mutableStateOf(slots.firstOrNull { it.empty }?.position ?: slots.firstOrNull()?.position)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Assign '$name' to") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+                Text(
+                    "The adapter keeps its own copy from now on. Assigning does " +
+                        "not change what the console is running.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                slots.forEach { slot ->
+                    SelectableRow(
+                        title = slot.positionLabel,
+                        supporting = if (slot.empty) {
+                            "Empty"
+                        } else {
+                            "${slot.residentLabel} — will be replaced"
+                        },
+                        selected = chosen == slot.position,
+                        onClick = { chosen = slot.position },
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { chosen?.let(onConfirm) },
+                enabled = chosen != null,
+            ) { Text("Assign") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/**
+ * Choose a physical key for one semantic switch action.
+ *
+ * Any keyboard usage the model accepts. Function keys are offered first because
+ * they are the obvious choice, but nothing is reserved.
+ */
+@Composable
+private fun SwitchKeyDialog(
+    position: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (KbmSource) -> Unit,
+) {
+    val keys = remember {
+        KeyboardKeys.allBindable
+            .sortedWith(compareBy({ if (it in 0x3A..0x45) 0 else 1 }, { it }))
+            .map { KbmSource(KbmSourceKind.Key, it) }
+    }
+    var chosen by rememberSaveable { mutableStateOf(keys.first().code) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Key for ${KbmPositions.label(position)}") },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                items(keys) { source ->
+                    SelectableRow(
+                        title = source.label,
+                        supporting = null,
+                        selected = chosen == source.code,
+                        onClick = { chosen = source.code },
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(KbmSource(KbmSourceKind.Key, chosen)) },
+            ) { Text("Assign") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Mapping
 // ---------------------------------------------------------------------------
 
+/**
+ * The open profile's mapping.
+ *
+ * Drawn from the DRAFT, composed locally against the embedded canonical table —
+ * not from the adapter's realized mapping. That is what lets the grid render,
+ * and every key be rebound, with nothing paired. Reading it from the device is
+ * what previously made editing require a connection.
+ *
+ * "Reset" is the one control here that reaches the adapter: it restores the
+ * device's own realized mapping and is unrelated to the draft.
+ */
 @Composable
 private fun MappingCard(
-    kbm: KbmState,
-    profile: KbmProfile,
-    onProfile: (KbmProfile) -> Unit,
+    layout: KbmProfile,
+    draft: KbmLocalDraft?,
     enabled: Boolean,
+    adapterLive: Boolean,
     onEdit: (EditTarget) -> Unit,
     onResetProfile: (KbmProfile) -> Unit,
 ) {
-    val mapping = kbm.mapping(profile)
+    if (draft == null) return
     var modifiedOnly by rememberSaveable { mutableStateOf(false) }
+
+    val effective = draft.effective
+    val customCount = effective.count { it.custom }
 
     SectionCard(
         title = "Mapping",
         icon = Icons.Default.Tune,
         trailing = {
-            TextButton(onClick = { onResetProfile(profile) }, enabled = enabled) { Text("Reset") }
+            TextButton(
+                onClick = { onResetProfile(layout) },
+                enabled = adapterLive,
+            ) { Text("Reset adapter") }
         },
     ) {
-        SegmentedSelector(
-            options = KbmProfile.entries,
-            selected = profile,
-            label = { it.title },
-            onSelect = onProfile,
+        Text(
+            draft.name,
+            style = MaterialTheme.typography.titleSmall,
         )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                when (profile) {
-                    KbmProfile.Keyboard -> "The keyboard drives both sticks."
-                    KbmProfile.KeyboardMouse -> "The mouse aims; the keyboard moves and acts."
-                },
-                Modifier.weight(1f),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            // The two profiles are independent layouts, so which one the adapter
-            // is actually running is a distinct fact from which one is on screen.
-            if (profile == kbm.activeProfile) {
-                Spacer(Modifier.width(LayoutTokens.Space2))
-                StatusChip("In use", tone = ChipTone.Positive)
-            }
-        }
-
-        if (!mapping.loaded) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                Spacer(Modifier.width(LayoutTokens.Space3))
-                Text("Reading bindings…", style = MaterialTheme.typography.bodySmall)
-            }
-            return@SectionCard
-        }
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                if (mapping.customCount > 0) "${mapping.customCount} changed from default"
-                else "All defaults",
+                if (customCount > 0) "$customCount changed from default" else "All defaults",
                 Modifier.weight(1f),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -629,17 +989,22 @@ private fun MappingCard(
                 selected = modifiedOnly,
                 onClick = { modifiedOnly = !modifiedOnly },
                 label = { Text("Changed only") },
-                enabled = mapping.customCount > 0 || modifiedOnly,
+                enabled = customCount > 0 || modifiedOnly,
             )
         }
 
-        val keys = mapping.keyBindings.filter { !modifiedOnly || it.custom }
-        val mice = mapping.mouseBindings.filter { !modifiedOnly || it.custom }
+        val keys = effective.filter { it.source.kind == KbmSourceKind.Key }
+            .filter { !modifiedOnly || it.custom }
+        val mice = effective.filter { it.source.kind == KbmSourceKind.MouseButton }
+            .filter { !modifiedOnly || it.custom }
 
         if (keys.isEmpty() && mice.isEmpty()) {
             InlineNotice(
-                if (modifiedOnly) "No bindings changed. Every input uses the ${profile.title} default."
-                else "This profile has no bindings.",
+                if (modifiedOnly) {
+                    "No bindings changed. Every input uses the ${layout.title} default."
+                } else {
+                    "This profile has no bindings."
+                },
             )
             return@SectionCard
         }
@@ -652,7 +1017,7 @@ private fun MappingCard(
             Column(Modifier.fillMaxWidth()) {
                 keys.forEach { binding ->
                     BindingRow(binding, enabled) {
-                        onEdit(EditTarget(profile, binding.source, binding.destination, binding.custom))
+                        onEdit(EditTarget(layout, binding.source, binding.destination, binding.custom))
                     }
                 }
             }
@@ -662,7 +1027,7 @@ private fun MappingCard(
             Column(Modifier.fillMaxWidth()) {
                 mice.forEach { binding ->
                     BindingRow(binding, enabled) {
-                        onEdit(EditTarget(profile, binding.source, binding.destination, binding.custom))
+                        onEdit(EditTarget(layout, binding.source, binding.destination, binding.custom))
                     }
                 }
             }

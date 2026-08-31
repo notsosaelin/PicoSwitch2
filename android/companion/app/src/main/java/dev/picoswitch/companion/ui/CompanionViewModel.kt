@@ -118,6 +118,35 @@ data class CompanionUiState(
      * live mouse tuning unusable.
      */
     val kbmBusy: Boolean = false,
+
+    /**
+     * The user's own KB/M profiles. Independent of any adapter, and populated
+     * before one is ever connected.
+     */
+    val kbmLibrary: KbmProfileLibrary = KbmProfileLibrary.EMPTY,
+
+    /**
+     * The profile open in the editor, or a draft on the built-in Default.
+     *
+     * Local only. Every edit mutates THIS and nothing else — no management
+     * command, no flash write — which is what makes Save and Discard mean
+     * something. Its only states are clean and dirty; where the profile stands
+     * relative to the adapter is a separate question answered by
+     * [dev.picoswitch.companion.data.KbmBankView].
+     */
+    val kbmDraft: KbmLocalDraft? = null,
+
+    /** Which local profile is open, or null while editing the built-in Default. */
+    val kbmSelectedLocalId: String? = null,
+
+    /**
+     * Which layout's library and bank the screen is showing.
+     *
+     * Held here rather than in the composable because the open draft belongs to
+     * a layout: changing one has to reopen the other, and a screen-local copy
+     * would let the two disagree across a recomposition.
+     */
+    val kbmLayout: KbmProfile = KbmProfile.Keyboard,
     val connection: ConnectionState = ConnectionState(),
     val snapshot: AdapterSnapshot = AdapterSnapshot(),
     val library: List<AmiiboLibraryItem> = emptyList(),
@@ -289,6 +318,15 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private val touchProfileStore = AndroidTouchProfileStore(application)
     private val registryStore = AdapterRegistryStore(application)
     /**
+     * The user's own KB/M profiles.
+     *
+     * Deliberately NOT reached through [adapter]: it owns no transport and
+     * cannot acquire one, so every library operation works with nothing paired.
+     * The adapter's three positions per layout are a working set it needs in
+     * order to function alone; this is the collection those are drawn from.
+     */
+    private val kbmLibrary = KbmLibraryRepository(AndroidKbmProfileLibraryStore(application))
+    /**
      * Every adapter this app knows. Held here rather than read from disk on
      * demand because it is consulted on nearly every lifecycle decision; every
      * mutation goes through [updateRegistry], which persists and republishes.
@@ -459,6 +497,9 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             }
         }
         viewModelScope.launch { adapter.kbm.collect { value -> _ui.update { it.copy(kbm = value) } } }
+        viewModelScope.launch {
+            kbmLibrary.library.collect { value -> _ui.update { it.copy(kbmLibrary = value) } }
+        }
         viewModelScope.launch { library.warnings.collect { value -> _ui.update { it.copy(libraryWarnings = value) } } }
         viewModelScope.launch { session.state.collect { value -> _ui.update { it.copy(bridge = value) } } }
         viewModelScope.launch {
@@ -1609,11 +1650,88 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             adapter.bindKbm(profile, source, destination)
         }
 
-    // ------------------------------------------------------------- profiles
+    // ------------------------------------------------------- local library
+    // NOTHING in this block touches the adapter.
+    //
+    // Every operation here works with nothing paired, sends zero management
+    // commands, and costs zero flash writes. That is the correction: the
+    // library is the user's collection and lives in this app; the adapter's
+    // three positions per layout are a working set it needs in order to run
+    // without a companion. Creating a profile used to erase flash and assign
+    // itself to that working set in one step, which made every one of these
+    // acts a change to what the console might run.
 
-    /** Open a profile for viewing and editing. Does NOT apply it. */
-    fun openKbmProfile(profile: KbmProfileInfo) = kbmOperation("Opening ${profile.name}") {
-        adapter.openKbmProfile(profile)
+    /** Show a layout's library and bank, reopening the editor on that layout. */
+    fun selectKbmLayout(layout: KbmProfile) {
+        if (_ui.value.kbmLayout == layout) return
+        _ui.update { it.copy(kbmLayout = layout) }
+        // The open draft belongs to the layout that was showing. Carrying it
+        // across would offer to save keyboard overrides into a keyboard+mouse
+        // profile.
+        openKbmLocalProfile(null)
+    }
+
+    /**
+     * Open a LOCAL profile in the editor, or the built-in Default when null.
+     *
+     * No adapter involved and none needed: a local profile carries its own
+     * sparse overrides and the canonical table is embedded, so the whole mapping
+     * is composable offline.
+     */
+    fun openKbmLocalProfile(id: String?) {
+        val layout = _ui.value.kbmLayout
+        val local = id?.let { kbmLibrary.value.find(it) }
+        _ui.update {
+            it.copy(
+                kbmDraft = local?.toDraft() ?: KbmLocalDraft.fromDefault(layout),
+                kbmSelectedLocalId = local?.id,
+            )
+        }
+    }
+
+    /** Create a profile from the layout's built-in Default and open it. */
+    fun newKbmProfile(name: String) {
+        val layout = _ui.value.kbmLayout
+        val fresh = KbmLocalDraft.fromDefault(layout)
+        // Created in the LIBRARY only. It reaches the adapter when, and only
+        // when, the user assigns it to a position.
+        val created = kbmLibrary.create(layout, name, fresh.overrides, fresh.mouse)
+        _ui.update { it.copy(kbmDraft = created.toDraft(), kbmSelectedLocalId = created.id) }
+    }
+
+    /**
+     * Copy the open profile under a new identity, and open the copy.
+     *
+     * Copies the draft's CURRENT content, so duplicating an edited profile takes
+     * what the user is looking at rather than what was last saved.
+     */
+    fun duplicateKbmProfile(name: String) {
+        val draft = _ui.value.kbmDraft ?: return
+        val created = kbmLibrary.create(draft.layout, name, draft.overrides, draft.mouse)
+        _ui.update { it.copy(kbmDraft = created.toDraft(), kbmSelectedLocalId = created.id) }
+    }
+
+    /** Rename the open profile. Content and identity are untouched. */
+    fun renameKbmProfile(name: String) {
+        val draft = _ui.value.kbmDraft?.takeIf { !it.isBuiltin } ?: return
+        // A rename changes no behaviour, so a resident copy that agreed before
+        // still agrees and its fingerprint is deliberately left alone.
+        val renamed = kbmLibrary.rename(draft.profileId, name) ?: return
+        _ui.update { it.copy(kbmDraft = draft.withName(name).rebased(renamed)) }
+    }
+
+    /**
+     * Delete the open profile from the LIBRARY. Any resident copy survives.
+     *
+     * The resident copy is a separate snapshot the adapter owns and may be
+     * running right now; removing it from here would change console behaviour
+     * from a library operation.
+     */
+    fun deleteKbmProfile() {
+        val draft = _ui.value.kbmDraft?.takeIf { !it.isBuiltin } ?: return
+        kbmLibrary.delete(draft.profileId)
+        openKbmLocalProfile(null)
+        notice("Removed from your library. The adapter's copy is unchanged.")
     }
 
     /**
@@ -1623,48 +1741,142 @@ class CompanionViewModel(application: Application, private val savedState: Saved
      * erases, which is what makes Save and Discard mean anything.
      */
     fun editKbmBinding(source: KbmSource, destination: KbmDestination) =
-        adapter.editKbmDraft { it.with(source, destination) }
+        editKbmDraft { it.with(source, destination) }
 
-    fun editKbmDraftName(name: String) = adapter.editKbmDraft { it.withName(name) }
+    /** Restore one input to the layout's canonical default. Sends nothing. */
+    fun restoreKbmBinding(source: KbmSource) = editKbmDraft { it.restore(source) }
 
-    fun editKbmDraftMouse(mouse: KbmMouseConfig) =
-        adapter.editKbmDraft { it.withMouse(mouse) }
+    fun editKbmDraftName(name: String) = editKbmDraft { it.withName(name) }
 
-    /** Throw the local edits away. Sends nothing. */
-    fun discardKbmDraft() = adapter.discardKbmDraft()
+    fun editKbmDraftMouse(mouse: KbmMouseConfig) = editKbmDraft { it.withMouse(mouse) }
+
+    /** Throw the local edits away. Sends nothing; there is nothing to undo. */
+    fun discardKbmDraft() = editKbmDraft { it.discard() }
 
     /**
-     * SAVE. Stores the draft in the adapter's profile library.
+     * SAVE. Writes the app's library and NOTHING else.
      *
-     * Deliberately does not apply it: the console keeps running whatever it was
-     * running until the user presses Set Active.
+     * Deliberately leaves an older resident copy of the same profile alone. The
+     * screen reports that divergence and only an explicit Update resolves it;
+     * conflating the two is what made every keystroke a flash erase.
+     *
+     * [nameForNew] is required only when saving the built-in Default, which is a
+     * template and is never written into: saving it creates a new profile.
      */
-    fun saveKbmDraft() = kbmOperation("Saving profile") {
-        val saved = adapter.saveKbmDraft()
-        if (saved != null) notice("Saved '${saved.name}' — not applied yet")
-    }
-
-    /** APPLY. The only call here that changes what the console is doing. */
-    fun applyKbmProfile(layout: KbmProfile, id: Int) = kbmOperation("Applying profile") {
-        adapter.applyKbmProfile(layout, id)
-        // Trust the readback, not the acknowledgement.
-        val active = _ui.value.kbm.profiles.activeFor(layout)
-        if (active?.sourceId != id) {
-            notice("The adapter did not report this profile as active")
+    fun saveKbmProfile(nameForNew: String? = null) {
+        val draft = _ui.value.kbmDraft ?: return
+        val saved = if (draft.isBuiltin) {
+            val name = nameForNew?.takeIf { it.isNotBlank() } ?: return
+            kbmLibrary.create(draft.layout, name, draft.overrides, draft.mouse)
+        } else {
+            kbmLibrary.save(draft.profileId, draft.name, draft.overrides, draft.mouse)
+        }
+        _ui.update {
+            it.copy(kbmDraft = draft.rebased(saved), kbmSelectedLocalId = saved.id)
         }
     }
 
-    fun renameKbmProfile(id: Int, name: String) = kbmOperation("Renaming profile") {
-        adapter.renameKbmProfile(id, name)
+    private fun editKbmDraft(transform: (KbmLocalDraft) -> KbmLocalDraft) {
+        val draft = _ui.value.kbmDraft ?: return
+        _ui.update { it.copy(kbmDraft = transform(draft)) }
     }
 
-    fun duplicateKbmProfile(id: Int, name: String) = kbmOperation("Duplicating profile") {
-        adapter.duplicateKbmProfile(id, name)
+    // ------------------------------------------------------- resident bank
+    // Everything below changes the ADAPTER and requires a connection.
+
+    /**
+     * ASSIGN the open profile into one of this layout's bank positions.
+     *
+     * The only path from the library to the adapter, and the only place on this
+     * screen that costs a flash write. Explicit for that reason: a user who
+     * edits and saves has changed their library, not the adapter.
+     *
+     * Deliberately does NOT activate. If the chosen position is running, the
+     * console keeps its realized snapshot until the user activates, so an
+     * assignment cannot change gameplay mid-session.
+     */
+    fun assignKbmPosition(position: Int) = kbmOperation("Assigning profile") {
+        val draft = _ui.value.kbmDraft?.takeIf { !it.isBuiltin } ?: return@kbmOperation
+        val layout = _ui.value.kbmLayout
+        adapter.assignKbmPosition(
+            layout,
+            position,
+            KbmLocalProfile(
+                id = draft.profileId,
+                layout = layout,
+                name = draft.name,
+                // The SPARSE overrides, which is exactly what the adapter stores.
+                // Sending the effective mapping would upload the canonical table
+                // as if the user had chosen every one of its bindings.
+                bindings = draft.overrides,
+                mouse = draft.mouse,
+            ),
+        )
+        notice(
+            "'${draft.name}' is now ${KbmPositions.label(position)} on the adapter. " +
+                "Activate it to use it now.",
+        )
     }
 
-    fun deleteKbmProfile(id: Int) = kbmOperation("Deleting profile") {
-        adapter.deleteKbmProfile(id)
-        notice("Profile deleted")
+    /** ACTIVATE a bank position. Runtime only: zero flash writes. */
+    fun activateKbmPosition(position: Int) = kbmOperation("Activating profile") {
+        val layout = _ui.value.kbmLayout
+        adapter.activateKbmPosition(layout, position)
+        // Trust the readback, not the acknowledgement.
+        if (_ui.value.kbm.profiles.activeFor(layout)?.runtimePosition != position) {
+            notice("The adapter did not report that profile as active")
+        }
+    }
+
+    /**
+     * Persist which position this layout realizes at POWER-UP.
+     *
+     * Separate from activation on purpose: "use this now" and "use this after a
+     * reboot" are different intentions, and only the second is worth a flash
+     * write.
+     */
+    fun setKbmBootPosition(position: Int) = kbmOperation("Setting startup profile") {
+        adapter.setKbmBootPosition(_ui.value.kbmLayout, position)
+    }
+
+    /** Empty one bank position on the adapter. The library keeps its copy. */
+    fun removeKbmPosition(position: Int) = kbmOperation("Removing profile") {
+        adapter.removeKbmPosition(_ui.value.kbmLayout, position)
+        notice("Removed from the adapter. Your library still has this profile.")
+    }
+
+    /** Assign or clear one profile-switch key. */
+    fun bindKbmSwitch(source: KbmSource, position: Int?) =
+        kbmOperation("Updating profile switch key") {
+            adapter.bindKbmSwitch(source, position)
+        }
+
+    /**
+     * Copy a resident profile into the local library.
+     *
+     * The cross-platform bridge: a profile created on the other companion
+     * reaches this one only as a resident copy. Matching is by CONTENT rather
+     * than by id — local ids are not shared between platforms — so copying the
+     * same resident twice returns the existing row instead of duplicating it.
+     */
+    fun copyKbmPositionToLibrary(position: Int) = kbmOperation("Copying to library") {
+        val layout = _ui.value.kbmLayout
+        val resident = _ui.value.kbm.profiles.at(layout, position) ?: return@kbmOperation
+        val mapping = adapter.loadKbmPosition(layout, position)
+        val before = kbmLibrary.value.profiles.size
+        // Only the OVERRIDES: `kbm map` reports the effective mapping, and
+        // importing all of it would store the canonical table as if the user had
+        // chosen every binding in it, so a later default change could not reach
+        // the profile.
+        val overrides = mapping.bindings.filter { it.custom }
+        val imported = kbmLibrary.import(layout, resident.name, overrides, _ui.value.kbm.mouse)
+        notice(
+            if (kbmLibrary.value.profiles.size == before) {
+                "'${imported.name}' is already in your library."
+            } else {
+                "'${imported.name}' copied to your library."
+            },
+        )
     }
 
     fun resetKbmProfile(profile: KbmProfile) = kbmOperation("Restoring ${profile.title} defaults") {

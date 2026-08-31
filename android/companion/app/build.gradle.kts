@@ -101,6 +101,14 @@ android {
     // observable over ADB. That class is covered by pure-JVM tests, where the android
     // stubs throw unless unmocked calls are allowed to return their default value.
     testOptions.unitTests.isReturnDefaultValues = true
+
+    // The firmware-emitted KB/M vectors, at repository scope so every client
+    // consumes the same inputs. The cross-platform profile tests live in this
+    // module because they drive the app's own library and bank projection, and
+    // they must be fed content the ADAPTER produced: hand-written fixtures are
+    // how a pagination defect once passed every client test in two languages
+    // while the firmware dropped a row per page.
+    sourceSets.getByName("test").resources.srcDir("../../../tools/fixtures/management")
 }
 
 dependencies {

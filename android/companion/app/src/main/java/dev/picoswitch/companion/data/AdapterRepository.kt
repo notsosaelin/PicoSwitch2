@@ -273,10 +273,12 @@ class AdapterRepository(private val transport: ManagementTransport) {
             val status = client.kbmStatus()
             val mouse = client.kbmMouse()
             val profiles = client.kbmProfiles()
+            val switches = client.kbmSwitches()
             _kbm.value = _kbm.value.copy(
                 status = status,
                 mouse = mouse,
                 profiles = profiles,
+                switches = switches,
                 available = CapabilityState.Available,
                 readiness = KbmReadiness.Ready,
                 fault = "",
@@ -388,6 +390,88 @@ class AdapterRepository(private val transport: ManagementTransport) {
             status = client.kbmStatus(),
             mappings = _kbm.value.mappings + (layout to mapping),
         )
+    }
+
+    // ------------------------------------------------------- resident bank
+    // The adapter's working set: three positions in each of two layout banks,
+    // plus a built-in Default that consumes no position. Everything below
+    // changes the ADAPTER. Nothing below touches the local library, and
+    // [KbmLibraryRepository] cannot reach any of it.
+
+    /**
+     * ASSIGN a local profile into a bank position.
+     *
+     * The one operation that moves content from the library to the adapter, and
+     * the only place a flash write happens on this path. It deliberately does
+     * NOT change what the console is running: if the position is currently
+     * active the realized snapshot is preserved, and the screen reports
+     * "activate to use changes". Silently mutating gameplay because a stored copy
+     * was refreshed is the behaviour this avoids.
+     */
+    suspend fun assignKbmPosition(layout: KbmProfile, position: Int, profile: KbmLocalProfile) {
+        // The revision the occupant currently carries, so a concurrent change on
+        // the adapter is a refusal rather than a silent overwrite.
+        val occupant = _kbm.value.profiles.at(layout, position)
+        client.assignKbmPosition(
+            layout = layout,
+            position = position,
+            baseRevision = occupant?.revision ?: 0,
+            name = profile.name,
+            overrides = profile.bindings,
+            mouse = profile.mouse,
+        )
+        _kbm.value = _kbm.value.copy(profiles = client.kbmProfiles())
+    }
+
+    /** ACTIVATE a bank position for a layout. Runtime only: zero flash writes. */
+    suspend fun activateKbmPosition(layout: KbmProfile, position: Int) {
+        val id = if (position == KbmPositions.DEFAULT) {
+            KbmProfileIds.DEFAULT
+        } else {
+            // An empty position is not activatable, and asking the adapter would
+            // only earn a refusal the user cannot act on.
+            _kbm.value.profiles.at(layout, position)?.id ?: return
+        }
+        applyKbmProfile(layout, id)
+    }
+
+    /**
+     * Persist which position a layout realizes at POWER-UP.
+     *
+     * Separate from activation on purpose. "Use this now" and "use this after a
+     * reboot" are different intentions, and only the second is worth a flash
+     * write.
+     */
+    suspend fun setKbmBootPosition(layout: KbmProfile, position: Int) {
+        _kbm.value = _kbm.value.copy(profiles = client.setKbmBootPosition(layout, position))
+    }
+
+    /** Remove a profile from a bank position. The local library is untouched. */
+    suspend fun removeKbmPosition(layout: KbmProfile, position: Int) {
+        val profiles = client.removeKbmPosition(layout, position)
+        // The realized mapping may have fallen back to Default, so it is re-read
+        // rather than assumed: a screen still showing the removed mapping would
+        // be describing something the console is no longer running.
+        val mapping = client.loadKbmMapping(layout)
+        _kbm.value = _kbm.value.copy(
+            profiles = profiles,
+            status = client.kbmStatus(),
+            mappings = _kbm.value.mappings + (layout to mapping),
+        )
+    }
+
+    /** Assign or clear one profile-switch key. */
+    suspend fun bindKbmSwitch(source: KbmSource, position: Int?) {
+        _kbm.value = _kbm.value.copy(switches = client.bindKbmSwitch(source, position))
+    }
+
+    /** Read one resident profile's stored content, for copying into the library. */
+    suspend fun loadKbmPosition(layout: KbmProfile, position: Int): KbmMapping {
+        val occupant = _kbm.value.profiles.at(layout, position)
+            ?: throw IllegalStateException(
+                "${KbmPositions.label(position)} is empty for ${layout.wire}",
+            )
+        return client.loadKbmProfileMapping(occupant)
     }
 
     suspend fun renameKbmProfile(id: Int, name: String) {
