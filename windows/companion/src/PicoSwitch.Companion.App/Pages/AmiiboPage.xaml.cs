@@ -1,5 +1,8 @@
+using System.ComponentModel;
+using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using PicoSwitch.Bridge.Core;
@@ -29,23 +32,110 @@ namespace PicoSwitch.Companion.App.Pages;
 /// Carries a resolved <see cref="Image"/> rather than a URL, so the templates
 /// need no converter and no binding that can fail silently on a bad address.
 /// </remarks>
-public sealed record AmiiboTile(
-    string Id,
-    string Title,
-    string Subtitle,
-    string Badge,
-    ImageSource? Image,
-    string Series = "",
-    string Collection = "",
-    string Released = "",
-    string FigureId = "")
+public sealed class AmiiboTile(
+    string id,
+    string title,
+    string subtitle,
+    string badge,
+    ImageSource? image,
+    string series = "",
+    string collection = "",
+    string released = "",
+    string figureId = "") : INotifyPropertyChanged
 {
+    public string Id { get; } = id;
+
+    public string Title { get; } = title;
+
+    public string Subtitle { get; } = subtitle;
+
+    public string Badge { get; } = badge;
+
+    public ImageSource? Image { get; } = image;
+
+    public string Series { get; } = series;
+
+    public string Collection { get; } = collection;
+
+    public string Released { get; } = released;
+
+    public string FigureId { get; } = figureId;
+
     public Visibility BadgeVisibility =>
         Badge.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
 
     /// <summary>Shown when there is no artwork, so a tile is never a gap.</summary>
     public Visibility PlaceholderVisibility =>
         Image is null ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>
+    /// What a screen reader says for this tile.
+    /// </summary>
+    /// <remarks>
+    /// Without it the automation tree announces the type name — every one of a
+    /// thousand tiles reading out as "AmiiboTile", which is no more useful than
+    /// silence. Deliberately static: the tick state belongs to the CheckBox in
+    /// the template, which announces its own checked state, and duplicating it
+    /// here would have it read out twice.
+    /// </remarks>
+    public string AccessibleName =>
+        Subtitle.Length > 0 ? $"{Title}, {Subtitle}" : Title;
+
+    private bool selectable;
+    private bool ticked;
+
+    /// <summary>
+    /// THE CONTENT ABOVE IS IMMUTABLE; THESE TWO ARE NOT, AND THAT IS THE POINT.
+    /// </summary>
+    /// <remarks>
+    /// Bulk selection changes on every tap, and a thousand-item library cannot
+    /// afford to rebuild its projection each time — reassigning a WinUI
+    /// ItemsSource discards the container generation and the scroll offset,
+    /// which is the exact defect the query model was restructured to remove.
+    ///
+    /// So the tick is an OBSERVABLE PROPERTY mutated in place. Only realised
+    /// containers respond, the collection identity never changes, and the
+    /// browser keeps its place while the user works down a long list.
+    ///
+    /// Deliberately separate from the host's own selection, which draws FOCUS.
+    /// Two different ideas need two different presentations, and a user must be
+    /// able to tell "where I am" from "what I have ticked" at a glance.
+    /// </remarks>
+    public bool Selectable
+    {
+        get => selectable;
+        set => Set(ref selectable, value, nameof(Selectable), nameof(TickVisibility));
+    }
+
+    public bool Ticked
+    {
+        get => ticked;
+        set => Set(ref ticked, value, nameof(Ticked), nameof(TickedVisibility));
+    }
+
+    /// <summary>The empty marker, shown on every tile while selecting.</summary>
+    public Visibility TickVisibility =>
+        Selectable ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>The filled marker, shown only on the ones that are in the set.</summary>
+    public Visibility TickedVisibility =>
+        Selectable && Ticked ? Visibility.Visible : Visibility.Collapsed;
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void Set(ref bool field, bool value, params string[] names)
+    {
+        if (field == value)
+        {
+            return;
+        }
+
+        field = value;
+        foreach (var name in names)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        }
+    }
 }
 
 /// <summary>
@@ -80,7 +170,20 @@ public sealed partial class AmiiboPage : Page
     private readonly WindowsAmiiboKeyStore keys = AppServices.AmiiboKeys;
     private readonly AmiiboCatalog catalog = AppServices.AmiiboCatalog;
 
-    private string? selectedId;
+    /// <summary>
+    /// Focus, inspection and bulk selection — three ideas, one place.
+    /// </summary>
+    /// <remarks>
+    /// The page used to hold a bare <c>selectedId</c> plus an
+    /// <c>inspectorOpen</c> flag, and those two between them had to mean
+    /// "highlighted", "being described" and "about to be deleted". Every
+    /// transition now goes through <see cref="AmiiboInteraction"/>, which Android
+    /// also uses, so the two clients cannot drift.
+    /// </remarks>
+    private AmiiboInteractionState interaction = new();
+
+    private string? selectedId => interaction.FocusedId;
+
     private bool suppressSelection;
     private bool dialogOpen;
     private bool amiiboRead;
@@ -130,7 +233,9 @@ public sealed partial class AmiiboPage : Page
 
     private bool sideBySide = true;
     private bool initialisedLayout;
-    private bool inspectorOpen;
+
+    /// <summary>See <see cref="OnLibraryPointerPressed"/>.</summary>
+    private bool pointerDown;
 
     public AmiiboPage()
     {
@@ -143,6 +248,8 @@ public sealed partial class AmiiboPage : Page
         await GuardAsync(async () =>
         {
             filters = filters with { View = AppServices.AmiiboViewMode };
+
+            HookPointerEvents();
 
             adapters.Snapshot.Changed += OnStateChanged;
             adapters.Connection.Changed += OnStateChanged;
@@ -174,6 +281,8 @@ public sealed partial class AmiiboPage : Page
         adapters.Snapshot.Changed -= OnStateChanged;
         adapters.Connection.Changed -= OnStateChanged;
         library.Items.Changed -= OnStateChanged;
+
+        UnhookPointerEvents();
 
         // A transfer outlives the page otherwise, and its progress callbacks
         // would touch controls that are gone.
@@ -285,10 +394,15 @@ public sealed partial class AmiiboPage : Page
     /// and 420 of inspector plus the browser's minimum simply pushed the
     /// inspector — and the last filter with it — off the right-hand edge.
     ///
-    /// Wide enough for both: they sit side by side and the inspector is always
-    /// present. Too narrow: the browser keeps the full width and the inspector
-    /// overlays it on demand, which is the responsive treatment that keeps the
-    /// library primary instead of squeezing it.
+    /// Wide enough for both: an OPEN inspector sits beside the browser. Too
+    /// narrow: it overlays instead, so the library underneath keeps its full
+    /// width rather than being squeezed to nothing.
+    ///
+    /// WIDTH DECIDES WHERE THE INSPECTOR GOES, NEVER WHETHER IT IS THERE. It
+    /// used to be permanently present on any window past the threshold, which
+    /// reserved 420 points for a pane describing whatever happened to be
+    /// highlighted, whether or not anyone had asked to see it. Browsing gets the
+    /// whole surface until the user explicitly inspects something.
     /// </remarks>
     private void OnContentSizeChanged(object sender, SizeChangedEventArgs e)
     {
@@ -305,39 +419,235 @@ public sealed partial class AmiiboPage : Page
 
     private void ApplyLayout()
     {
-        if (sideBySide)
+        var open = interaction.InspectorOpen;
+
+        // Closed is the resting state, and it costs the browser nothing: a
+        // zero-width column, not a hidden pane still holding its space.
+        if (!open)
+        {
+            InspectorColumn.Width = new GridLength(0);
+            Inspector.Visibility = Visibility.Collapsed;
+        }
+        else if (sideBySide)
         {
             Grid.SetColumn(Inspector, 1);
             Grid.SetColumnSpan(Inspector, 1);
             InspectorColumn.Width = GridLength.Auto;
             Inspector.Visibility = Visibility.Visible;
-            CloseInspectorButton.Visibility = Visibility.Collapsed;
-            DetailsButton.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            // Overlay: spans both columns and hugs the right edge.
+            Grid.SetColumn(Inspector, 0);
+            Grid.SetColumnSpan(Inspector, 2);
+            InspectorColumn.Width = new GridLength(0);
+            Inspector.Visibility = Visibility.Visible;
+        }
+
+        // Always closable, at every width. A pane with no way out is a pane that
+        // is pinned for the rest of the session.
+        CloseInspectorButton.Visibility = Visibility.Visible;
+
+        // The discoverable route to details, and the accessible one: not
+        // everybody knows a double click opens something, and a keyboard or
+        // screen-reader user has no double click to give.
+        DetailsButton.Visibility = open || interaction.Selecting
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        DetailsButton.IsEnabled = interaction.FocusedId is not null;
+
+        SelectButton.Visibility = interaction.Selecting
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        SelectButton.IsEnabled = interaction.FocusedId is not null;
+
+        RenderSelectionBar();
+    }
+
+    /// <summary>
+    /// The bulk-action bar: what is selected, and the two things that act on it.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately two commands. Multi-selection existing is not a reason to
+    /// invent a dozen batch operations, and a crowded bar makes the destructive
+    /// pair harder to aim at rather than easier.
+    /// </remarks>
+    private void RenderSelectionBar()
+    {
+        SelectionBar.Visibility = interaction.Selecting
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        if (!interaction.Selecting)
+        {
             return;
         }
 
-        // Overlay: the inspector spans both columns and hugs the right edge, so
-        // the browser underneath keeps its full width rather than being squeezed
-        // to nothing.
-        Grid.SetColumn(Inspector, 0);
-        Grid.SetColumnSpan(Inspector, 2);
-        InspectorColumn.Width = new GridLength(0);
-        Inspector.Visibility = inspectorOpen ? Visibility.Visible : Visibility.Collapsed;
-        CloseInspectorButton.Visibility = Visibility.Visible;
-        DetailsButton.Visibility = Visibility.Visible;
+        var hidden = interaction.HiddenSelectedCount(tiles.Select(tile => tile.Id));
+
+        // States the hidden ones up front rather than only in the confirmation:
+        // a count that silently disagrees with what is on screen is how somebody
+        // deletes more than they meant to.
+        SelectionCount.Text = hidden == 0
+            ? $"{interaction.SelectedCount} selected"
+            : $"{interaction.SelectedCount} selected ({hidden} hidden by filters)";
+
+        BulkInitializeButton.IsEnabled = !dialogOpen;
+        BulkDeleteButton.IsEnabled = !dialogOpen;
     }
 
-    private void OnCloseInspector(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// Apply an interaction transition and reflect it in the controls.
+    /// </summary>
+    /// <remarks>
+    /// THE ONE PLACE THE UI LEARNS ABOUT INTERACTION STATE. Every gesture handler
+    /// computes a next state with <see cref="AmiiboInteraction"/> and hands it
+    /// here; none of them touch a control directly. That is what keeps the
+    /// behaviour identical to Android's and testable without a window.
+    ///
+    /// Nothing here reassigns an ItemsSource, so no transition can move the
+    /// browser's scroll position.
+    /// </remarks>
+    private void SetInteraction(AmiiboInteractionState next)
     {
-        inspectorOpen = false;
+        var focusChanged = next.FocusedId != interaction.FocusedId;
+        interaction = next;
+
+        RestoreSelection();
+        RenderTicks();
         ApplyLayout();
+
+        if (focusChanged)
+        {
+            amiiboRead = false;
+        }
+
+        RenderAfterSelection();
     }
 
+    /// <summary>Push the bulk set onto the tiles, in place.</summary>
+    private void RenderTicks()
+    {
+        var selecting = interaction.Selecting;
+        foreach (var tile in tiles)
+        {
+            tile.Selectable = selecting;
+            tile.Ticked = selecting && interaction.IsSelected(tile.Id);
+        }
+    }
+
+    private void OnCloseInspector(object sender, RoutedEventArgs e) =>
+        SetInteraction(AmiiboInteraction.CloseInspector(interaction));
+
+    /// <summary>
+    /// The explicit "Details" command, and the accessible route to inspection.
+    /// </summary>
     private void OnShowDetails(object sender, RoutedEventArgs e)
     {
-        inspectorOpen = true;
-        ApplyLayout();
+        if (interaction.FocusedId is { } id)
+        {
+            SetInteraction(AmiiboInteraction.OpenInspector(interaction, id));
+        }
     }
+
+    /// <summary>
+    /// The explicit "Select" command: multi-selection without knowing a gesture.
+    /// </summary>
+    /// <remarks>
+    /// Ctrl+click and a touch long press are both invisible affordances. Neither
+    /// is available to somebody driving the page from the keyboard or a screen
+    /// reader, and neither is discoverable by somebody who has not been told, so
+    /// the same transition gets a button.
+    /// </remarks>
+    private void OnStartSelection(object sender, RoutedEventArgs e)
+    {
+        if (interaction.FocusedId is { } id)
+        {
+            SetInteraction(AmiiboInteraction.EnterSelection(interaction, id));
+        }
+    }
+
+    private void OnCancelSelection(object sender, RoutedEventArgs e) =>
+        SetInteraction(AmiiboInteraction.ClearSelection(interaction));
+
+    /// <summary>
+    /// A double click asks to inspect. A single one never does.
+    /// </summary>
+    /// <remarks>
+    /// The gesture arrives after the click that focused the item, so the target
+    /// is already the focused one. Refused during selection mode by the domain,
+    /// so a double tap while ticking cannot both toggle and open something.
+    /// </remarks>
+    private void OnLibraryDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
+    {
+        if (TileUnder(e.OriginalSource) is not { } tile)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        SetInteraction(AmiiboInteraction.OpenInspector(interaction, tile.Id));
+    }
+
+    /// <summary>
+    /// Touch long press: the canonical way into multi-selection.
+    /// </summary>
+    /// <remarks>
+    /// Windows raises Holding for touch and pen only — a held mouse button does
+    /// not produce it — which is exactly the split wanted here. Mouse users get
+    /// Ctrl+click and the Select button; touch users get the gesture they expect
+    /// from every other gallery on the platform.
+    /// </remarks>
+    private void OnLibraryHolding(object sender, HoldingRoutedEventArgs e)
+    {
+        if (e.HoldingState != Microsoft.UI.Input.HoldingState.Started ||
+            TileUnder(e.OriginalSource) is not { } tile)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        SetInteraction(AmiiboInteraction.EnterSelection(interaction, tile.Id));
+    }
+
+    /// <summary>
+    /// Escape: cancel a selection, or close the inspector, in that order.
+    /// </summary>
+    /// <remarks>
+    /// Left unhandled when neither is open, so the key keeps whatever meaning
+    /// the surrounding shell gives it rather than being silently swallowed.
+    /// </remarks>
+    private void OnPageKeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key != global::Windows.System.VirtualKey.Escape)
+        {
+            return;
+        }
+
+        var next = AmiiboInteraction.Escape(interaction);
+        if (next == interaction)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        SetInteraction(next);
+    }
+
+    /// <summary>The tile a pointer event landed on, if it landed on one.</summary>
+    private static AmiiboTile? TileUnder(object? source) =>
+        (source as FrameworkElement)?.DataContext as AmiiboTile;
+
+    /// <summary>Whether Ctrl is down right now.</summary>
+    /// <remarks>
+    /// Read at the moment the selection changes rather than tracked, because a
+    /// key can be released while a dialog or another window has focus and a
+    /// tracked flag would then be stuck on.
+    /// </remarks>
+    private static bool ControlHeld() =>
+        InputKeyboardSource
+            .GetKeyStateForCurrentThread(global::Windows.System.VirtualKey.Control)
+            .HasFlag(global::Windows.UI.Core.CoreVirtualKeyStates.Down);
 
     /// <summary>Switch inspector category. Touches no query state.</summary>
     private void OnCategoryChanged(object sender, RoutedEventArgs e)
@@ -407,10 +717,10 @@ public sealed partial class AmiiboPage : Page
                 card.Subtitle,
                 card.Badge,
                 Artwork(card.ImageUrl),
-                Series: card.GameSeries,
-                Collection: card.AmiiboSeries,
-                Released: card.ReleaseDate,
-                FigureId: card.FigureId))];
+                series: card.GameSeries,
+                collection: card.AmiiboSeries,
+                released: card.ReleaseDate,
+                figureId: card.FigureId))];
 
             suppressSelection = true;
             foreach (var host in Hosts)
@@ -420,6 +730,15 @@ public sealed partial class AmiiboPage : Page
 
             suppressSelection = false;
             RestoreSelection();
+
+            // The tiles are NEW OBJECTS, and a fresh tile is unticked. Without
+            // this, a rebuild silently emptied the visible selection while the
+            // count in the bar still said four — and rebuilds happen on their
+            // own, whenever the catalog fetch lands and changes the signature.
+            // The set itself was never lost; only its rendering was, which is
+            // the more dangerous of the two failures because the user is looking
+            // at the rendering when they press Delete.
+            RenderTicks();
         }
 
         RenderViewMode();
@@ -780,18 +1099,113 @@ public sealed partial class AmiiboPage : Page
             return;
         }
 
-        selectedId = host.SelectedItem is AmiiboTile tile ? tile.Id : null;
-        RestoreSelection();
-
-        // In the overlay layout, picking something is the request to see it.
-        if (!sideBySide && selectedId is not null && !inspectorOpen)
+        // A POINTER IS HANDLED BY Tapped, NOT HERE, and the two must not both
+        // act: in selection mode each would toggle the same item, cancelling
+        // out. SelectionChanged is left to do the job Tapped cannot — keyboard
+        // and programmatic focus moves, which raise no tap at all.
+        if (pointerDown)
         {
-            inspectorOpen = true;
-            ApplyLayout();
+            return;
         }
 
-        RenderAfterSelection();
+        if (host.SelectedItem is not AmiiboTile tile)
+        {
+            // The host cleared its own selection — a filter hid the focused row,
+            // say. Focus follows, but nothing opens and nothing is ticked.
+            SetInteraction(interaction with { FocusedId = null, InspectedId = null });
+            return;
+        }
+
+        SetInteraction(AmiiboInteraction.Activate(interaction, tile.Id));
     }
+
+    /// <summary>
+    /// Every pointer interaction with a tile, including the ones the host does
+    /// not consider a change of selection.
+    /// </summary>
+    /// <remarks>
+    /// THE DEFECT THIS FIXES. Selection used to be driven from SelectionChanged,
+    /// which WinUI raises only when the host's OWN selection actually moves.
+    /// Clicking the tile that was already highlighted raised nothing, so in
+    /// selection mode that one tile could be ticked but never un-ticked, and
+    /// Ctrl+clicking the highlighted tile could not start a selection either.
+    /// Tapped fires for every tap, whether or not the highlight moves.
+    ///
+    /// CTRL+CLICK IS THE DESKTOP EQUIVALENT OF A LONG PRESS: it starts a
+    /// selection from nothing and toggles thereafter. A plain tap is Activate,
+    /// which browses in normal mode and toggles once a selection exists — the
+    /// same single rule Android's tap follows.
+    /// </remarks>
+    private void OnLibraryTapped(object sender, TappedRoutedEventArgs e)
+    {
+        pointerDown = false;
+
+        if (TileUnder(e.OriginalSource) is not { } tile)
+        {
+            return;
+        }
+
+        SetInteraction(ControlHeld()
+            ? AmiiboInteraction.ToggleSelection(interaction, tile.Id)
+            : AmiiboInteraction.Activate(interaction, tile.Id));
+    }
+
+    /// <summary>
+    /// Subscribe to the pointer events the item containers swallow.
+    /// </summary>
+    /// <remarks>
+    /// THE SECOND HALF OF THE SAME DEFECT, and it cannot be expressed in XAML.
+    /// A GridViewItem marks Tapped and PointerPressed as HANDLED when the tap
+    /// changes its own selection, and a handler attached the ordinary way — an
+    /// attribute in the markup — never sees a handled event. So a tap on a tile
+    /// that moved the highlight did nothing at all, while a tap on the selection
+    /// marker (which is not part of the item's selection chrome, so nothing
+    /// handled it) worked. Selecting appeared to require hitting a 20-point
+    /// circle.
+    ///
+    /// AddHandler with handledEventsToo is the only way to see them, and it has
+    /// to be code because XAML attribute syntax cannot pass that flag.
+    /// </remarks>
+    private void HookPointerEvents()
+    {
+        foreach (var host in Hosts)
+        {
+            host.AddHandler(TappedEvent, new TappedEventHandler(OnLibraryTapped), true);
+            host.AddHandler(
+                DoubleTappedEvent, new DoubleTappedEventHandler(OnLibraryDoubleTapped), true);
+            host.AddHandler(
+                PointerPressedEvent, new PointerEventHandler(OnLibraryPointerPressed), true);
+            host.AddHandler(
+                PointerCaptureLostEvent, new PointerEventHandler(OnLibraryPointerLost), true);
+        }
+    }
+
+    private void UnhookPointerEvents()
+    {
+        foreach (var host in Hosts)
+        {
+            host.RemoveHandler(TappedEvent, (TappedEventHandler)OnLibraryTapped);
+            host.RemoveHandler(DoubleTappedEvent, (DoubleTappedEventHandler)OnLibraryDoubleTapped);
+            host.RemoveHandler(PointerPressedEvent, (PointerEventHandler)OnLibraryPointerPressed);
+            host.RemoveHandler(
+                PointerCaptureLostEvent, (PointerEventHandler)OnLibraryPointerLost);
+        }
+    }
+
+    /// <summary>
+    /// Marks the window between a press and its tap, during which the host's own
+    /// SelectionChanged must stay out of the way.
+    /// </summary>
+    private void OnLibraryPointerPressed(object sender, PointerRoutedEventArgs e) =>
+        pointerDown = true;
+
+    /// <summary>
+    /// A press that never became a tap — a drag, or a capture stolen by a
+    /// scroll. Without this the flag would stick on and the keyboard would stop
+    /// moving focus.
+    /// </summary>
+    private void OnLibraryPointerLost(object sender, PointerRoutedEventArgs e) =>
+        pointerDown = false;
 
     private void OnSearchChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args)
     {
@@ -980,7 +1394,7 @@ public sealed partial class AmiiboPage : Page
             }
 
             var stored = library.UpdateFromAdapter(View().LoadedFromLibrary?.Id, download.Bytes);
-            selectedId = stored.Id;
+            interaction = AmiiboInteraction.Focus(interaction, stored.Id);
 
             try
             {
@@ -1118,7 +1532,7 @@ public sealed partial class AmiiboPage : Page
         // out of four hundred is noise.
         if (result.Imported.Count == 1)
         {
-            selectedId = result.Imported[0].Id;
+            interaction = AmiiboInteraction.Focus(interaction, result.Imported[0].Id);
         }
 
         Report(
@@ -1195,10 +1609,175 @@ public sealed partial class AmiiboPage : Page
                 return;
             }
 
+            // The neighbour that took its place keeps the user where they were.
+            interaction = AmiiboInteraction.AfterRemoval(
+                interaction, [.. tiles.Select(tile => tile.Id)], [item.Id]);
             library.Delete(item.Id);
-            selectedId = null;
             Render();
         });
+
+    // ------------------------------------------------------------------ bulk
+
+    /// <summary>
+    /// Delete every selected backup, behind ONE confirmation.
+    /// </summary>
+    /// <remarks>
+    /// Twelve individual dialogs is not twelve times the safety; it is a prompt
+    /// the user learns to dismiss without reading, which is strictly worse than
+    /// one they actually stop at.
+    ///
+    /// LOCAL ONLY, exactly like the single-item Delete. The adapter is a separate
+    /// place with a separate command, and a batch that quietly cleared the
+    /// resident tag as well would be doing something nobody asked for.
+    /// </remarks>
+    private async void OnBulkDelete(object sender, RoutedEventArgs e) =>
+        await GuardAsync(async () =>
+        {
+            var chosen = interaction.Selection.ToArray();
+            if (chosen.Length == 0)
+            {
+                return;
+            }
+
+            if (!await ConfirmAsync(
+                    $"Delete {chosen.Length} Amiibo from your library?",
+                    HiddenNote(chosen) +
+                    "This removes your only copy of these backups. It cannot be undone, " +
+                    "and the Amiibo currently on the adapter is not affected.",
+                    $"Delete {chosen.Length}"))
+            {
+                return;
+            }
+
+            var outcome = Batch(chosen, id => library.Delete(id));
+
+            // Settle BEFORE the library reload lands, so the focus lands on the
+            // neighbour of what was removed rather than wherever a rebuild puts
+            // it.
+            interaction = AmiiboInteraction.AfterRemoval(
+                interaction, [.. tiles.Select(tile => tile.Id)], outcome.Succeeded);
+
+            Report(
+                outcome.Summary("deleted") + "; the adapter was not changed",
+                outcome.AnyFailed ? InfoBarSeverity.Warning : InfoBarSeverity.Success);
+            ReportFailures(outcome);
+            Render();
+        });
+
+    /// <summary>
+    /// Initialize every selected backup, behind ONE confirmation.
+    /// </summary>
+    /// <remarks>
+    /// ENTIRELY LOCAL, and deliberately so: the single-item Initialize rewrites
+    /// the stored bytes and never touches the adapter, and a batch has no reason
+    /// to behave differently. No adapter traffic is introduced here.
+    ///
+    /// Per-item failures are expected rather than exceptional — a dump the
+    /// imported key cannot verify will refuse to re-sign — so each entry is
+    /// attempted independently and the ones that worked are kept. Reporting the
+    /// batch as a whole success would hide precisely the tags that still carry
+    /// somebody else's registration.
+    /// </remarks>
+    private async void OnBulkInitialize(object sender, RoutedEventArgs e) =>
+        await GuardAsync(async () =>
+        {
+            var chosen = interaction.Selection.ToArray();
+            if (chosen.Length == 0)
+            {
+                return;
+            }
+
+            var retail = keys.Read();
+            if (retail is null)
+            {
+                Report("Import your Amiibo keys before initializing tags.",
+                       InfoBarSeverity.Warning);
+                return;
+            }
+
+            if (!await ConfirmAsync(
+                    $"Initialize {chosen.Length} Amiibo?",
+                    HiddenNote(chosen) +
+                    "The owner, nickname, registration dates and any game data are erased " +
+                    "from the selected backups, and each is re-signed in place. The figures " +
+                    "themselves are unchanged, and so is the adapter. This cannot be undone — " +
+                    "export a copy first if you might want those saves back.",
+                    $"Initialize {chosen.Length}"))
+            {
+                return;
+            }
+
+            var outcome = Batch(chosen, id =>
+                library.UpdateFromAdapter(id, AmiiboCrypto.Initialize(library.Bytes(id), retail)));
+
+            interaction = AmiiboInteraction.ClearSelection(interaction);
+
+            Report(
+                outcome.Summary("initialized"),
+                outcome.AnyFailed ? InfoBarSeverity.Warning : InfoBarSeverity.Success);
+            ReportFailures(outcome);
+            Render();
+        });
+
+    /// <summary>
+    /// Run one operation over a set, keeping what worked and recording what did
+    /// not.
+    /// </summary>
+    /// <remarks>
+    /// No transaction and no rollback: undoing a successful initialize would
+    /// mean restoring bytes that have already been overwritten, and undoing a
+    /// delete means the same. Partial progress is the honest outcome, so it is
+    /// the reported one.
+    /// </remarks>
+    private AmiiboBulkOutcome Batch(IReadOnlyList<string> ids, Action<string> operation)
+    {
+        var done = new List<string>();
+        var failed = new List<AmiiboBulkFailure>();
+
+        foreach (var id in ids)
+        {
+            var name = library.Items.Value.FirstOrDefault(item => item.Id == id)?.DisplayName ?? id;
+            try
+            {
+                operation(id);
+                done.Add(id);
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                failed.Add(new AmiiboBulkFailure(id, name, error.Message));
+                adapters.Diagnostics.Warn("amiibo", $"{name}: {error.Message}");
+            }
+        }
+
+        return new AmiiboBulkOutcome(done, failed);
+    }
+
+    /// <summary>Name the failures, so "3 failed" is actionable.</summary>
+    private void ReportFailures(AmiiboBulkOutcome outcome)
+    {
+        foreach (var failure in outcome.Failed.Take(3))
+        {
+            adapters.Diagnostics.Warn("amiibo", $"{failure.Name}: {failure.Reason}");
+        }
+    }
+
+    /// <summary>
+    /// Says out loud how many of the doomed entries are not on screen.
+    /// </summary>
+    /// <remarks>
+    /// Selection survives a filter change on purpose, so the set can legitimately
+    /// contain entries the current query hides. A confirmation that named only
+    /// the visible ones would be understating what is about to happen.
+    /// </remarks>
+    private string HiddenNote(IReadOnlyList<string> chosen)
+    {
+        var visible = tiles.Select(tile => tile.Id).ToHashSet(StringComparer.Ordinal);
+        var hidden = chosen.Count(id => !visible.Contains(id));
+
+        return hidden == 0
+            ? ""
+            : $"{hidden} of these are hidden by the current search or filters. ";
+    }
 
     /// <summary>
     /// Wipe a backup's owner, nickname and game data, and re-sign it.

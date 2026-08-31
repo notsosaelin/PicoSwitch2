@@ -3,7 +3,8 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
-    xmlns:pages="using:PicoSwitch.Companion.App.Pages">
+    xmlns:pages="using:PicoSwitch.Companion.App.Pages"
+    KeyDown="OnPageKeyDown">
 
     <Page.Resources>
         <Style x:Key="CardStyle" TargetType="Border">
@@ -46,7 +47,11 @@
         <!-- Grid tile. Artwork leads, then identity, then one small badge.
              Deliberately not a dump of every field: recognition is the job. -->
         <DataTemplate x:Key="GridTileTemplate" x:DataType="pages:AmiiboTile">
-            <Grid Width="152" Height="200" Padding="4">
+            <!-- Named for assistive technology. Without this a screen reader
+                 announces the tile's type name, which tells a user nothing about
+                 which Amiibo they are on. -->
+            <Grid Width="152" Height="200" Padding="4"
+                  AutomationProperties.Name="{x:Bind AccessibleName}">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
@@ -67,6 +72,33 @@
                                Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
                 </Border>
 
+                <!-- MEMBERSHIP OF THE BULK SET, which is not the same thing as
+                     the highlight the host draws for focus. Not hit-testable:
+                     the whole tile is the target, so there is no small box to
+                     miss and no second thing to aim at.
+
+                     An explicitly sized marker rather than a CheckBox. WinUI's
+                     checkbox brings ~32pt of chrome and its own margins, and at
+                     the top-left of a fixed-size tile the item container clipped
+                     it — the top row of the grid showed no tick at all while
+                     reporting the correct state to automation. A 20pt disc
+                     cannot be clipped by a tile it fits inside, and it stays
+                     legible over artwork of any colour. -->
+                <Grid Width="20" Height="20" Margin="2"
+                      VerticalAlignment="Top" HorizontalAlignment="Left"
+                      IsHitTestVisible="False"
+                      Visibility="{x:Bind TickVisibility, Mode=OneWay}">
+                    <Ellipse Fill="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+                             Opacity="0.75" />
+                    <Ellipse Stroke="{ThemeResource TextFillColorSecondaryBrush}"
+                             StrokeThickness="1" />
+                    <Ellipse Fill="{ThemeResource AccentFillColorDefaultBrush}"
+                             Visibility="{x:Bind TickedVisibility, Mode=OneWay}" />
+                    <FontIcon Glyph="&#xE73E;" FontSize="11"
+                              Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                              Visibility="{x:Bind TickedVisibility, Mode=OneWay}" />
+                </Grid>
+
                 <!-- Primary identity wraps to two lines; secondary truncates
                      first, so a long series never pushes the name out. -->
                 <TextBlock Grid.Row="1" Text="{x:Bind Title}" MaxLines="2"
@@ -83,7 +115,8 @@
         <!-- Carousel item. Large art, low density, almost no text: this mode is
              for unhurried browsing, not for reading metadata. -->
         <DataTemplate x:Key="CarouselTileTemplate" x:DataType="pages:AmiiboTile">
-            <Grid Width="248" Height="316" Padding="8">
+            <Grid Width="248" Height="316" Padding="8"
+                  AutomationProperties.Name="{x:Bind AccessibleName}">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
@@ -104,6 +137,21 @@
                                Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
                 </Border>
 
+                <Grid Width="24" Height="24" Margin="4"
+                      VerticalAlignment="Top" HorizontalAlignment="Left"
+                      IsHitTestVisible="False"
+                      Visibility="{x:Bind TickVisibility, Mode=OneWay}">
+                    <Ellipse Fill="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+                             Opacity="0.75" />
+                    <Ellipse Stroke="{ThemeResource TextFillColorSecondaryBrush}"
+                             StrokeThickness="1" />
+                    <Ellipse Fill="{ThemeResource AccentFillColorDefaultBrush}"
+                             Visibility="{x:Bind TickedVisibility, Mode=OneWay}" />
+                    <FontIcon Glyph="&#xE73E;" FontSize="13"
+                              Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                              Visibility="{x:Bind TickedVisibility, Mode=OneWay}" />
+                </Grid>
+
                 <TextBlock Grid.Row="1" Text="{x:Bind Title}" MaxLines="2"
                            TextWrapping="Wrap" TextTrimming="CharacterEllipsis"
                            HorizontalAlignment="Center" TextAlignment="Center"
@@ -119,7 +167,8 @@
         <!-- List row. The dense scanning mode: a thumbnail and aligned columns,
              materially shorter than a grid tile. -->
         <DataTemplate x:Key="ListRowTemplate" x:DataType="pages:AmiiboTile">
-            <Grid Height="40" ColumnSpacing="12">
+            <Grid Height="40" ColumnSpacing="12"
+                  AutomationProperties.Name="{x:Bind AccessibleName}">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="34" />
                     <ColumnDefinition Width="2*" MinWidth="140" />
@@ -133,6 +182,24 @@
                     <Image Source="{x:Bind Image}" Stretch="Uniform" />
                     <FontIcon Glyph="&#xE8EC;" FontSize="14" Opacity="0.3"
                               Visibility="{x:Bind PlaceholderVisibility}" />
+
+                    <!-- Over the thumbnail rather than in a new column: a column
+                         that only exists in selection mode would shift every
+                         other column sideways the moment a selection began. -->
+                    <Grid Width="20" Height="20"
+                          VerticalAlignment="Center" HorizontalAlignment="Center"
+                          IsHitTestVisible="False"
+                      Visibility="{x:Bind TickVisibility, Mode=OneWay}">
+                        <Ellipse Fill="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+                                 Opacity="0.85" />
+                        <Ellipse Stroke="{ThemeResource TextFillColorSecondaryBrush}"
+                                 StrokeThickness="1" />
+                        <Ellipse Fill="{ThemeResource AccentFillColorDefaultBrush}"
+                                 Visibility="{x:Bind TickedVisibility, Mode=OneWay}" />
+                        <FontIcon Glyph="&#xE73E;" FontSize="11"
+                                  Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                                  Visibility="{x:Bind TickedVisibility, Mode=OneWay}" />
+                    </Grid>
                 </Grid>
 
                 <TextBlock Grid.Column="1" Text="{x:Bind Title}" MaxLines="1"
@@ -181,9 +248,18 @@
                         VerticalAlignment="Center">
                 <!-- Only in the narrow layout, where the inspector is an
                      overlay and needs a way in. -->
+                <!-- The discoverable and accessible routes to the two gestures.
+                     A double click and a touch long press are both invisible
+                     affordances, and neither exists for a keyboard or a screen
+                     reader. -->
                 <Button x:Name="DetailsButton" Style="{StaticResource PageButtonStyle}"
-                        MinWidth="80" Content="Details" Visibility="Collapsed"
+                        MinWidth="80" Content="Details"
+                        AutomationProperties.Name="Open details for the focused Amiibo"
                         Click="OnShowDetails" />
+                <Button x:Name="SelectButton" Style="{StaticResource PageButtonStyle}"
+                        MinWidth="72" Content="Select"
+                        AutomationProperties.Name="Start selecting Amiibo"
+                        Click="OnStartSelection" />
                 <Button x:Name="ImportButton" Style="{StaticResource PageButtonStyle}"
                         Content="Import…" Click="OnImport" />
                 <Button x:Name="ImportFolderButton" Style="{StaticResource PageButtonStyle}"
@@ -287,6 +363,52 @@
                         Style="{StaticResource PageButtonStyle}"
                         Content="Clear filters" Click="OnClearFilters" />
             </Grid>
+
+            <!--
+                THE BULK BAR. Present only while a selection exists, which is
+                what makes selection mode unmistakable rather than something the
+                user has to infer from tick marks.
+
+                Two commands, deliberately. Multi-selection existing is not a
+                reason to invent a dozen batch operations, and a crowded bar
+                makes the destructive pair harder to aim at rather than easier.
+            -->
+            <!-- A card with an accent EDGE, not an accent fill. Filling it
+                 accent put ordinary buttons on an accent ground, where their
+                 translucent backgrounds read as disabled — the two commands the
+                 bar exists for looked dead. The stripe marks the mode; the
+                 buttons keep their normal contrast. -->
+            <Border x:Name="SelectionBar" Visibility="Collapsed"
+                    Background="{ThemeResource LayerFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
+                    BorderThickness="4,0,0,0"
+                    CornerRadius="4" Padding="12,6">
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="SelectionCount" VerticalAlignment="Center"
+                               Style="{StaticResource BodyStrongTextBlockStyle}" />
+                    <Button Grid.Column="1" x:Name="BulkInitializeButton"
+                            Style="{StaticResource PageButtonStyle}"
+                            Content="Initialize…"
+                            AutomationProperties.Name="Initialize the selected Amiibo"
+                            Click="OnBulkInitialize" />
+                    <Button Grid.Column="2" x:Name="BulkDeleteButton"
+                            Style="{StaticResource PageButtonStyle}"
+                            Content="Delete…"
+                            AutomationProperties.Name="Delete the selected Amiibo"
+                            Click="OnBulkDelete" />
+                    <Button Grid.Column="3" Style="{StaticResource PageButtonStyle}"
+                            MinWidth="36" Content="&#xE711;"
+                            FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                            AutomationProperties.Name="Exit selection mode"
+                            Click="OnCancelSelection" />
+                </Grid>
+            </Border>
         </StackPanel>
 
         <!-- Browse on the left, inspect on the right — when there is room for
@@ -305,14 +427,27 @@
                          than unloaded, so switching view keeps selection and
                          costs no re-query. Only one is ever visible, so only one
                          realises containers. -->
+                    <!--
+                        SelectionMode stays Single in all three, including while
+                        a bulk selection is being built. The host's own selection
+                        draws FOCUS and nothing else; membership of the bulk set
+                        is drawn by the tick in the item template.
+
+                        Two ideas, two presentations. Handing the host a Multiple
+                        selection mode instead would have conflated them again,
+                        and switching SelectionMode at runtime re-realises the
+                        containers — which is how the scroll position gets lost.
+                    -->
                     <GridView x:Name="LibraryGrid" SelectionMode="Single"
                               IsItemClickEnabled="False"
                               ItemTemplate="{StaticResource GridTileTemplate}"
-                              SelectionChanged="OnLibrarySelectionChanged" />
+                              SelectionChanged="OnLibrarySelectionChanged"
+                              Holding="OnLibraryHolding" />
 
                     <ListView x:Name="LibraryList" SelectionMode="Single" Visibility="Collapsed"
                               ItemTemplate="{StaticResource ListRowTemplate}"
-                              SelectionChanged="OnLibrarySelectionChanged">
+                              SelectionChanged="OnLibrarySelectionChanged"
+                              Holding="OnLibraryHolding">
                         <ListView.ItemContainerStyle>
                             <Style TargetType="ListViewItem">
                                 <Setter Property="MinHeight" Value="40" />
@@ -329,7 +464,8 @@
                               ScrollViewer.VerticalScrollBarVisibility="Disabled"
                               VerticalAlignment="Center"
                               ItemTemplate="{StaticResource CarouselTileTemplate}"
-                              SelectionChanged="OnLibrarySelectionChanged">
+                              SelectionChanged="OnLibrarySelectionChanged"
+                              Holding="OnLibraryHolding">
                         <ListView.ItemsPanel>
                             <ItemsPanelTemplate>
                                 <!-- Virtualising, and horizontal. A StackPanel here
