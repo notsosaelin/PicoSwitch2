@@ -111,6 +111,54 @@ public sealed class AdapterResetSignatureTests
     }
 
     [Fact]
+    public void AProvenBondCannotBeDiagnosedAsAResetAdapter()
+    {
+        // 2026-08-31, the false positive. A live session -- services resolved,
+        // characteristics read, CCC written -- stalled during a KB/M resident
+        // upload, and the reconnect that followed produced the full link-refusal
+        // shape against an adapter that was present and correctly bonded. The app
+        // offered to destroy that pairing; a power cycle and an ordinary reconnect
+        // proved it had been valid all along.
+        //
+        // BondProven is the disqualifier: those handles are ATT_SECURITY_ENCRYPTED,
+        // so reaching the end of that sequence means the key matched.
+        Assert.False(AdapterResetSignature.IsBondMismatch(
+            GattFailureStage.Services,
+            GattCommunicationOutcome.Unreachable,
+            hresult: null,
+            Reflashed with { BondProven = true }));
+    }
+
+    [Fact]
+    public void AnUnreachableCommandOnALiveSessionIsNotEvidenceOfAnything()
+    {
+        // The other half of the same defect. The transport counted an Unreachable
+        // at ANY stage other than Connect, so two failing commands during an upload
+        // reached the corroboration threshold with no connect failure at all. A
+        // command stage is reached only after the bond has been proven, so it must
+        // never be the thing that convicts it.
+        Assert.False(AdapterResetSignature.IsBondMismatch(
+            GattFailureStage.Command,
+            GattCommunicationOutcome.Unreachable,
+            hresult: null,
+            Reflashed with { BondProven = true }));
+    }
+
+    [Fact]
+    public void TheGenuineStaleBondPathIsUntouchedByTheDisqualifier()
+    {
+        // A stale bond fails BELOW the attribute layer, so it can never reach the
+        // CCC write and can never set BondProven. The 2026-08-29 shape must still
+        // classify, unchanged.
+        Assert.True(AdapterResetSignature.IsBondMismatch(
+            GattFailureStage.Services,
+            GattCommunicationOutcome.Unreachable,
+            hresult: null,
+            Reflashed));
+        Assert.False(Reflashed.BondProven);
+    }
+
+    [Fact]
     public void TheAttributeLayerShapeIsStillRecognised()
     {
         // Retained even though this hardware never produced it. A different radio,
@@ -294,7 +342,8 @@ public sealed class AdapterResetSignatureTests
 
         var explained = AdapterResetSignature.Explain(failure, Reflashed);
         Assert.Equal(
-            "paired=True observed=True answeredGatt=False linkFailures=2/2 -> BOND MISMATCH",
+            "paired=True observed=True answeredGatt=False bondProven=False " +
+            "linkFailures=2/2 -> BOND MISMATCH",
             explained);
 
         Assert.Contains(

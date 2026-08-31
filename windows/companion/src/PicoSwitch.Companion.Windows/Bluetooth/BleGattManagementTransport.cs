@@ -88,6 +88,7 @@ public sealed class BleGattManagementTransport : IManagementTransport
     private bool peerObserved;
     private bool peerAnsweredGatt;
     private int linkFailuresAfterResolve;
+    private bool bondProven;
 
     /// <summary>
     /// The reply currently being assembled, if any.
@@ -112,7 +113,8 @@ public sealed class BleGattManagementTransport : IManagementTransport
                     attemptPaired,
                     peerObserved,
                     peerAnsweredGatt,
-                    linkFailuresAfterResolve);
+                    linkFailuresAfterResolve,
+                    bondProven);
             }
         }
     }
@@ -132,6 +134,7 @@ public sealed class BleGattManagementTransport : IManagementTransport
                 peerObserved = false;
                 peerAnsweredGatt = false;
                 linkFailuresAfterResolve = 0;
+                bondProven = false;
             }
         }
 
@@ -469,6 +472,17 @@ public sealed class BleGattManagementTransport : IManagementTransport
             RequireSuccess(ccc.Status, ccc.ProtocolError, GattFailureStage.Subscribe,
                 "The adapter refused to enable management notifications.");
 
+            lock (gate)
+            {
+                // THE BOND IS NOW PROVEN, and nothing later in this attempt may
+                // claim otherwise. Every handle touched above is declared
+                // ATT_SECURITY_ENCRYPTED by the firmware, so arriving here means
+                // the link was encrypted with a key both sides hold. Recorded as
+                // a fact of the ATTEMPT, not of the session, because the caller
+                // classifies failures after teardown has already run.
+                bondProven = true;
+            }
+
             return owner;
         }
         catch
@@ -561,12 +575,17 @@ public sealed class BleGattManagementTransport : IManagementTransport
                 // request identifier, so a late one is indistinguishable from the
                 // next one's.
                 //
-                // Unless the command can simply be sent again. The adapter drops
-                // a command that arrives while its bridge is busy and says
-                // nothing, so a timeout does not mean the session is broken —
-                // and retiring it for one dropped chunk ends a transfer that
-                // would otherwise have finished. See ManagementRetryPolicy for
-                // why this is an allowlist.
+                // Unless the command can simply be sent again. A timeout does not
+                // mean the session is broken, and retiring it for one missing
+                // reply ends a transfer that would otherwise have finished. See
+                // ManagementRetryPolicy for why this is an allowlist.
+                //
+                // Note what a timeout is NOT: the one-slot bridge's BUSY drop
+                // fails the ATT write instead, and lands in the catch below as
+                // `command-failed`. Reaching here means the adapter accepted the
+                // command and its answer never arrived — on 2026-08-31, because
+                // the firmware never scheduled the notification while a
+                // controller connect attempt was outstanding.
                 if (ManagementRetryPolicy.IsRepeatable(command) &&
                     attempt < ManagementRetryPolicy.MaxRetries)
                 {
@@ -711,13 +730,21 @@ public sealed class BleGattManagementTransport : IManagementTransport
                 // The peer answered at the ATTRIBUTE layer -- even a refusal.
                 peerAnsweredGatt = true;
             }
-            else if (stage != GattFailureStage.Connect)
+            else if (stage is GattFailureStage.Services or GattFailureStage.Subscribe)
             {
                 // Windows opened the device and then could not reach its GATT
                 // server. Counted per resolved device object: two of these inside
                 // one logical attempt is the direct connect and the fresh
                 // scan-resolved connect independently agreeing, which is the
                 // corroboration the link-refusal shape requires.
+                //
+                // ONLY THE STAGES THAT REACH THE SERVER FOR THE FIRST TIME. The
+                // condition here used to be `!= Connect`, which silently included
+                // GattFailureStage.Command -- a command on a session that had
+                // already resolved services and written the CCC, i.e. one whose
+                // bond was already proven. Two unreachable commands during a KB/M
+                // upload were therefore enough to satisfy the signature and offer
+                // to destroy a working pairing. Observed 2026-08-31.
                 linkFailuresAfterResolve += 1;
             }
         }
