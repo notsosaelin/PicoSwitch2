@@ -7,6 +7,14 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Added
 
+- **Gamepad page on Windows: an answer about whether this PC can act as a controller.** Using a PC
+  as a controller for the adapter needs its Bluetooth radio to advertise as a peripheral, and
+  whether it will do that turns out to vary by radio and driver rather than being a property of
+  Windows. The page now measures it on this PC and says what it found, including whether the radio
+  claims to support the role and whether it actually does — the two can disagree. Controller Link
+  itself is **not** available in this release; the page explains specifically what is missing rather
+  than saying the feature is unsupported, and it can be re-checked if you try a different Bluetooth
+  adapter.
 - **Bluetooth keyboard and keyboard + mouse input.** A new **Input source** setting selects
   Controller (the default and unchanged behavior), Keyboard, or Keyboard + Mouse. A Bluetooth
   keyboard can drive the console by itself, and a keyboard plus a mouse act as one controller — one

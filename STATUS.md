@@ -7,6 +7,36 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Windows Phase 6 complete 2026-08-31 via §14.6's gate-failed branch: no Controller Link, and a
+  page that says why. Phase 6a not started.** The gate did not pass (below), so §31 Phase 6 "If the
+  gate fails" is the branch taken: skip the transport, record the negative, and make `ControllerPage`
+  name the platform limitation and the missing radio capability. **There is deliberately no
+  `BridgeSession`, no `HogpBridgeTransport` and no backends** — building a transport on an
+  unmeasured B3 is the thing the gate exists to prevent.
+  **The page measures rather than asserts.** `ControllerLinkProbe` attempts the connectable
+  advertisement and reports the furthest step that actually succeeded (radio → claims the role →
+  service published → advertising). It deliberately does NOT read `IsPeripheralRoleSupported`, which
+  is the product requirement the gate established: that property reports true on the only radio
+  measured while every connectable advertisement aborts, so a capability check built on it would
+  offer a feature that cannot work and give no reason. It publishes a neutral 128-bit service rather
+  than HID — the controls proved the refusal is not service-specific — and stops advertising as soon
+  as the status settles.
+  **The sentences are testable.** `ControllerLinkView` owns every string, in Services/Presentation,
+  because §33.2 accepts a negative §14.5 result only if the UI explains the limitation SPECIFICALLY
+  and a sentence in XAML cannot be asserted. Covered without a radio: no outcome claims the feature
+  works; a radio that DOES advertise is told the blocker is gone but that B3 is still unanswered;
+  the radio's claim is shown beside its behaviour when the two disagree; every outcome says
+  something and offers a re-check.
+  **Re-measurable on purpose.** "Revisit later" is only true if a user who swaps in another Bluetooth
+  adapter is told something different, so nothing about the 2026-08-31 finding is hard-coded. The
+  probe runs on a button, never on page load — it asks the radio to advertise, and doing that on
+  every visit for a feature that does not exist is a side effect nobody asked for.
+  **Verified on hardware:** the app was launched, navigated to Gamepad and Checked, and reached
+  `AdvertisingRefused` with the live radio address — independently reproducing the lab probe's
+  finding from inside the product. 4 Windows suites green (123/161/55/537).
+  **Phase 6b does not run** (gated on Phase 6). **Phase 6a is untouched and is the available work** —
+  §31 states it is independent of §14's outcome.
+
 - **Windows Phase 6 gate run 2026-08-31: B1 and B2 pass, B3-B6 unmeasured. Phase 6 stays gated;
   Phase 6a is not gated and is the available work.** WINDOWS_PASS.md §14.5 asks whether a Windows PC
   can present the 161-byte bridge descriptor over HOGP such that `android_bridge_identify()` matches.
