@@ -576,8 +576,23 @@ public sealed partial class KeyboardMousePage : Page
                 Mouse = draft.Mouse,
             };
 
-            await SafeAsync(() => adapters.AssignKbmPositionAsync(
+            // SUCCESS IS REPORTED ONLY IF THE UPLOAD ACTUALLY COMPLETED. The
+            // result-carrying overload returns null when the operation threw,
+            // which is what distinguishes "committed and read back" from
+            // "timed out halfway through the binds".
+            //
+            // The void overload was used here, so the message below printed
+            // unconditionally — over the top of the error banner SafeAsync had
+            // just raised. A user whose session died mid-transaction was told
+            // their profile was on the adapter while the bank still showed
+            // Empty. Observed 2026-08-31.
+            var assigned = await SafeAsync(() => adapters.AssignKbmPositionAsync(
                 profile, chosen.Position, local));
+            if (assigned is null)
+            {
+                return;
+            }
+
             Report(
                 $"'{draft.Name}' is now {chosen.PositionLabel} on the adapter. " +
                 "Activate it to use it now.",

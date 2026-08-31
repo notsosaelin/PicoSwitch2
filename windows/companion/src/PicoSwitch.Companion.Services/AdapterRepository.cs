@@ -771,6 +771,38 @@ public sealed class AdapterRepository(IManagementTransport transport)
         var profiles = await client.KbmProfilesAsync(cancellationToken)
             .ConfigureAwait(false);
         keyboardMouse.Set(keyboardMouse.Value with { Profiles = profiles });
+
+        // READ THE BANK BACK AND PROVE IT. A commit that answered `ok` is the
+        // adapter's account of its own write, and this is the one operation on
+        // the page that costs a flash erase — the two together are worth a
+        // second, independent question.
+        //
+        // Content, not name: the fingerprint is FNV-1a over the canonicalized
+        // mapping and is computed identically in C, C# and Kotlin, so it also
+        // catches a transfer that lost an entry on the way. A name comparison
+        // would not, and the name is truncated to the firmware's limit anyway.
+        //
+        // This is the check the page's success message now depends on. Before
+        // it, an assignment whose upload had failed still printed "'X' is now
+        // Profile 1 on the adapter" over the error banner that had just been
+        // raised. Observed 2026-08-31.
+        var stored = keyboardMouse.Value.Profiles.At(layout, position);
+        var expected = KbmFingerprint.Compute(
+            layout, KbmFingerprint.Canonical(profile.Bindings), profile.Mouse);
+        if (stored is null)
+        {
+            throw new ManagementException(
+                $"The adapter reported the assignment complete, but " +
+                $"{KbmPositions.Label(position)} is still empty.");
+        }
+
+        if (stored.Fingerprint != expected)
+        {
+            throw new ManagementException(
+                $"The adapter stored something other than '{profile.Name}' in " +
+                $"{KbmPositions.Label(position)}. Its copy does not match yours.");
+        }
+
         return keyboardMouse.Value;
     }
 
