@@ -14,6 +14,20 @@ using WinRT.Interop;
 namespace PicoSwitch.Companion.App.Pages;
 
 /// <summary>
+/// One row of the Amiibo library list.
+/// </summary>
+/// <remarks>
+/// Top-level and public because the XAML item template binds to it: the markup
+/// compiler cannot reach a nested type through <c>x:DataType</c>, and generates
+/// code that does not compile if asked to.
+///
+/// Two fields because the row needs two lines. The detail carries the tag
+/// family, the figure id, and whether this is the backup the adapter is holding
+/// — that last one being what someone scanning the list is usually looking for.
+/// </remarks>
+public sealed record AmiiboLibraryRow(string Id, string Title, string Detail);
+
+/// <summary>
 /// Amiibo: the user's tag backups, and the one the adapter is holding.
 /// </summary>
 /// <remarks>
@@ -350,7 +364,7 @@ public sealed partial class AmiiboPage : Page
             return;
         }
 
-        selectedId = LibraryList.SelectedItem is LibraryRow row ? row.Id : null;
+        selectedId = LibraryList.SelectedItem is AmiiboLibraryRow row ? row.Id : null;
         Render();
     }
 
@@ -404,10 +418,6 @@ public sealed partial class AmiiboPage : Page
 
     // ------------------------------------------------------------------ render
 
-    private sealed record LibraryRow(string Id, string Title, string Detail)
-    {
-        public override string ToString() => Title;
-    }
 
     private AmiiboView View() => AmiiboView.From(
         adapters.Snapshot.Value,
@@ -502,7 +512,7 @@ public sealed partial class AmiiboPage : Page
         var loadedId = view.LoadedFromLibrary?.Id;
         var rows = view.Library
             .OrderBy(item => item.DisplayName, StringComparer.CurrentCultureIgnoreCase)
-            .Select(item => new LibraryRow(
+            .Select(item => new AmiiboLibraryRow(
                 item.Id,
                 item.DisplayName,
                 Describe(item, item.Id == loadedId)))

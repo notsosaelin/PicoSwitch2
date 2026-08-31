@@ -2,7 +2,8 @@
     x:Class="PicoSwitch.Companion.App.Pages.AmiiboPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:muxc="using:Microsoft.UI.Xaml.Controls">
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
+    xmlns:pages="using:PicoSwitch.Companion.App.Pages">
 
     <Page.Resources>
         <Style x:Key="CardStyle" TargetType="Border">
@@ -151,11 +152,27 @@
                         </StackPanel>
                     </Grid>
 
+                    <!-- Two lines per row: the name the user gave it, and what
+                         it actually is. The second line is where "on the
+                         adapter" appears, which is the thing someone scanning
+                         the list is usually looking for. -->
                     <ListView
                         x:Name="LibraryList"
                         SelectionMode="Single"
                         MaxHeight="360"
-                        SelectionChanged="OnLibrarySelectionChanged" />
+                        SelectionChanged="OnLibrarySelectionChanged">
+                        <ListView.ItemTemplate>
+                            <DataTemplate x:DataType="pages:AmiiboLibraryRow">
+                                <StackPanel Spacing="2" Margin="0,6,0,6">
+                                    <TextBlock Text="{x:Bind Title}" />
+                                    <TextBlock
+                                        Text="{x:Bind Detail}"
+                                        Style="{StaticResource CaptionTextBlockStyle}"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
 
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <Button x:Name="SendButton" Style="{StaticResource PageButtonStyle}"
