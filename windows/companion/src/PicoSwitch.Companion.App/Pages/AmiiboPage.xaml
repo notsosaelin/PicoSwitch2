@@ -100,12 +100,23 @@
                 </Grid>
 
                 <!-- Primary identity wraps to two lines; secondary truncates
-                     first, so a long series never pushes the name out. -->
+                     first, so a long series never pushes the name out.
+
+                     FIXED WIDTH, NOT STRETCHED. A GridViewItem insets its
+                     content by a few points when it becomes selected, and a
+                     caption sized to the container re-trimmed at that new width
+                     — so "Link - Tears of the Kingdom" visibly re-flowed the
+                     moment it was clicked. Pinning the width means the selection
+                     visual cannot change where the ellipsis falls. -->
                 <TextBlock Grid.Row="1" Text="{x:Bind Title}" MaxLines="2"
+                           Width="140" TextAlignment="Center"
+                           HorizontalAlignment="Center"
                            TextWrapping="Wrap" TextTrimming="CharacterEllipsis"
                            LineHeight="16" FontSize="13"
                            Style="{StaticResource BodyStrongTextBlockStyle}" />
                 <TextBlock Grid.Row="2" Text="{x:Bind Subtitle}" MaxLines="1"
+                           Width="140" TextAlignment="Center"
+                           HorizontalAlignment="Center"
                            TextTrimming="CharacterEllipsis"
                            Style="{StaticResource CaptionTextBlockStyle}"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
@@ -153,12 +164,13 @@
                 </Grid>
 
                 <TextBlock Grid.Row="1" Text="{x:Bind Title}" MaxLines="2"
-                           TextWrapping="Wrap" TextTrimming="CharacterEllipsis"
+                           Width="232" TextWrapping="Wrap"
+                           TextTrimming="CharacterEllipsis"
                            HorizontalAlignment="Center" TextAlignment="Center"
                            Style="{StaticResource SubtitleTextBlockStyle}" />
                 <TextBlock Grid.Row="2" Text="{x:Bind Subtitle}" MaxLines="1"
-                           TextTrimming="CharacterEllipsis"
-                           HorizontalAlignment="Center"
+                           Width="232" TextTrimming="CharacterEllipsis"
+                           HorizontalAlignment="Center" TextAlignment="Center"
                            Style="{StaticResource BodyTextBlockStyle}"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             </Grid>
@@ -457,23 +469,38 @@
                         </ListView.ItemContainerStyle>
                     </ListView>
 
-                    <ListView x:Name="LibraryCarousel" SelectionMode="Single" Visibility="Collapsed"
+                    <!--
+                        A GRIDVIEW, NOT A LISTVIEW, even though it lays out one
+                        row. A ListView draws its selection as a pill on the
+                        leading edge of the row, which in a horizontal panel
+                        became a stray vertical line beside the tile instead of
+                        marking it. GridView draws a border and tint around the
+                        whole item, which is both correct here and identical to
+                        the grid's — the same state should not look like two
+                        different things in two views.
+
+                        The horizontal scrollbar is hidden: it sat across the
+                        bottom of a full-height browsing surface, and this view
+                        is swiped or arrowed rather than dragged.
+                    -->
+                    <GridView x:Name="LibraryCarousel" SelectionMode="Single" Visibility="Collapsed"
+                              IsItemClickEnabled="False"
                               ScrollViewer.HorizontalScrollMode="Enabled"
-                              ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                              ScrollViewer.HorizontalScrollBarVisibility="Hidden"
                               ScrollViewer.VerticalScrollMode="Disabled"
                               ScrollViewer.VerticalScrollBarVisibility="Disabled"
                               VerticalAlignment="Center"
                               ItemTemplate="{StaticResource CarouselTileTemplate}"
                               SelectionChanged="OnLibrarySelectionChanged"
                               Holding="OnLibraryHolding">
-                        <ListView.ItemsPanel>
+                        <GridView.ItemsPanel>
                             <ItemsPanelTemplate>
                                 <!-- Virtualising, and horizontal. A StackPanel here
                                      would build all 1000 large visual trees. -->
                                 <ItemsStackPanel Orientation="Horizontal" />
                             </ItemsPanelTemplate>
-                        </ListView.ItemsPanel>
-                    </ListView>
+                        </GridView.ItemsPanel>
+                    </GridView>
 
                     <TextBlock x:Name="EmptyLibraryText" Visibility="Collapsed"
                                TextWrapping="Wrap" MaxWidth="420"
