@@ -661,6 +661,17 @@ public sealed class AdapterConnectionService
     public Task<KbmMapping> LoadKeyboardMouseProfileAsync(KbmProfileInfo profile) =>
         RunKbmAsync(() => repository.LoadKbmProfileAsync(profile));
 
+    /// <summary>
+    /// Read one bank position's stored content, for copying into the library.
+    /// </summary>
+    /// <remarks>
+    /// A READ, and the inbound half of the cross-platform bridge: a profile the
+    /// other companion created reaches this one only as content resident on the
+    /// adapter, because the two libraries share no ids.
+    /// </remarks>
+    public Task<KbmMapping> LoadKbmPositionAsync(KbmLayout layout, int position) =>
+        RunKbmAsync(() => repository.LoadKbmPositionAsync(layout, position));
+
     public Task<KeyboardMouseState> ResetAllKeyboardMouseAsync(
         CancellationToken cancellationToken = default) =>
         RunKbmAsync(async () =>

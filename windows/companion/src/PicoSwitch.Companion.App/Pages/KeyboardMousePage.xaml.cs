@@ -586,6 +586,52 @@ public sealed partial class KeyboardMousePage : Page
         });
 
     /// <summary>
+    /// Copy a resident profile into the local library.
+    /// </summary>
+    /// <remarks>
+    /// THE CROSS-PLATFORM BRIDGE, in the direction that brings work in. A profile
+    /// created on the Android companion reaches this one only as content resident
+    /// on the adapter — the two libraries share no ids — so this is the only way
+    /// to take ownership of it here.
+    ///
+    /// Matching is by CONTENT, not by name or id, so copying the same resident
+    /// twice returns the row already held instead of adding another duplicate on
+    /// every reconnect.
+    /// </remarks>
+    private async Task CopyToLibraryAsync(KbmBankSlot slot)
+    {
+        if (slot.Resident is not { } resident)
+        {
+            return;
+        }
+
+        KbmMapping? mapping = null;
+        await SafeAsync(async () =>
+            mapping = await adapters.LoadKbmPositionAsync(profile, slot.Position));
+        if (mapping is null)
+        {
+            return;
+        }
+
+        var before = library.Value.Profiles.Count;
+        // Only the OVERRIDES. `kbm map` reports the EFFECTIVE mapping, and
+        // importing all of it would store the canonical table as if the user had
+        // chosen every binding in it — after which a later change to the
+        // firmware's defaults could never reach this profile.
+        var overrides = mapping.Bindings.Where(binding => binding.Custom).ToList();
+        var imported = library.Import(profile, resident.Name, overrides,
+                                      adapters.KeyboardMouse.Value.Mouse);
+
+        selectedLocalId = imported.Id;
+        OpenProfile(imported.Id);
+        Report(
+            library.Value.Profiles.Count == before
+                ? $"'{imported.Name}' is already in your library."
+                : $"'{imported.Name}' copied to your library.",
+            InfoBarSeverity.Success);
+    }
+
+    /// <summary>
     /// Empty one bank position on the adapter. The library keeps its copy.
     /// </summary>
     /// <remarks>
@@ -1266,10 +1312,27 @@ public sealed partial class KeyboardMousePage : Page
             Grid.SetColumn(boot, 3);
             row.Children.Add(boot);
 
-            // REMOVE. Only for a real position holding something -- Default is
-            // built in and cannot be emptied.
+            // COPY and REMOVE. Only for a real position holding something --
+            // Default is built in, cannot be emptied, and is already the template
+            // every new profile starts from.
             if (slot.Position != KbmPositions.Default)
             {
+                var actions = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 8,
+                };
+
+                var copy = new Button
+                {
+                    Content = "Copy to library",
+                    Height = 32,
+                    IsEnabled = enabled && !slot.Empty,
+                };
+                copy.Click += async (_, _) => await GuardAsync(
+                    () => CopyToLibraryAsync(slot));
+                actions.Children.Add(copy);
+
                 var remove = new Button
                 {
                     Content = "Remove",
@@ -1279,8 +1342,10 @@ public sealed partial class KeyboardMousePage : Page
                 };
                 remove.Click += async (_, _) => await GuardAsync(
                     () => RemoveFromAdapterAsync(slot));
-                Grid.SetColumn(remove, 4);
-                row.Children.Add(remove);
+                actions.Children.Add(remove);
+
+                Grid.SetColumn(actions, 4);
+                row.Children.Add(actions);
             }
 
             BankHost.Children.Add(row);
