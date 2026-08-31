@@ -4,15 +4,56 @@
     "regenerate": "gradlew :app:testDebugUnitTest --tests '*AmiiboCryptoFixtureTool*' -Damiibo.retailKey=<path> -Damiibo.regenerate=true",
     "nameDigest": "sha256(nickname + owner), UTF-8. A complete equality check on the decoded names that discloses neither. Both empty digests as sha256 of the empty string, so producing a name where there is none fails just as loudly.",
     "coverage": {
+        "ntag215": true,
         "figureV3": true,
-        "ntag215": false,
-        "gap": "The tracked corpus contains no 540- or 572-byte NTAG215 image, so the NTAG215 path is NOT covered by these vectors. An implementation verified only against this fixture is unverified for that path. Adding one genuine NTAG215 dump to dumps/amiibo/ and regenerating closes it."
+        "setUpTag": true,
+        "unsetTag": true,
+        "appDataTag": true,
+        "gap": "None known. Both tag sizes, both register states and the app-data path are represented. This says nothing about firmware or console behaviour, which no software fixture can cover."
     },
     "keySet": {
         "fingerprint": "sha256:7f9283654ec1097fbdff31de946651ae60c2854afb544abe8963d389639c710e",
         "note": "SHA-256 of key_retail.bin, so a verifier can prove it holds the same key set. key_retail.bin is never committed."
     },
     "vectors": [
+        {
+            "label": "ntag215-animal-crossing-tom-nook",
+            "source": "dumps/amiibo/ntag215-animal-crossing-tom-nook.bin",
+            "sourceSha256": "0bd7eac824e93350fe8893fd62761ef75a21ff2d6b64ec1f13ce819ab4c40d10",
+            "size": 540,
+            "identity": {
+                "uid": "04676FFAE04981",
+                "figureId": "0183000002420502",
+                "tagType": "Ntag215",
+                "characterGameCode": "0183",
+                "characterVariant": 0,
+                "typeName": "Figure",
+                "modelNumber": "0242",
+                "seriesCode": 5,
+                "formatVersion": 2,
+                "extendedVariant": "0D129507"
+            },
+            "crypto": "Valid",
+            "register": {
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "setupDate": null,
+                "lastWriteDate": null,
+                "titleId": "",
+                "appId": "",
+                "appDataLabel": "None",
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "initialized": {
+                "sha256": "bd6f117699c900b9acdfb51e266c58e007ff07c49ff7dbf607b92311c99c45c4",
+                "crypto": "Valid",
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+        },
         {
             "label": "v3-air-riders-king-dedede-tank-after-2115-0096-2026-07-28",
             "source": "dumps/amiibo/v3-air-riders-king-dedede-tank-after-2115-0096-2026-07-28.bin",
