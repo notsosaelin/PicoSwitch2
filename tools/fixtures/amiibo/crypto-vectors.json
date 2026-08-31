@@ -9,7 +9,12 @@
         "setUpTag": true,
         "unsetTag": true,
         "appDataTag": true,
-        "gap": "None known. Both tag sizes, both register states and the app-data path are represented. This says nothing about firmware or console behaviour, which no software fixture can cover."
+        "tagTypeAndRegisterState": [
+            "FigureV3/un-set-up",
+            "FigureV3/set-up",
+            "Ntag215/un-set-up"
+        ],
+        "gap": "An implementation verified only against these vectors is unverified for: no SET-UP Ntag215 tag: its register decode is unverified. Adding a matching dump to dumps/amiibo/ and regenerating closes it."
     },
     "keySet": {
         "fingerprint": "sha256:7f9283654ec1097fbdff31de946651ae60c2854afb544abe8963d389639c710e",
@@ -161,6 +166,44 @@
             },
             "initialized": {
                 "sha256": "92e27e9f2addbabff968e86999860ec322e3dbd99c6ca4db36aa15c93cb4ecd5",
+                "crypto": "Valid",
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+        },
+        {
+            "label": "v3-bwd-winged-star-factory",
+            "source": "dumps/amiibo/v3-bwd-winged-star-factory.bin",
+            "sourceSha256": "6085ee56456767c8b213a55bc6c08b2c8c33c6b35c372cbf8128ea42e35d97c7",
+            "size": 2048,
+            "identity": {
+                "uid": "042A352AAB1F90",
+                "figureId": "1F03010004C91E03",
+                "tagType": "FigureV3",
+                "characterGameCode": "1F03",
+                "characterVariant": 1,
+                "typeName": "Figure",
+                "modelNumber": "04C9",
+                "seriesCode": 30,
+                "formatVersion": 3,
+                "extendedVariant": "AABBCCDD"
+            },
+            "crypto": "Valid",
+            "register": {
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "setupDate": null,
+                "lastWriteDate": null,
+                "titleId": "",
+                "appId": "",
+                "appDataLabel": "None",
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "initialized": {
+                "sha256": "03d90f87a02b37358683ef6396b755beb4af4c0f4d15559db657370dbb02df43",
                 "crypto": "Valid",
                 "setUp": false,
                 "hasAppData": false,
@@ -351,6 +394,120 @@
             },
             "initialized": {
                 "sha256": "92e27e9f2addbabff968e86999860ec322e3dbd99c6ca4db36aa15c93cb4ecd5",
+                "crypto": "Valid",
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+        },
+        {
+            "label": "v3-king-dedede-warp-star-factory",
+            "source": "dumps/amiibo/v3-king-dedede-warp-star-factory.bin",
+            "sourceSha256": "45ee871e9a2d665e5ee083a5e2546d8608c99d4d9b71f124ae7089dc98678ff3",
+            "size": 2048,
+            "identity": {
+                "uid": "0465B0228F2190",
+                "figureId": "1F02000004C71E03",
+                "tagType": "FigureV3",
+                "characterGameCode": "1F02",
+                "characterVariant": 0,
+                "typeName": "Figure",
+                "modelNumber": "04C7",
+                "seriesCode": 30,
+                "formatVersion": 3,
+                "extendedVariant": "AABBCCDD"
+            },
+            "crypto": "Valid",
+            "register": {
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "setupDate": null,
+                "lastWriteDate": null,
+                "titleId": "",
+                "appId": "",
+                "appDataLabel": "None",
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "initialized": {
+                "sha256": "c41c08ebb186a93d90540f5e18b22b025f89aef24f0aea2f8b01613bc35cb08e",
+                "crypto": "Valid",
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+        },
+        {
+            "label": "v3-kirby-tank-star-factory",
+            "source": "dumps/amiibo/v3-kirby-tank-star-factory.bin",
+            "sourceSha256": "866b26a9588df7e5fedd09ebea5f90eff61e3994e1cde26d7ba3772ff414b2ab",
+            "size": 2048,
+            "identity": {
+                "uid": "04B4438ADB1F90",
+                "figureId": "1F00000004C41E03",
+                "tagType": "FigureV3",
+                "characterGameCode": "1F00",
+                "characterVariant": 0,
+                "typeName": "Figure",
+                "modelNumber": "04C4",
+                "seriesCode": 30,
+                "formatVersion": 3,
+                "extendedVariant": "AABBCCDD"
+            },
+            "crypto": "Valid",
+            "register": {
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "setupDate": null,
+                "lastWriteDate": null,
+                "titleId": "",
+                "appId": "",
+                "appDataLabel": "None",
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "initialized": {
+                "sha256": "802e92d8ef793e405c88741067c76ac819c2e89bc83860eadad460fcaf62347e",
+                "crypto": "Valid",
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            }
+        },
+        {
+            "label": "v3-meta-knight-shadow-star-factory",
+            "source": "dumps/amiibo/v3-meta-knight-shadow-star-factory.bin",
+            "sourceSha256": "13501cc7653333e3cf2c1819ab344e32762df33be2aa9959d0c0ed14cae107ff",
+            "size": 2048,
+            "identity": {
+                "uid": "04988B22AB1F90",
+                "figureId": "1F01000004C61E03",
+                "tagType": "FigureV3",
+                "characterGameCode": "1F01",
+                "characterVariant": 0,
+                "typeName": "Figure",
+                "modelNumber": "04C6",
+                "seriesCode": 30,
+                "formatVersion": 3,
+                "extendedVariant": "AABBCCDD"
+            },
+            "crypto": "Valid",
+            "register": {
+                "setUp": false,
+                "hasAppData": false,
+                "writeCounter": 0,
+                "setupDate": null,
+                "lastWriteDate": null,
+                "titleId": "",
+                "appId": "",
+                "appDataLabel": "None",
+                "nameDigest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            },
+            "initialized": {
+                "sha256": "0101269e353880c27fa0377718933f7b685b1e640bce68385db4dbeb6dc87cbd",
                 "crypto": "Valid",
                 "setUp": false,
                 "hasAppData": false,

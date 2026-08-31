@@ -191,6 +191,22 @@ class AmiiboCryptoFixtureTest {
         assertTrue("an un-set-up tag must be represented", coverage["unsetTag"]!!.jsonPrimitive.boolean)
         assertTrue("an app-data tag must be represented", coverage["appDataTag"]!!.jsonPrimitive.boolean)
         assertTrue("the gap must be stated either way", coverage.string("gap").isNotBlank())
+
+        // Tag type CROSSED with register state. Having a set-up tag and having
+        // an NTAG215 tag does not mean the set-up NTAG215 decode is covered, and
+        // stating the two independently is what hid that gap: the tag sizes put
+        // the encrypted blocks 0x40 bytes apart, so each combination is its own
+        // path through the layout.
+        val expected = vectors.map {
+            val type = it["identity"]!!.jsonObject.string("tagType")
+            val setUp = it["register"]!!.jsonObject["setUp"]!!.jsonPrimitive.boolean
+            "$type/${if (setUp) "set-up" else "un-set-up"}"
+        }.toSet()
+        assertEquals(
+            "the crossed coverage list must describe the vectors present",
+            expected,
+            coverage["tagTypeAndRegisterState"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet(),
+        )
     }
 
     // -------------------------------------------------- only with real keys
