@@ -36,11 +36,15 @@ class KbmRepositoryTest {
         val repository = AdapterRepository(transport)
         repository.refreshKbm()
 
-        // Status, mouse limits, and the profile library are one read: a
-        // half-loaded page would show a mapping without being able to say
-        // whether it is the one in use.
+        // Status, mouse limits, the profile library and the switch-key table are
+        // ONE read: a half-loaded screen would show a mapping without being able
+        // to say whether it is the one in use, or draw a bank without the keys
+        // that select from it. There is no partial success and no degraded mode.
         assertEquals(
-            listOf("kbm status", "kbm counters", "kbm mouse", "kbm profiles 0", "kbm active"),
+            listOf(
+                "kbm status", "kbm counters", "kbm mouse", "kbm profiles 0",
+                "kbm active", "kbm switches",
+            ),
             transport.commands,
         )
         val state = repository.kbm.value
@@ -55,6 +59,12 @@ class KbmRepositoryTest {
             KbmProfileIds.DEFAULT,
             state.profiles.activeFor(KbmProfile.Keyboard)?.sourceId,
         )
+        // The switch-key table arrives with the rest, naming a POSITION rather
+        // than a profile id: one key serves both layout banks, and the adapter
+        // resolves it through the derived layout when it is pressed.
+        assertEquals(1, state.switches.size)
+        assertEquals(1, state.switches.single().position)
+        assertEquals(0x3A, state.switches.single().source.code)
     }
 
     @Test
@@ -259,6 +269,14 @@ private class KbmTransport(
                 {"active":[
                   {"layout":"kb","sourceId":1,"revision":0,"fingerprint":900,"matchesSaved":true},
                   {"layout":"kbm","sourceId":1,"revision":0,"fingerprint":901,"matchesSaved":true}
+                ]}
+            """.trimIndent()
+            // ONE shared table: a switch key names a POSITION, and the adapter
+            // resolves it through whichever layout is derived at press time, so
+            // the reply carries no layout.
+            command == "kbm switches" -> """
+                {"positions":3,"switches":[
+                  {"src":"key:3A","position":1}
                 ]}
             """.trimIndent()
             command.startsWith("kbm bind ") -> """{"ok":true}"""

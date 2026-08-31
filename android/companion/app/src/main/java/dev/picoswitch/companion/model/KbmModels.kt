@@ -265,6 +265,18 @@ typealias KbmProfiles = dev.picoswitch.management.KbmProfiles
 /** Reserved profile identities; Default is a template, not a stored profile. */
 typealias KbmProfileIds = dev.picoswitch.management.KbmProfileIds
 
+/** A bank position — what the user selects and what a switch key names. */
+typealias KbmPositions = dev.picoswitch.management.KbmPositions
+
+/** Bounds the firmware enforces, including positions per layout bank. */
+typealias KbmLimits = dev.picoswitch.management.KbmLimits
+
+/** One profile-switch key assignment, naming a position rather than a slot. */
+typealias KbmSwitchBinding = dev.picoswitch.management.KbmSwitchBinding
+
+/** The editor's working copy of a LOCAL library profile. Editing it sends nothing. */
+typealias KbmLocalDraft = dev.picoswitch.management.KbmLocalDraft
+
 /** A local, editable copy of one profile. Editing it sends nothing. */
 typealias KbmDraft = dev.picoswitch.management.KbmDraft
 
@@ -394,6 +406,16 @@ data class KbmState(
      * firmware update, never silently treated as having none.
      */
     val profiles: KbmProfiles = KbmProfiles(),
+
+    /**
+     * The profile-switch key assignments, as one shared table.
+     *
+     * Layout-free by design: a key names a POSITION and the adapter resolves it
+     * through whichever layout is derived at press time, so one set of keys
+     * serves both banks. Kept beside the bank rather than inside it because a
+     * binding survives the position it points at being emptied.
+     */
+    val switches: List<KbmSwitchBinding> = emptyList(),
 
     /**
      * The local, unsaved copy of the profile being edited.
