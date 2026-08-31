@@ -68,6 +68,7 @@ def main() -> None:
     check_management_bond_admission_is_latched(source)
     check_audio_sink_is_independent_of_input_ownership()
     check_controller_discovery_never_touches_management(source)
+    check_management_notify_is_not_gated_by_controller_connect(source)
 
     print("Bluetooth closeout wiring tests passed")
 
@@ -122,7 +123,11 @@ def check_controller_discovery_never_touches_management(source: str) -> None:
     transport = BT_TRANSPORT.read_text(encoding="utf-8")
     open_window = function_body(
         transport,
-        r"static void open_pairing_window\(uint32_t now_ms\) \{",
+        # Parameter list deliberately loose: the invariant is about what the
+        # BODY may touch, and pinning the exact signature made this guard fail
+        # closed when `grant_management_bonding` was added rather than checking
+        # anything.
+        r"static void open_pairing_window\([^)]*\) \{",
         r"\n\}",
     )
     for forbidden in ("config_ble", "mgmt_", "g_mgmt_enabled"):
@@ -453,6 +458,67 @@ def check_le_appearance_is_a_host(source: str) -> None:
     assert "gap_set_class_of_device(0x000104)" in source, (
         "Classic Class of Device changed; re-check that it still agrees with the "
         "LE Appearance (both should describe a computer/host, not a peripheral)"
+    )
+
+
+def check_management_notify_is_not_gated_by_controller_connect(source: str) -> None:
+    """Answering the management client is not a radio-role decision.
+
+    Field case 2026-08-31: a KB/M resident upload stalled on `kbm draft bind`,
+    the companion timed out after 10 000 ms and retired the session. The command
+    was fine -- the whole staged transaction replays over UART in ~10 ms per
+    command -- and the GATT write had succeeded. What was missing was the
+    NOTIFICATION.
+
+    `config_ble_service_task` returns early while a controller connect attempt is
+    outstanding, so as not to perturb an in-flight `gap_connect`. That guard is
+    about ADVERTISING. The notification pump sat below it, so the same return
+    also suppressed every management reply for the length of the attempt --
+    `BLE_CONNECT_TIMEOUT_MS`, which is 10 000, against a client budget of 10 000.
+    An adapter with no controller connected is doing exactly this, which is why
+    the failure only appeared in that state.
+
+    Two things are pinned here, because either alone can be undone:
+      1. the pump is called BEFORE the BLE_STATE_CONNECTING return; and
+      2. `att_server_request_to_send_notification` for the management link is
+         armed from the pump and nowhere else, so a second call site cannot
+         reintroduce a path with its own gating.
+
+    See docs/experiments/kbm-resident-upload-notify-stall-2026-08-31.md.
+    """
+    body = function_body(
+        source,
+        r"static void config_ble_service_task\(bool in_config\)\s*\{",
+        r"\n\}\s*\n",
+    )
+    pump = body.find("config_ble_pump_response();")
+    gate = body.find("if (hid_state.state == BLE_STATE_CONNECTING) {")
+    assert pump >= 0, (
+        "config_ble_service_task no longer pumps the management response; a "
+        "published reply would never be notified"
+    )
+    assert gate >= 0, "the controller-connect advertiser guard has moved or gone"
+    assert pump < gate, (
+        "the management notification pump must run BEFORE the "
+        "BLE_STATE_CONNECTING return: below it, a controller connect attempt "
+        "silently suppresses management replies for up to BLE_CONNECT_TIMEOUT_MS"
+    )
+
+    arming = re.findall(
+        r"att_server_request_to_send_notification\(\s*&config_ble\.tx_request",
+        source,
+    )
+    assert len(arming) == 1, (
+        "the management notification request must have exactly one call site "
+        f"(found {len(arming)}); a second one can carry its own gating"
+    )
+    pump_body = function_body(
+        source,
+        r"static void config_ble_pump_response\(void\)\s*\{",
+        r"\n\}\s*\n",
+    )
+    assert "att_server_request_to_send_notification(" in pump_body, (
+        "the single arming site must live in config_ble_pump_response"
     )
 
 

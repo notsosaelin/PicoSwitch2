@@ -778,6 +778,16 @@ static struct {
     bool closing;
     bool notifications_enabled;
     bool tx_requested;
+    // WHEN THE CURRENT REPLY BECAME SENDABLE, and the worst wait ever measured.
+    //
+    // Core 0 publishes a management reply; core 1 notifies it. Nothing between
+    // those two points is observable from either end -- the client sees a
+    // successful GATT write and then silence, which is indistinguishable from a
+    // command the adapter never received. That ambiguity is what made the
+    // 2026-08-31 resident-upload stall take a source audit to explain; see
+    // docs/experiments/kbm-resident-upload-notify-stall-2026-08-31.md.
+    uint32_t tx_pending_since_ms;
+    uint32_t tx_wait_max_ms;
     hci_con_handle_t handle;
     uint16_t rx_value_handle;
     uint16_t tx_value_handle;
@@ -1079,6 +1089,7 @@ static bool config_ble_accept_new_bond(void)
 }
 
 static void config_ble_start_advertising(void);
+static void config_ble_pump_response(void);
 
 // The config/management BLE service (RX/TX GATT + wireless bridge) is authorized
 // either in the explicit CDC Config personality (legacy, physically gated) OR
@@ -1252,6 +1263,55 @@ static void config_ble_can_send(void *context)
         config_ble.tx_chunk, (uint16_t)length);
     if (status == ERROR_CODE_SUCCESS) {
         config_wireless_bridge_consume_response(length);
+    }
+}
+
+// Schedule the published management reply for transmission, and measure how
+// long it waited.
+//
+// SEPARATE FROM ADVERTISER ARBITRATION ON PURPOSE. This is the only place that
+// arms config_ble_can_send, so anything that can skip it silently stops the
+// management carrier answering while leaving every other symptom normal: the
+// link stays up, the GATT write still succeeds, and the client learns nothing
+// until its own timeout fires. Keep this reachable on every service tick.
+static void config_ble_pump_response(void)
+{
+    if (config_ble.handle == HCI_CON_HANDLE_INVALID ||
+        !config_ble.notifications_enabled) {
+        config_ble.tx_pending_since_ms = 0;
+        return;
+    }
+
+    if (!config_wireless_bridge_response_pending()) {
+        if (config_ble.tx_pending_since_ms != 0) {
+            uint32_t waited = (uint32_t)(btstack_run_loop_get_time_ms() -
+                                         config_ble.tx_pending_since_ms);
+            if (waited > config_ble.tx_wait_max_ms) {
+                config_ble.tx_wait_max_ms = waited;
+            }
+            config_ble.tx_pending_since_ms = 0;
+        }
+        return;
+    }
+
+    if (config_ble.tx_pending_since_ms == 0) {
+        uint32_t now = (uint32_t)btstack_run_loop_get_time_ms();
+        // 0 is the "not waiting" sentinel, so the one millisecond that collides
+        // with it borrows its neighbour rather than losing the measurement.
+        config_ble.tx_pending_since_ms = now == 0u ? 1u : now;
+    }
+
+    if (config_ble.tx_requested) {
+        return;
+    }
+
+    config_ble.tx_request.callback = &config_ble_can_send;
+    config_ble.tx_request.context = NULL;
+    config_ble.tx_requested = true;
+    uint8_t status = att_server_request_to_send_notification(
+        &config_ble.tx_request, config_ble.handle);
+    if (status != ERROR_CODE_SUCCESS) {
+        config_ble.tx_requested = false;
     }
 }
 
@@ -2639,6 +2699,7 @@ static bool config_ble_accept_connection(hci_con_handle_t handle,
     config_ble.advertising = false; // controller stops connectable advertising on connect
     config_ble.notifications_enabled = false;
     config_ble.tx_requested = false;
+    config_ble.tx_pending_since_ms = 0;
 
     // Ask the central for supervision margin. We are the peripheral here, so
     // this is a request the phone may refuse -- best-effort, and nothing below
@@ -2729,6 +2790,7 @@ static bool config_ble_handle_disconnect(
     config_ble.closing = false;
     config_ble.notifications_enabled = false;
     config_ble.tx_requested = false;
+    config_ble.tx_pending_since_ms = 0;
     config_wireless_bridge_reset_session();
 
     // Controller Link is a facility of this relationship, so it does not
@@ -2785,6 +2847,20 @@ static void config_ble_service_task(bool in_config)
         printf("[BTSTACK_HOST] Config BLE service armed\n");
     }
 
+    // ORDERED BEFORE THE ARBITRATION BELOW, DELIBERATELY. Answering the
+    // management client is not advertiser arbitration and not a radio-role
+    // decision: it is one ATT notification on a link that is already up. It must
+    // therefore not be gated by anything that gates ADVERTISING.
+    //
+    // It used to be. This block sat after the BLE_STATE_CONNECTING return, so a
+    // controller connect attempt -- which is exactly what an adapter with NO
+    // controller is doing -- suppressed every management reply for as long as
+    // the attempt lasted. BLE_CONNECT_TIMEOUT_MS is 10000 and the companion's
+    // per-command budget is 10000, so one overlapping attempt was enough to
+    // guarantee a timeout. Confirmed 2026-08-31:
+    // docs/experiments/kbm-resident-upload-notify-stall-2026-08-31.md.
+    config_ble_pump_response();
+
     // Don't perturb an in-flight controller connect attempt (a gap_connect is
     // outstanding); its completion path resolves per-link and the next tick
     // resumes advertiser arbitration.
@@ -2806,19 +2882,6 @@ static void config_ble_service_task(bool in_config)
         config_ble_start_advertising();
     }
 
-    if (config_ble.handle != HCI_CON_HANDLE_INVALID &&
-        config_ble.notifications_enabled &&
-        !config_ble.tx_requested &&
-        config_wireless_bridge_response_pending()) {
-        config_ble.tx_request.callback = &config_ble_can_send;
-        config_ble.tx_request.context = NULL;
-        config_ble.tx_requested = true;
-        uint8_t status = att_server_request_to_send_notification(
-            &config_ble.tx_request, config_ble.handle);
-        if (status != ERROR_CODE_SUCCESS) {
-            config_ble.tx_requested = false;
-        }
-    }
 }
 
 // Pending BLE gamepad: when we see a gamepad appearance or HID UUID but no name in the
@@ -4372,6 +4435,7 @@ static void btstack_host_clear_transient_radio_state(void)
     config_ble.closing = false;
     config_ble.notifications_enabled = false;
     config_ble.tx_requested = false;
+    config_ble.tx_pending_since_ms = 0;
     config_wireless_bridge_reset_session();
     // Every ACL died with the HCI, so the Controller Link binding is stale
     // rather than something to tear down: forget it so a reused handle after
@@ -12289,6 +12353,7 @@ void btstack_host_get_mgmt_diag(btstack_host_mgmt_diag_t *out)
     out->cble_closing = config_ble.closing;
     out->cble_notifications = config_ble.notifications_enabled;
     out->cble_fresh_bond_admitted = config_ble.fresh_bond_admitted;
+    out->cble_tx_wait_max_ms = config_ble.tx_wait_max_ms;
     // Counters (ring-independent totals)
     out->event_count = btlife_count;
     out->event_dropped = btlife_dropped;

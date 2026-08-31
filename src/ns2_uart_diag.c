@@ -322,7 +322,7 @@ static void queue_btstate(void) {
         "\"lockout\":%s},"
         "\"cble\":{\"available\":%s,\"armed\":%s,\"advertising\":%s,"
         "\"client\":%s,\"closing\":%s,\"notify\":%s,"
-        "\"fresh_bond\":%s},"
+        "\"fresh_bond\":%s,\"tx_wait_max_ms\":%lu},"
         "\"events\":{\"count\":%u,\"dropped\":%lu},"
         "\"scan\":{\"starts\":%lu,\"stops\":%lu},"
         "\"adv\":{\"starts\":%lu,\"stops\":%lu},"
@@ -358,6 +358,7 @@ static void queue_btstate(void) {
         d.cble_advertising ? "true" : "false", d.cble_has_client ? "true" : "false",
         d.cble_closing ? "true" : "false", d.cble_notifications ? "true" : "false",
         d.cble_fresh_bond_admitted ? "true" : "false",
+        (unsigned long)d.cble_tx_wait_max_ms,
         d.event_count, (unsigned long)d.event_dropped,
         (unsigned long)d.scan_starts, (unsigned long)d.scan_stops,
         (unsigned long)d.adv_starts, (unsigned long)d.adv_stops,
