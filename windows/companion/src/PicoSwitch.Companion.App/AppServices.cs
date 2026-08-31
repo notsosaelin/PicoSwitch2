@@ -19,6 +19,7 @@ public static class AppServices
     private static readonly Lock Gate = new();
 
     private static AdapterConnectionService? adapters;
+    private static ControllerLinkService? controllerLink;
     private static KbmLibraryRepository? kbmLibrary;
     private static AmiiboLibrary? amiiboLibrary;
     private static WindowsAmiiboKeyStore? amiiboKeys;
@@ -181,6 +182,25 @@ public static class AppServices
                 var log = diagnostics ??= new DiagnosticLog();
                 adapters = AdapterConnectionService.CreateDefault(log);
                 return adapters;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Controller Link, in its gate-failed shape.
+    ///
+    /// Independent of <see cref="Adapters"/> on purpose: what this PC's radio can
+    /// do is a property of the PC, not of any adapter, and the question is worth
+    /// answering with nothing paired.
+    /// </summary>
+    public static ControllerLinkService ControllerLink
+    {
+        get
+        {
+            lock (Gate)
+            {
+                return controllerLink ??= new ControllerLinkService(
+                    diagnostics ??= new DiagnosticLog());
             }
         }
     }

@@ -3,20 +3,80 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-    <ScrollViewer Padding="24">
+    <!--
+      Horizontal scrolling OFF. A ScrollViewer that allows it measures its content
+      with unbounded width, so `TextWrapping="Wrap"` never engages and the
+      explanation is clipped by the window edge instead of wrapping into it. This
+      page is almost entirely prose, and prose the user cannot read explains
+      nothing.
+    -->
+    <ScrollViewer
+        Padding="24"
+        HorizontalScrollMode="Disabled"
+        HorizontalScrollBarVisibility="Disabled">
         <Grid>
             <StackPanel MaxWidth="1180" HorizontalAlignment="Stretch" Spacing="8">
-            <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Gamepad" />
-            <TextBlock
-                Style="{StaticResource BodyTextBlockStyle}"
-                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                TextWrapping="Wrap"
-                Text="This PC as a controller source for the adapter." />
-            <TextBlock
-                Margin="0,16,0,0"
-                Style="{StaticResource BodyTextBlockStyle}"
-                TextWrapping="Wrap"
-                Text="Phase 6 fills this page, and only if the HOGP peripheral-role experiment in WINDOWS_PASS.md 14.5 passes. The Touch Gamepad surface (Phase 6a) is opened from here and does not depend on that outcome." />
+
+                <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Gamepad" />
+                <TextBlock
+                    Style="{StaticResource BodyTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    TextWrapping="Wrap"
+                    Text="This PC as a controller source for the adapter." />
+
+                <!--
+                  Every string below comes from ControllerLinkView, which is unit
+                  tested. Nothing here decides what to say: a sentence written in
+                  markup cannot be asserted, and §33.2 accepts a negative §14.5
+                  result only if the UI explains the limitation SPECIFICALLY.
+                -->
+                <Border
+                    Margin="0,20,0,0"
+                    Padding="20"
+                    CornerRadius="8"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1">
+                    <StackPanel Spacing="10">
+                        <TextBlock
+                            x:Name="Headline"
+                            Style="{StaticResource SubtitleTextBlockStyle}"
+                            TextWrapping="Wrap" />
+                        <TextBlock
+                            x:Name="Explanation"
+                            Style="{StaticResource BodyTextBlockStyle}"
+                            TextWrapping="Wrap" />
+                        <TextBlock
+                            x:Name="RadioLine"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            TextWrapping="Wrap"
+                            Visibility="Collapsed" />
+
+                        <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                            <Button x:Name="CheckButton" Click="OnCheck" Content="Check this PC" />
+                            <ProgressRing
+                                x:Name="Busy"
+                                Width="20"
+                                Height="20"
+                                IsActive="False"
+                                Visibility="Collapsed" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!--
+                  Phase 6a is NOT gated on the §14.5 outcome (WINDOWS_PASS.md §31),
+                  so this says so plainly rather than leaving a user to conclude the
+                  whole page is dead.
+                -->
+                <TextBlock
+                    Margin="0,20,0,0"
+                    Style="{StaticResource BodyTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    TextWrapping="Wrap"
+                    Text="The on-screen Touch Gamepad is a separate feature and does not depend on any of this. It is not built yet on Windows." />
+
             </StackPanel>
         </Grid>
     </ScrollViewer>
