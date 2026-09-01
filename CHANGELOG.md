@@ -8,18 +8,27 @@ Release notes describe user-visible behavior. Detailed implementation history re
 ### Added
 
 - **On-screen controller on Windows: layouts, named profiles and a layout editor.** The Gamepad page
-  opens a full-window on-screen controller drawn for whichever controller the adapter is emulating —
+  opens a dedicated on-screen controller screen — the companion's navigation and pages leave the
+  view entirely, and the controller owns the window. It can go true full screen, where the title
+  bar and window border go too. Escape steps back out one level at a time: it cancels a drag you
+  are in the middle of, then closes the menu, then leaves the editor (asking first about unsaved
+  changes), then leaves full screen, then returns you to the Gamepad page. The controller is drawn
+  for whichever controller the adapter is emulating —
   Pro Controller 2, GameCube, or either Joy-Con 2 — including the GameCube's real face-button
-  silhouettes. Controls can be moved, resized, rotated, grouped, hidden, added and removed, with an
-  alignment grid and snapping, undo and redo, and a layout check that says when two controls
-  overlap, when one is too small to hit, or when the window is simply too small for a controller.
+  silhouettes. It opens showing just the controller; a menu button in the corner leads to the layout
+  editor, the layout library and the way out. In the editor a single small toolbar floats over the
+  controller and can be dragged to whichever edge suits you, so the layout you are arranging is
+  never hidden behind a panel. Controls can be moved, resized, rotated, grouped, hidden, added and
+  removed, with an alignment grid and snapping, undo and redo, and a layout check that says when two
+  controls overlap, when one is too small to hit, or when the window is simply too small for a
+  controller.
   Layouts are kept as named profiles you can create, duplicate, rename, delete, reset, export and
   import; the shipped **Default** layout can never be overwritten — saving over it makes a new
   profile instead — so there is always something to go back to. Everything here is local: it works
   with no adapter attached, and it uses the last controller the adapter was seen emulating when
   nothing is connected. **It cannot drive a console on this release** — that needs Controller Link,
-  which this Windows build does not have — and the surface says so plainly rather than looking
-  broken.
+  which this Windows build does not have. The controller says so in one short line rather than
+  looking broken, and the menu explains the whole of it.
 - **Gamepad page on Windows: an answer about whether this PC can act as a controller.** Using a PC
   as a controller for the adapter needs its Bluetooth radio to advertise as a peripheral, and
   whether it will do that turns out to vary by radio and driver rather than being a property of

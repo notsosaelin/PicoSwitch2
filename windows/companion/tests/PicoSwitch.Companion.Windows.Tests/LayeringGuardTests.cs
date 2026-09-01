@@ -220,6 +220,106 @@ public sealed class LayeringGuardTests
         Assert.Empty(offenders);
     }
 
+    // ------------------------------------------------------ the Touch Gamepad's surface
+
+    /// <summary>
+    /// The Touch Gamepad paints its own opaque ground.
+    /// </summary>
+    /// <remarks>
+    /// The 2026-09-01 regression, as a rule. The surface set <c>Background</c> on the
+    /// <c>UserControl</c> and left its root <c>Grid</c> unpainted, which paints nothing —
+    /// and over a Mica window that meant the companion's navigation rail, the Gamepad
+    /// page's cards and the status bars showed straight through the controller, with the
+    /// desktop visible at the edges.
+    ///
+    /// Asserted on the ROOT ELEMENT specifically, because that is the one that has to
+    /// carry it: a brush on any inner panel leaves the gaps between them transparent, and
+    /// gaps are where the regression showed.
+    /// </remarks>
+    [Fact]
+    public void TheTouchGamepadRootIsOpaque()
+    {
+        var root = TouchGamepadMarkup().Root!.Elements().First();
+
+        Assert.Equal("Grid", root.Name.LocalName);
+        Assert.Equal(
+            "{ThemeResource SolidBackgroundFillColorBaseBrush}",
+            root.Attribute("Background")?.Value);
+    }
+
+    /// <summary>
+    /// Nothing on that surface is see-through by design.
+    ///
+    /// Acrylic, Mica and the Layer fills are all translucent materials: they are correct
+    /// for chrome floating over an app and wrong for the ground under a controller. The
+    /// scan covers the whole file rather than the root alone, because the previous version
+    /// built its header and inspector out of Layer fill and those were the panels the page
+    /// underneath showed through.
+    /// </summary>
+    [Fact]
+    public void TheTouchGamepadUsesNoTranslucentMaterial()
+    {
+        // Attribute VALUES, not the file's text. The markup's own comment names these
+        // brushes in order to forbid them, and a substring scan would fail on the
+        // explanation rather than on a violation — the mirror image of the trap the
+        // capability test above already documents.
+        var offenders = TouchGamepadMarkup().Descendants()
+            .SelectMany(element => element.Attributes())
+            .Select(attribute => attribute.Value)
+            .Where(value => new[]
+                {
+                    "Acrylic", "MicaBackdrop", "DesktopAcrylicBackdrop", "LayerFillColor",
+                    "LayerOnAcrylicFillColor",
+                }.Any(forbidden => value.Contains(forbidden, StringComparison.Ordinal)))
+            .ToList();
+
+        Assert.Empty(offenders);
+    }
+
+    /// <summary>
+    /// Entering the mode REMOVES the shell rather than covering it.
+    ///
+    /// The Android companion returns early and never composes its scaffold; this is the
+    /// same thing said in Windows terms. A surface layered over a live NavigationView is
+    /// one mis-set brush away from the regression above, so the removal is the rule and
+    /// the opacity is the belt.
+    /// </summary>
+    [Fact]
+    public void EnteringTheTouchGamepadRemovesTheShell()
+    {
+        var shell = File.ReadAllText(Path.Combine(
+            CompanionRoot, "src", "PicoSwitch.Companion.App", "MainWindow.xaml.cs"));
+
+        var enter = shell[shell.IndexOf("public void ShowTouchGamepad", StringComparison.Ordinal)..];
+        enter = enter[..enter.IndexOf("public void HideTouchGamepad", StringComparison.Ordinal)];
+
+        Assert.Contains("Navigation.Visibility = Visibility.Collapsed", enter, StringComparison.Ordinal);
+        Assert.Contains("SystemBackdrop = null", enter, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Full screen goes through the presenter, not through stretching something.
+    ///
+    /// <c>AppWindowPresenterKind.FullScreen</c> is the supported Windows App SDK answer and
+    /// the only one that actually removes the title bar, the border and the caption
+    /// buttons.
+    /// </summary>
+    [Fact]
+    public void FullScreenUsesThePresenter()
+    {
+        var shell = File.ReadAllText(Path.Combine(
+            CompanionRoot, "src", "PicoSwitch.Companion.App", "MainWindow.xaml.cs"));
+
+        Assert.Contains("AppWindowPresenterKind.FullScreen", shell, StringComparison.Ordinal);
+        Assert.Contains("AppWindow.SetPresenter", shell, StringComparison.Ordinal);
+    }
+
+    private static string TouchGamepadMarkupPath => Path.Combine(
+        CompanionRoot, "src", "PicoSwitch.Companion.App", "Touch", "TouchGamepadView.xaml");
+
+    private static System.Xml.Linq.XDocument TouchGamepadMarkup() =>
+        System.Xml.Linq.XDocument.Load(TouchGamepadMarkupPath);
+
     private static IEnumerable<string> AppXamlFiles() => Directory
         .EnumerateFiles(
             Path.Combine(CompanionRoot, "src", "PicoSwitch.Companion.App"),

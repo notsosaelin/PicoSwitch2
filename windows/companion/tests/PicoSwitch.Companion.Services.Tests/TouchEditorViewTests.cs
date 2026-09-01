@@ -224,6 +224,20 @@ public sealed class TouchEditorKeysTests
     }
 
     [Fact]
+    public void TheSurfaceLevelKeysAreReachableFromEitherMode()
+    {
+        // §7 asks for a clear controller-specific way to enter and leave full screen and
+        // to reach the menu; these are the keyboard halves of it. The context-menu key is
+        // the closest a keyboard comes to Android's Back-opens-the-menu gesture.
+        Assert.Equal(
+            TouchEditorCommand.ToggleFullscreen,
+            TouchEditorKeys.Resolve("F11", control: false, shift: false).Command);
+        Assert.Equal(
+            TouchEditorCommand.Menu,
+            TouchEditorKeys.Resolve("Application", control: false, shift: false).Command);
+    }
+
+    [Fact]
     public void AnUnboundKeyDoesNothingRatherThanSomethingApproximate()
     {
         Assert.Equal(
@@ -301,9 +315,77 @@ public sealed class TouchEditorViewTests
         var view = TouchEditorView.Of(
             fixture.NewService().State.Value, controllerLinkAvailable: false);
 
+        // Short on the gameplay surface, in the Android link banner's own words for this
+        // state, because it goes in a pill in the layout's quiet band…
         Assert.NotNull(view.LinkNote);
-        Assert.Contains("cannot drive a console", view.LinkNote!, StringComparison.Ordinal);
+        Assert.Contains("cannot act as a controller", view.LinkNote!, StringComparison.Ordinal);
+        Assert.DoesNotContain("\n", view.LinkNote!, StringComparison.Ordinal);
+
+        // …and the whole explanation is one tap away in the menu, rather than laid across
+        // the bottom of the controller.
+        Assert.NotNull(view.LinkDetail);
+        Assert.Contains("cannot drive a console", view.LinkDetail!, StringComparison.Ordinal);
+
         Assert.True(view.Editable);
+    }
+
+    // ------------------------------------------------------------------------ modes
+
+    [Fact]
+    public void PlayModeShowsNoEditorChromeAtAll()
+    {
+        // The regression this pass exists to close: the Windows surface drew its toolbar,
+        // inspector and status strips permanently, over a layout whose whole job is to be
+        // pressed. Android's editor exists only inside edit mode.
+        using var fixture = new TouchGamepadFixture();
+        var state = fixture.NewService().State.Value;
+
+        var play = TouchEditorView.Of(state, controllerLinkAvailable: false);
+
+        Assert.Equal(TouchSurfaceMode.Play, play.Mode);
+        Assert.False(play.ShowEditorChrome);
+
+        // Still editABLE — the surface can enter the editor. It is simply not in it.
+        Assert.True(play.Editable);
+    }
+
+    [Fact]
+    public void EditModeShowsTheEditorChrome()
+    {
+        using var fixture = new TouchGamepadFixture();
+        var state = fixture.NewService().State.Value;
+
+        var edit = TouchEditorView.Of(state, controllerLinkAvailable: false, TouchSurfaceMode.Edit);
+
+        Assert.Equal(TouchSurfaceMode.Edit, edit.Mode);
+        Assert.True(edit.ShowEditorChrome);
+    }
+
+    [Fact]
+    public void AWindowTooSmallShowsNoEditorChromeEvenInEditMode()
+    {
+        // No edit makes the window bigger, so offering the toolbar there would be offering
+        // a repair that cannot work.
+        using var fixture = new TouchGamepadFixture();
+        var service = fixture.NewService();
+        service.SetRegion(TouchRegionBuilder.Build(300d, 200d, TouchSafeInsets.None));
+
+        var view = TouchEditorView.Of(
+            service.State.Value, controllerLinkAvailable: false, TouchSurfaceMode.Edit);
+
+        Assert.False(view.ShowEditorChrome);
+    }
+
+    [Fact]
+    public void TheFactoryProfileIsAlreadyTheDefaultSoThereIsNothingToResetTo()
+    {
+        using var fixture = new TouchGamepadFixture();
+        var service = fixture.NewService();
+
+        Assert.False(TouchEditorView.Of(service.State.Value, true).CanResetToDefault);
+
+        service.CreateProfile("Racing");
+        Assert.True(TouchEditorView.Of(service.State.Value, true).CanResetToDefault);
     }
 
     [Fact]

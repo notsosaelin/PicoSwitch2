@@ -1,6 +1,7 @@
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Input;
 using PicoSwitch.Bridge.Touch;
 using PicoSwitch.Companion.Services;
@@ -20,34 +21,72 @@ using WinRtPointerDeviceType = global::Windows.Devices.Input.PointerDeviceType;
 namespace PicoSwitch.Companion.App.Touch;
 
 /// <summary>
-/// The Touch Gamepad surface and its layout editor.
+/// The on-screen controller: a dedicated screen, in the shape the Android surface
+/// established.
+///
+/// ## The structure, and why it is this structure
+///
+/// `CompanionApp.kt` returns early when the Touch Gamepad is active, so the scaffold, the
+/// navigation rail and the content column are never composed at all; `TouchGamepadScreen`
+/// then paints an opaque ground and owns the whole display. Windows does the same thing
+/// in two halves: <see cref="MainWindow.ShowTouchGamepad"/> collapses the shell and drops
+/// the window's Mica backdrop, and this control paints an opaque ground of its own.
+///
+/// ```text
+/// Play   the screen is a CONTROLLER   controls, one menu button, a status pill
+/// Edit   the screen is a CANVAS       controls plus one floating, dockable toolbar
+/// ```
+///
+/// Play is the default, exactly as on Android. Nothing about the editor is visible until
+/// the user asks for it: a permanent toolbar, inspector and status strip over a surface
+/// whose whole job is to be pressed is a debugging overlay rather than a controller.
 ///
 /// ## What this file is allowed to decide
 ///
-/// Where a finger is, and which shared function to call about it. Nothing else.
-/// Geometry comes from the resolved layout, every edit is a
-/// <see cref="TouchLayoutEditor"/> call, every sentence is a
-/// <see cref="TouchEditorView"/> property, and the toolbar's position comes from
-/// <see cref="TouchToolbarLayout"/>. That division is the whole reason the touch
-/// subsystem could be ported at all, and it is the reason the Android and Windows
-/// companions cannot drift apart over what an edit means.
+/// Where a finger is, and which shared function to call about it. Geometry comes from the
+/// resolved layout, every edit is a <see cref="TouchLayoutEditor"/> call, every sentence
+/// is a <see cref="TouchEditorView"/> property, and the toolbar's position comes from
+/// <see cref="TouchToolbarLayout"/>.
 ///
 /// ## Why there is no gameplay here
 ///
-/// Routing contacts to a console is Phase 6b and is gated on Controller Link, which
-/// this build does not have
-/// (docs/experiments/windows-hogp-bridge-feasibility-2026-08-31.md). §15.8 says the
-/// surface must still open, stay fully editable, and SAY what is missing rather than
-/// appear broken — so the pointer handlers below are the editor's, the link note is
-/// permanent, and no contact reaches <c>TouchGamepad</c>.
+/// Routing contacts to a console is Phase 6b and is gated on Controller Link, which this
+/// build does not have. §15.8 says the surface must still open, stay fully editable, and
+/// SAY what is missing — so the pointer handlers below are the editor's, the status pill
+/// is permanent, and no contact reaches <c>TouchGamepad</c>.
 /// </summary>
 public sealed partial class TouchGamepadView : UserControl
 {
     private const string DockDocument = "touch-editor-dock";
     private const string AlignmentDocument = "touch-editor-align";
 
+    /// <summary>One press of Smaller or Larger.</summary>
+    private const float ScaleStep = 1.08f;
+
+    /// <summary>One press of Turn left or Turn right, in degrees.</summary>
+    private const float RotationStep = 5f;
+
+    /// <summary>
+    /// Where the status pill sits, as a fraction of the region's height.
+    ///
+    /// The layout's quiet centre band — the same band the Android surface puts its link
+    /// banner in. The arrangement keeps that band free of controls, so a status there
+    /// cannot shadow anything a thumb is reaching for, and it takes no height away from
+    /// the controller.
+    ///
+    /// The value is the Android surface's own <c>BANNER_BAND</c>. It is not a taste: 0.12
+    /// puts the pill across the shoulder and system row, which is exactly the mistake the
+    /// band exists to avoid.
+    /// </summary>
+    private const double BannerBand = 0.22;
+
     private readonly TouchGamepadService gamepad = AppServices.TouchGamepad;
     private readonly TouchControlRenderer renderer;
+
+    private TouchSurfaceMode mode = TouchSurfaceMode.Play;
+    private bool menuOpen;
+    private bool fullScreen;
+    private bool editGroup = true;
 
     private TouchToolbarPlacement toolbar = TouchToolbarPlacement.Default;
     private TouchToolbarPlacement? toolbarDrag;
@@ -57,11 +96,13 @@ public sealed partial class TouchGamepadView : UserControl
     private string? dragPrimary;
     private Point dragLast;
     private bool dragMoved;
+    private TouchLayoutDocument? dragBaseline;
 
-    private bool suppressProfileEvents;
-
-    /// <summary>Raised when the user leaves the surface, so the shell can restore its chrome.</summary>
+    /// <summary>The user asked to leave. The shell restores its chrome.</summary>
     public event Action? CloseRequested;
+
+    /// <summary>The user asked to enter or leave full screen. The shell owns the presenter.</summary>
+    public event Action? FullScreenToggleRequested;
 
     public TouchGamepadView()
     {
@@ -91,8 +132,8 @@ public sealed partial class TouchGamepadView : UserControl
         Measure();
         Render();
 
-        // Focus the canvas, not the first button: a user who opened the editor wants to
-        // act on the layout, and §26.5 runs it by keyboard before anything else.
+        // Focus the canvas, not a button: a user who opened the controller wants to act on
+        // the layout, and §26.5 runs the editor by keyboard before anything else.
         Surface.Focus(FocusState.Programmatic);
     }
 
@@ -114,18 +155,37 @@ public sealed partial class TouchGamepadView : UserControl
     });
 
     /// <summary>
-    /// The confirmed personality, never a guess (§15.8).
-    /// </summary>
-    /// <summary>
     /// The confirmed personality, never a guess (§15.8) — live when an adapter is
     /// connected, otherwise the last one the active adapter was confirmed to be showing.
     ///
-    /// The remembered value is what makes the editor useful with nothing attached, which
-    /// is the Phase 6a exit criterion; the surface says which of the two it is.
+    /// The remembered value is what makes the editor useful with nothing attached; the
+    /// surface says which of the two it is.
     /// </summary>
     private void ApplyPersonality() => gamepad.SetPersonality(
         AppServices.Adapters.Snapshot.Value.Personality.Current,
         AppServices.Adapters.Registry.Value.Active?.LastPersonality);
+
+    /// <summary>
+    /// The shell reports what the presenter actually did.
+    ///
+    /// Told rather than asked, because the window owns the presenter and the surface owns
+    /// the layout: a surface that assumed the request had succeeded would resolve the
+    /// controller into a rectangle the window never took.
+    /// </summary>
+    public void SetFullScreen(bool value)
+    {
+        if (fullScreen == value)
+        {
+            return;
+        }
+
+        fullScreen = value;
+
+        // Re-resolve rather than rescale. Every control's position is a function of the
+        // interaction-safe rectangle, and that is a different rectangle now.
+        Measure();
+        Render();
+    }
 
     // ---------------------------------------------------------------------- region
 
@@ -135,13 +195,14 @@ public sealed partial class TouchGamepadView : UserControl
     /// Build the interaction-safe rectangle and re-resolve into it.
     ///
     /// The insets are the platform's contribution (§15.5): an edge-gesture strip on a
-    /// touch machine, and — because this is a full-window mode with no drag region of its
-    /// own — no caption reservation.
+    /// touch machine. No caption reservation, because the window's drag strip is a
+    /// separate row ABOVE this surface rather than something drawn over it — so the
+    /// controller never has to leave room for chrome it does not contain.
     /// </summary>
     private void Measure()
     {
-        // Whether this machine can produce a touch contact at all. A pointer-only
-        // desktop gives up no room to gesture strips it does not have.
+        // Whether this machine can produce a touch contact at all. A pointer-only desktop
+        // gives up no room to gesture strips it does not have.
         var touchCapable = PointerDevice.GetPointerDevices()
             .Any(device => device.PointerDeviceType == WinRtPointerDeviceType.Touch);
 
@@ -156,119 +217,128 @@ public sealed partial class TouchGamepadView : UserControl
     private void Render()
     {
         var state = gamepad.State.Value;
-        var view = TouchEditorView.Of(state, controllerLinkAvailable: false);
+        var view = TouchEditorView.Of(state, controllerLinkAvailable: false, mode);
 
-        Title.Text = view.Title;
-        Subtitle.Text = view.Subtitle;
+        var editing = view.ShowEditorChrome;
 
-        StatusBar.Message = view.Status;
-        StatusBar.Severity = view.StatusSeverity switch
+        // The editor stays open for an audit failure — moving a control is exactly how
+        // that gets fixed — but not for a window that is simply too small, where no edit
+        // can help, nor when there is no controller to draw at all.
+        var unusable = state.Personality is null || state.Resolved.RegionTooSmall;
+
+        UnusableNotice.Visibility = unusable ? Visibility.Visible : Visibility.Collapsed;
+        UnusableText.Text = unusable ? (state.Warning ?? view.Status) : string.Empty;
+
+        MenuButton.Visibility = menuOpen ? Visibility.Collapsed : Visibility.Visible;
+        MenuLayer.Visibility = menuOpen ? Visibility.Visible : Visibility.Collapsed;
+        ToolbarLayer.Visibility = editing && !menuOpen
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        RenderMenu(view);
+        RenderPill(view, state, unusable);
+
+        if (editing)
         {
-            TouchEditorSeverity.Blocking => InfoBarSeverity.Error,
-            TouchEditorSeverity.Advisory => InfoBarSeverity.Warning,
-            _ => InfoBarSeverity.Informational,
-        };
-
-        LinkBar.Message = view.LinkNote ?? string.Empty;
-        LinkBar.IsOpen = view.LinkNote is not null;
-
-        RenderProfiles(state);
-        RenderToolbar(view);
-        RenderProperties(state, view);
+            RenderToolbar(state, view);
+        }
 
         renderer.Draw(state.Resolved, new TouchRenderOptions
         {
             Selection = state.Selection,
             Invalid = state.Resolved.InvalidControlIds,
-            Editing = view.Editable,
-            Grid = TouchEditorAlignment.GridLines(state.Resolved.Region, state.Alignment),
-            Guides = TouchEditorAlignment.MatchedGuides(
-                state.Resolved, state.Selection, state.Selection.FirstOrDefault(), state.Alignment),
+            Editing = editing,
+            Grid = editing
+                ? TouchEditorAlignment.GridLines(state.Resolved.Region, state.Alignment)
+                : [],
+            Guides = editing
+                ? TouchEditorAlignment.MatchedGuides(
+                    state.Resolved, state.Selection, state.Selection.FirstOrDefault(),
+                    state.Alignment)
+                : [],
         });
 
-        PlaceToolbar();
+        PlaceChrome(state);
     }
 
-    private void RenderProfiles(TouchGamepadState state)
+    private void RenderMenu(TouchEditorView view)
     {
-        suppressProfileEvents = true;
-        try
-        {
-            ProfilePicker.Items.Clear();
-            foreach (var profile in state.Library.Profiles)
-            {
-                ProfilePicker.Items.Add(new ComboBoxItem
-                {
-                    Content = profile.Name,
-                    Tag = profile.Id,
-                });
-            }
+        MenuController.Text = view.Subtitle is { Length: > 0 } subtitle
+            ? $"{view.Title} — {subtitle}"
+            : view.Title;
+        MenuLinkDetail.Text = view.LinkDetail ?? string.Empty;
+        MenuLinkDetail.Visibility = view.LinkDetail is null
+            ? Visibility.Collapsed
+            : Visibility.Visible;
 
-            ProfilePicker.SelectedIndex = state.Library.Profiles
-                .Select((profile, index) => (profile, index))
-                .FirstOrDefault(entry => entry.profile.Id == state.Library.SelectedProfileId)
-                .index;
-
-            // The factory profile is synthesized and immutable; the three actions that
-            // would write to it are simply not offered there.
-            var factory = state.Library.Selected.IsFactory;
-            RenameProfile.IsEnabled = !factory;
-            DeleteProfile.IsEnabled = !factory;
-            ResetProfile.IsEnabled = !factory;
-        }
-        finally
-        {
-            suppressProfileEvents = false;
-        }
+        MenuEdit.IsEnabled = view.Editable;
+        MenuProfiles.Content = view.ProfileName is { Length: > 0 } name ? name : "Layouts";
+        MenuUseDefault.IsEnabled = view.CanResetToDefault;
+        MenuFullScreen.Content = fullScreen ? "Leave full screen (F11)" : "Full screen (F11)";
     }
 
-    private void RenderToolbar(TouchEditorView view)
+    /// <summary>
+    /// The status pill, in the layout's quiet band.
+    ///
+    /// Not while the surface is explaining why there is no controller: that explanation
+    /// occupies the same band, and two overlapping messages read as neither.
+    /// </summary>
+    private void RenderPill(TouchEditorView view, TouchGamepadState state, bool unusable)
     {
-        Toolbar.Visibility = view.Editable ? Visibility.Visible : Visibility.Collapsed;
+        var show = view.LinkNote is not null && !unusable && !menuOpen;
+        LinkPill.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (!show)
+        {
+            return;
+        }
+
+        LinkPillText.Text = view.LinkNote;
+        var region = state.Resolved.Region;
+        LinkPill.Margin = new Thickness(0, region.Top + (region.Height * BannerBand), 0, 0);
+    }
+
+    private void RenderToolbar(TouchGamepadState state, TouchEditorView view)
+    {
+        var selected = state.Selection.Count > 0;
+
+        // Enablement changes; the slot count never does. A selection that added or removed
+        // buttons would reflow the bar under the user's finger.
+        DuplicateButton.IsEnabled = selected;
+        DeleteButton.IsEnabled = view.CanDelete;
         UndoButton.IsEnabled = view.CanUndo;
         RedoButton.IsEnabled = view.CanRedo;
         SaveButton.IsEnabled = view.CanSave;
-        DiscardButton.IsEnabled = view.CanSave;
-        DeleteButton.IsEnabled = view.CanDelete;
-        GroupButton.IsEnabled = view.CanGroup;
-        UngroupButton.IsEnabled = view.CanUngroup;
 
-        var alignment = gamepad.State.Value.Alignment;
-        GridToggle.IsChecked = alignment.Grid;
-        SnapToggle.IsChecked = alignment.Snap;
-    }
+        var grouped = view.CanUngroup;
+        GroupButton.IsEnabled = grouped || view.CanGroup;
+        ToolTipService.SetToolTip(GroupButton, grouped ? "Ungroup" : "Group");
+        AutomationProperties.SetName(GroupButton, grouped ? "Ungroup" : "Group");
 
-    private void RenderProperties(TouchGamepadState state, TouchEditorView view)
-    {
-        Properties.Visibility = view.Editable ? Visibility.Visible : Visibility.Collapsed;
-        SelectionSummary.Text = view.SelectionSummary;
-
-        var hasSelection = state.Selection.Count > 0;
-        SizePanel.Visibility = hasSelection ? Visibility.Visible : Visibility.Collapsed;
-        LatchToggle.Visibility = hasSelection ? Visibility.Visible : Visibility.Collapsed;
-        ResetControl.IsEnabled = hasSelection;
-
-        if (view.Scale is { } scale)
+        SelectionHeader.Text = view.SelectionSummary;
+        foreach (var item in new[]
+                 {
+                     SmallerItem, LargerItem, TurnLeftItem, TurnRightItem, ResetRotationItem,
+                     ForwardItem, BackwardItem, ResetControlItem,
+                 })
         {
-            ScaleSlider.Value = Math.Round(scale * 100d);
+            item.IsEnabled = selected;
         }
 
-        var instance = state.Selection.Count == 1
-            ? state.Document.Instance(state.Selection.First())
-            : null;
-        LatchToggle.IsChecked = instance?.Latch ?? false;
-        LatchToggle.IsEnabled = instance is not null;
+        LatchItem.IsEnabled = state.Selection.Count == 1;
+        LatchItem.IsChecked = state.Selection.Count == 1 &&
+            state.Document.Instance(state.Selection.First())?.Latch == true;
 
-        AuditList.ItemsSource = view.Findings
-            .Select(finding => (finding.Blocking ? "• " : "· ") + finding.Message)
-            .ToList();
+        GroupsItem.IsChecked = editGroup;
+        GridItem.IsChecked = state.Alignment.Grid;
+        SnapItem.IsChecked = state.Alignment.Snap;
+        ResetLayoutItem.IsEnabled = view.CanResetToDefault;
     }
 
     // --------------------------------------------------------------- surface input
 
     private void OnSurfacePressed(object sender, PointerRoutedEventArgs e)
     {
-        if (!gamepad.State.Value.Editable)
+        if (mode != TouchSurfaceMode.Edit || !gamepad.State.Value.Editable || menuOpen)
         {
             return;
         }
@@ -312,6 +382,7 @@ public sealed partial class TouchGamepadView : UserControl
             dragPrimary = hit.Id;
             dragLast = point;
             dragMoved = false;
+            dragBaseline = gamepad.State.Value.Document;
             Surface.CapturePointer(e.Pointer);
         }
 
@@ -350,7 +421,7 @@ public sealed partial class TouchGamepadView : UserControl
 
         gamepad.Preview(TouchLayoutEditor.Move(
             state.Document, state.Resolved, state.Selection,
-            snapped.X, snapped.Y, editGroup: true));
+            snapped.X, snapped.Y, editGroup));
 
         dragMoved = true;
         e.Handled = true;
@@ -364,7 +435,7 @@ public sealed partial class TouchGamepadView : UserControl
         }
 
         Surface.ReleasePointerCapture(e.Pointer);
-        EndDrag();
+        EndDrag(commit: true);
         e.Handled = true;
     }
 
@@ -373,20 +444,35 @@ public sealed partial class TouchGamepadView : UserControl
     ///
     /// The gesture is still committed: the document already carries every applied delta,
     /// and throwing it away would lose a move the user watched happen. What must not
-    /// happen is a half-drag left outside the undo history, which is the case this exists
-    /// to close.
+    /// happen is a half-drag left outside the undo history, which is the case this closes.
     /// </summary>
-    private void OnSurfaceCaptureLost(object sender, PointerRoutedEventArgs e) => EndDrag();
+    private void OnSurfaceCaptureLost(object sender, PointerRoutedEventArgs e) =>
+        EndDrag(commit: true);
 
-    private void EndDrag()
+    private void OnSurfaceRightTapped(object sender, RightTappedRoutedEventArgs e)
+    {
+        SetMenuOpen(true);
+        e.Handled = true;
+    }
+
+    /// <summary>Finish a drag. <paramref name="commit"/> false puts the layout back.</summary>
+    private void EndDrag(bool commit)
     {
         if (dragMoved)
         {
-            gamepad.Commit("Move");
+            if (commit)
+            {
+                gamepad.Commit("Move");
+            }
+            else if (dragBaseline is { } baseline)
+            {
+                gamepad.Preview(baseline);
+            }
         }
 
         dragPointer = null;
         dragPrimary = null;
+        dragBaseline = null;
         dragMoved = false;
     }
 
@@ -401,10 +487,10 @@ public sealed partial class TouchGamepadView : UserControl
     private void OnSurfaceKeyDown(object sender, KeyRoutedEventArgs e)
     {
         var state = gamepad.State.Value;
-        var modifiers = InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control);
-        var control = modifiers.HasFlag(CoreVirtualKeyStates.Down);
-        var shift = InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift)
-            .HasFlag(CoreVirtualKeyStates.Down);
+        var control = InputKeyboardSource
+            .GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(CoreVirtualKeyStates.Down);
+        var shift = InputKeyboardSource
+            .GetKeyStateForCurrentThread(VirtualKey.Shift).HasFlag(CoreVirtualKeyStates.Down);
 
         var stroke = TouchEditorKeys.Resolve(e.Key.ToString(), control, shift);
         if (stroke.Command == TouchEditorCommand.None)
@@ -412,21 +498,78 @@ public sealed partial class TouchGamepadView : UserControl
             return;
         }
 
-        // Escape with nothing selected is the way OUT, so focus is never trapped in the
-        // layout. Left unhandled, it falls through to the shell.
-        if (stroke.Command == TouchEditorCommand.Deselect && state.Selection.Count == 0)
+        // The three surface-level keys work in either mode.
+        switch (stroke.Command)
         {
-            CloseRequested?.Invoke();
-            e.Handled = true;
-            return;
+            case TouchEditorCommand.ToggleFullscreen:
+                FullScreenToggleRequested?.Invoke();
+                e.Handled = true;
+                return;
+
+            case TouchEditorCommand.Menu:
+                SetMenuOpen(!menuOpen);
+                e.Handled = true;
+                return;
+
+            case TouchEditorCommand.Deselect:
+                HandleEscape();
+                e.Handled = true;
+                return;
         }
 
-        if (!state.Editable && stroke.Command is not TouchEditorCommand.Exit)
+        if (mode != TouchSurfaceMode.Edit || !state.Editable || menuOpen)
         {
             return;
         }
 
         e.Handled = Apply(stroke, state);
+    }
+
+    /// <summary>
+    /// Escape, in the order §8 prescribes.
+    ///
+    /// ```text
+    /// a live drag     cancel it, leaving the layout as it was
+    /// the menu open   close the menu
+    /// edit mode       leave the editor, asking first if there is unsaved work
+    /// full screen     leave full screen
+    /// otherwise       leave the Touch Gamepad
+    /// ```
+    ///
+    /// Android's Back opens the menu from gameplay rather than leaving, because on a phone
+    /// that menu is the only way out. Windows has Escape as the desktop idiom for "back
+    /// out of this" and a visible menu button, so it walks the ladder above instead — which
+    /// is what §8 asks for. No rung terminates the application, and none can leave the user
+    /// stuck in full screen.
+    /// </summary>
+    private async void HandleEscape()
+    {
+        if (dragPointer is not null || dragMoved)
+        {
+            EndDrag(commit: false);
+            Render();
+            return;
+        }
+
+        if (menuOpen)
+        {
+            SetMenuOpen(false);
+            return;
+        }
+
+        if (mode == TouchSurfaceMode.Edit)
+        {
+            await LeaveEditingAsync();
+            return;
+        }
+
+        if (fullScreen)
+        {
+            FullScreenToggleRequested?.Invoke();
+            return;
+        }
+
+        CloseRequested?.Invoke();
     }
 
     private bool Apply(TouchEditorKeyStroke stroke, TouchGamepadState state)
@@ -445,9 +588,9 @@ public sealed partial class TouchGamepadView : UserControl
                 return Nudge(0f, step);
 
             case TouchEditorCommand.Grow:
-                return Resize(TouchEditorKeys.ScaleStep);
+                return Resize(ScaleStep);
             case TouchEditorCommand.Shrink:
-                return Resize(1f / TouchEditorKeys.ScaleStep);
+                return Resize(1f / ScaleStep);
 
             case TouchEditorCommand.Undo:
                 gamepad.Undo();
@@ -460,22 +603,19 @@ public sealed partial class TouchGamepadView : UserControl
                 return true;
 
             case TouchEditorCommand.Delete:
-                OnDelete(this, new RoutedEventArgs());
+                Delete();
                 return true;
             case TouchEditorCommand.Group:
-                OnGroup(this, new RoutedEventArgs());
+                Group();
                 return true;
             case TouchEditorCommand.Ungroup:
-                OnUngroup(this, new RoutedEventArgs());
+                Ungroup();
                 return true;
 
             case TouchEditorCommand.SelectAll:
                 gamepad.SetSelection(state.Resolved.Controls
                     .Select(control => control.Id)
                     .ToHashSet(StringComparer.Ordinal));
-                return true;
-            case TouchEditorCommand.Deselect:
-                gamepad.SetSelection(new HashSet<string>(StringComparer.Ordinal));
                 return true;
 
             case TouchEditorCommand.NextControl:
@@ -504,7 +644,7 @@ public sealed partial class TouchGamepadView : UserControl
         }
 
         gamepad.Edit("Move", document => TouchLayoutEditor.Move(
-            document, state.Resolved, state.Selection, x, y, editGroup: true));
+            document, state.Resolved, state.Selection, x, y, editGroup));
         return true;
     }
 
@@ -517,7 +657,7 @@ public sealed partial class TouchGamepadView : UserControl
         }
 
         gamepad.Edit("Resize", document => TouchLayoutEditor.ScaleBy(
-            document, state.Resolved, state.Selection, factor, editGroup: true));
+            document, state.Resolved, state.Selection, factor, editGroup));
         return true;
     }
 
@@ -543,15 +683,131 @@ public sealed partial class TouchGamepadView : UserControl
         return true;
     }
 
-    // ------------------------------------------------------------------- toolbar
+    // ------------------------------------------------------------------ mode + menu
 
-    private void OnToolbarSizeChanged(object sender, SizeChangedEventArgs e) => PlaceToolbar();
-
-    private void PlaceToolbar()
+    private void SetMenuOpen(bool open)
     {
-        var region = gamepad.State.Value.Resolved.Region;
-        var placement = toolbarDrag ?? toolbar;
+        if (menuOpen == open)
+        {
+            return;
+        }
 
+        menuOpen = open;
+        Render();
+        if (!open)
+        {
+            Surface.Focus(FocusState.Programmatic);
+        }
+    }
+
+    private void OnOpenMenu(object sender, RoutedEventArgs e) => SetMenuOpen(true);
+
+    private void OnCloseMenu(object sender, RoutedEventArgs e) => SetMenuOpen(false);
+
+    /// <summary>A tap on the scrim dismisses; a tap inside the card is not a tap on it.</summary>
+    private void OnDismissMenu(object sender, TappedRoutedEventArgs e)
+    {
+        SetMenuOpen(false);
+        e.Handled = true;
+    }
+
+    private void OnSwallowTap(object sender, TappedRoutedEventArgs e) => e.Handled = true;
+
+    private void OnEnterEditing(object sender, RoutedEventArgs e)
+    {
+        mode = TouchSurfaceMode.Edit;
+        menuOpen = false;
+        gamepad.SetSelection(new HashSet<string>(StringComparer.Ordinal));
+        Render();
+        Surface.Focus(FocusState.Programmatic);
+    }
+
+    private async void OnLeaveEditing(object sender, RoutedEventArgs e) =>
+        await LeaveEditingAsync();
+
+    /// <summary>
+    /// Leave the editor for play mode, asking first if there is unsaved work.
+    ///
+    /// Android does the same: backing out of a dirty editor raises a confirmation rather
+    /// than discarding, because an editor that silently drops an edit is an editor nobody
+    /// trusts with the next one.
+    /// </summary>
+    private async Task LeaveEditingAsync()
+    {
+        if (mode != TouchSurfaceMode.Edit)
+        {
+            return;
+        }
+
+        if (gamepad.State.Value.Dirty)
+        {
+            var dialog = new ContentDialog
+            {
+                XamlRoot = XamlRoot,
+                Title = "Leave without saving?",
+                Content = new TextBlock
+                {
+                    Text = "This layout has changes that have not been saved.",
+                    TextWrapping = TextWrapping.Wrap,
+                },
+                PrimaryButtonText = "Save",
+                SecondaryButtonText = "Discard",
+                CloseButtonText = "Keep editing",
+                DefaultButton = ContentDialogButton.Primary,
+            };
+
+            switch (await dialog.ShowAsync())
+            {
+                case ContentDialogResult.Primary:
+                    gamepad.Save();
+                    break;
+                case ContentDialogResult.Secondary:
+                    gamepad.Discard();
+                    break;
+                default:
+                    return;
+            }
+        }
+
+        mode = TouchSurfaceMode.Play;
+        gamepad.SetSelection(new HashSet<string>(StringComparer.Ordinal));
+        Render();
+        Surface.Focus(FocusState.Programmatic);
+    }
+
+    private void OnToggleFullScreen(object sender, RoutedEventArgs e)
+    {
+        SetMenuOpen(false);
+        FullScreenToggleRequested?.Invoke();
+    }
+
+    private void OnClose(object sender, RoutedEventArgs e) => CloseRequested?.Invoke();
+
+    // --------------------------------------------------------------------- chrome
+
+    private void OnToolbarSizeChanged(object sender, SizeChangedEventArgs e) =>
+        PlaceChrome(gamepad.State.Value);
+
+    /// <summary>
+    /// Position the floating chrome inside the interaction-safe region.
+    ///
+    /// Through <see cref="TouchToolbarLayout"/>, never by markup alignment: a docked
+    /// toolbar docks to the SAFE edge, not the window edge, which is the same mistake the
+    /// layout resolver exists to prevent for controls.
+    /// </summary>
+    private void PlaceChrome(TouchGamepadState state)
+    {
+        var region = state.Resolved.Region;
+
+        // The menu button lives in the safe region's own top-left corner.
+        MenuButton.Margin = new Thickness(region.Left + 12, region.Top + 12, 0, 0);
+
+        if (ToolbarLayer.Visibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        var placement = toolbarDrag ?? toolbar;
         ToolbarItems.Orientation = placement is TouchToolbarPlacement.Docked docked &&
                                    docked.Edge.Vertical()
             ? Orientation.Vertical
@@ -587,7 +843,7 @@ public sealed partial class TouchGamepadView : UserControl
             (float)Toolbar.ActualHeight,
             gamepad.State.Value.Resolved.Region);
 
-        PlaceToolbar();
+        PlaceChrome(gamepad.State.Value);
         e.Handled = true;
     }
 
@@ -598,9 +854,8 @@ public sealed partial class TouchGamepadView : UserControl
             toolbar = placement;
 
             // Only a DOCK is remembered. A floating position is a working choice for one
-            // window shape; the dock is the preference a handheld user makes once,
-            // because which edge the toolbar occupies is a question about which hand is
-            // free.
+            // window shape; the dock is the preference a handheld user makes once, because
+            // which edge the toolbar occupies is a question about which hand is free.
             if (placement is TouchToolbarPlacement.Docked docked)
             {
                 _ = AppServices.Documents.Write(DockDocument, docked.Edge.Key());
@@ -609,7 +864,7 @@ public sealed partial class TouchGamepadView : UserControl
 
         toolbarDrag = null;
         ToolbarHandle.ReleasePointerCapture(e.Pointer);
-        PlaceToolbar();
+        PlaceChrome(gamepad.State.Value);
     }
 
     // ------------------------------------------------------------------ toolbar acts
@@ -620,32 +875,135 @@ public sealed partial class TouchGamepadView : UserControl
 
     private void OnSave(object sender, RoutedEventArgs e) => gamepad.Save();
 
-    private void OnDiscard(object sender, RoutedEventArgs e) => gamepad.Discard();
+    private void OnDelete(object sender, RoutedEventArgs e) => Delete();
 
-    private void OnDelete(object sender, RoutedEventArgs e)
+    private void Delete()
     {
         var selection = gamepad.State.Value.Selection;
         gamepad.Edit("Remove", document =>
-            TouchLayoutEditor.Delete(document, selection, editGroup: true));
+            TouchLayoutEditor.Delete(document, selection, editGroup));
     }
 
-    private void OnGroup(object sender, RoutedEventArgs e)
+    private void OnDuplicate(object sender, RoutedEventArgs e)
+    {
+        var selection = gamepad.State.Value.Selection;
+        gamepad.Edit("Duplicate", document =>
+            TouchLayoutEditor.Duplicate(document, selection, editGroup));
+    }
+
+    private void OnGroupOrUngroup(object sender, RoutedEventArgs e)
+    {
+        var state = gamepad.State.Value;
+        var grouped = state.Selection
+            .Select(state.Document.Instance)
+            .Any(instance => instance?.GroupId is not null);
+
+        if (grouped)
+        {
+            Ungroup();
+        }
+        else
+        {
+            Group();
+        }
+    }
+
+    private void Group()
     {
         var selection = gamepad.State.Value.Selection;
         gamepad.Edit("Group", document => TouchLayoutEditor.Group(document, selection));
     }
 
-    private void OnUngroup(object sender, RoutedEventArgs e)
+    private void Ungroup()
     {
         var selection = gamepad.State.Value.Selection;
         gamepad.Edit("Ungroup", document => TouchLayoutEditor.Ungroup(document, selection));
     }
 
+    private void OnSmaller(object sender, RoutedEventArgs e) => Resize(1f / ScaleStep);
+
+    private void OnLarger(object sender, RoutedEventArgs e) => Resize(ScaleStep);
+
+    private void OnTurnLeft(object sender, RoutedEventArgs e) => Rotate(-RotationStep);
+
+    private void OnTurnRight(object sender, RoutedEventArgs e) => Rotate(RotationStep);
+
+    private void Rotate(float degrees)
+    {
+        var state = gamepad.State.Value;
+        if (state.Selection.Count == 0)
+        {
+            return;
+        }
+
+        gamepad.Edit("Rotate", document => TouchLayoutEditor.RotateBy(
+            document, state.Resolved, state.Selection, degrees, editGroup));
+    }
+
+    private void OnResetRotation(object sender, RoutedEventArgs e)
+    {
+        var selection = gamepad.State.Value.Selection;
+        if (selection.Count == 0)
+        {
+            return;
+        }
+
+        gamepad.Edit("Reset orientation", document =>
+            TouchLayoutEditor.ResetRotation(document, selection, editGroup));
+    }
+
+    private void OnBringForward(object sender, RoutedEventArgs e)
+    {
+        var selection = gamepad.State.Value.Selection;
+        gamepad.Edit("Bring forward", document =>
+            TouchLayoutEditor.BringForward(document, selection, editGroup));
+    }
+
+    private void OnSendBackward(object sender, RoutedEventArgs e)
+    {
+        var selection = gamepad.State.Value.Selection;
+        gamepad.Edit("Send backward", document =>
+            TouchLayoutEditor.SendBackward(document, selection, editGroup));
+    }
+
+    private void OnLatchToggled(object sender, RoutedEventArgs e)
+    {
+        var state = gamepad.State.Value;
+        if (state.Personality is not { } personality || state.Selection.Count == 0)
+        {
+            return;
+        }
+
+        var profile = TouchProfileCatalog.Require(personality);
+        var latch = LatchItem.IsChecked;
+        gamepad.Edit("Latch", document => TouchLayoutEditor.SetLatch(
+            document, profile, state.Selection, latch, editGroup));
+    }
+
+    private void OnResetControl(object sender, RoutedEventArgs e)
+    {
+        var state = gamepad.State.Value;
+        if (state.Personality is not { } personality || state.Selection.Count == 0)
+        {
+            return;
+        }
+
+        var profile = TouchProfileCatalog.Require(personality);
+        gamepad.Edit("Reset", document =>
+            TouchLayoutEditor.Reset(document, profile, state.Selection, editGroup));
+    }
+
+    private void OnToggleEditGroup(object sender, RoutedEventArgs e)
+    {
+        editGroup = GroupsItem.IsChecked;
+        Render();
+    }
+
     private void OnToggleGrid(object sender, RoutedEventArgs e) =>
-        SetAlignment(gamepad.State.Value.Alignment with { Grid = GridToggle.IsChecked == true });
+        SetAlignment(gamepad.State.Value.Alignment with { Grid = GridItem.IsChecked });
 
     private void OnToggleSnap(object sender, RoutedEventArgs e) =>
-        SetAlignment(gamepad.State.Value.Alignment with { Snap = SnapToggle.IsChecked == true });
+        SetAlignment(gamepad.State.Value.Alignment with { Snap = SnapItem.IsChecked });
 
     private void SetAlignment(TouchAlignmentSettings alignment)
     {
@@ -666,7 +1024,7 @@ public sealed partial class TouchGamepadView : UserControl
         };
     }
 
-    // ------------------------------------------------------------ add / properties
+    // ------------------------------------------------------------------ add control
 
     /// <summary>
     /// The Add menu, from the personality's own catalog.
@@ -723,98 +1081,162 @@ public sealed partial class TouchGamepadView : UserControl
             TouchLayoutEditor.Add(document, profile, catalogId, 0.5f, 0.5f));
     }
 
-    private void OnScaleChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
-    {
-        var state = gamepad.State.Value;
-        if (state.Selection.Count == 0)
-        {
-            return;
-        }
-
-        var wanted = (float)(e.NewValue / 100d);
-        if (MathF.Abs(wanted - (TouchEditorView.Of(state, false).Scale ?? -1f)) < 0.005f)
-        {
-            return;
-        }
-
-        gamepad.Edit("Resize", document =>
-            TouchLayoutEditor.SetScale(document, state.Selection, wanted, editGroup: true));
-    }
-
-    private void OnLatchToggled(object sender, RoutedEventArgs e)
-    {
-        var state = gamepad.State.Value;
-        if (state.Selection.Count == 0)
-        {
-            return;
-        }
-
-        var profile = TouchProfileCatalog.Require(state.Personality!.Value);
-        gamepad.Edit("Latch", document => TouchLayoutEditor.SetLatch(
-            document, profile, state.Selection, LatchToggle.IsChecked == true, editGroup: true));
-    }
-
-    private void OnResetControl(object sender, RoutedEventArgs e)
-    {
-        var state = gamepad.State.Value;
-        if (state.Personality is not { } personality || state.Selection.Count == 0)
-        {
-            return;
-        }
-
-        var profile = TouchProfileCatalog.Require(personality);
-        gamepad.Edit("Reset", document =>
-            TouchLayoutEditor.Reset(document, profile, state.Selection, editGroup: true));
-    }
-
     // --------------------------------------------------------------------- profiles
 
-    private void OnProfilePicked(object sender, SelectionChangedEventArgs e)
+    private void OnResetProfile(object sender, RoutedEventArgs e)
     {
-        if (suppressProfileEvents ||
-            ProfilePicker.SelectedItem is not ComboBoxItem { Tag: string profileId })
-        {
-            return;
-        }
-
-        gamepad.SelectProfile(profileId);
+        SetMenuOpen(false);
+        gamepad.ResetToDefault();
     }
 
-    private async void OnNewProfile(object sender, RoutedEventArgs e)
+    /// <summary>What the Layouts dialog was closed to do.</summary>
+    private enum TouchProfileAction
     {
-        if (await AskForNameAsync("New layout", TouchProfileLibraryEditor.DefaultNewProfileName)
-                is { } name)
-        {
-            gamepad.CreateProfile(name);
-        }
+        None,
+        Use,
+        New,
+        Duplicate,
+        Rename,
+        Delete,
+        Export,
+        Import,
     }
 
-    private void OnDuplicateProfile(object sender, RoutedEventArgs e) =>
-        gamepad.DuplicateProfile(gamepad.State.Value.Library.SelectedProfileId);
-
-    private async void OnRenameProfile(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// The named-layout library, as one dialog.
+    ///
+    /// A dialog rather than a permanent picker in a header bar: the header bar was
+    /// companion chrome standing around a controller, and choosing a layout is something a
+    /// user does occasionally and deliberately.
+    ///
+    /// Every library action the header bar carried is here — use, new, duplicate, rename,
+    /// delete, export, import — because moving a control panel is not a reason to lose the
+    /// controls that were on it. The in-content buttons close the dialog with a chosen
+    /// action rather than acting inside it, so the library is only ever mutated once the
+    /// dialog is down and the surface can redraw against the result.
+    /// </summary>
+    private async void OnOpenProfiles(object sender, RoutedEventArgs e)
     {
-        var current = gamepad.State.Value.Library.Selected;
-        if (await AskForNameAsync("Rename layout", current.Name) is { } name)
-        {
-            gamepad.RenameProfile(current.Id, name);
-        }
-    }
+        SetMenuOpen(false);
 
-    private void OnDeleteProfile(object sender, RoutedEventArgs e) =>
-        gamepad.DeleteProfile(gamepad.State.Value.Library.SelectedProfileId);
-
-    private void OnResetProfile(object sender, RoutedEventArgs e) => gamepad.ResetToDefault();
-
-    private async void OnExportProfile(object sender, RoutedEventArgs e)
-    {
         var state = gamepad.State.Value;
-        if (gamepad.Export(state.Library.SelectedProfileId) is not { } encoded)
+        var profiles = state.Library.Profiles;
+        var list = new ListView
+        {
+            SelectionMode = ListViewSelectionMode.Single,
+            MaxHeight = 240,
+            ItemsSource = profiles.Select(profile => profile.Name).ToList(),
+            SelectedIndex = profiles
+                .Select((profile, index) => (profile, index))
+                .FirstOrDefault(entry => entry.profile.Id == state.Library.SelectedProfileId)
+                .index,
+        };
+
+        var action = TouchProfileAction.None;
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "Layouts",
+            PrimaryButtonText = "Use",
+            SecondaryButtonText = "New…",
+            CloseButtonText = "Close",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+
+        Button Action(string label, TouchProfileAction chosen)
+        {
+            var button = new Button { Content = label, MinWidth = 96 };
+            button.Click += (_, _) =>
+            {
+                action = chosen;
+                dialog.Hide();
+            };
+            return button;
+        }
+
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        buttons.Children.Add(Action("Duplicate", TouchProfileAction.Duplicate));
+        buttons.Children.Add(Action("Rename…", TouchProfileAction.Rename));
+        buttons.Children.Add(Action("Delete", TouchProfileAction.Delete));
+        buttons.Children.Add(Action("Export…", TouchProfileAction.Export));
+        buttons.Children.Add(Action("Import…", TouchProfileAction.Import));
+
+        var content = new StackPanel { Spacing = 12, MinWidth = 420 };
+        content.Children.Add(list);
+        content.Children.Add(buttons);
+        dialog.Content = content;
+
+        var result = await dialog.ShowAsync();
+        if (action == TouchProfileAction.None)
+        {
+            action = result switch
+            {
+                ContentDialogResult.Primary => TouchProfileAction.Use,
+                ContentDialogResult.Secondary => TouchProfileAction.New,
+                _ => TouchProfileAction.None,
+            };
+        }
+
+        var chosenProfile = list.SelectedIndex >= 0 && list.SelectedIndex < profiles.Count
+            ? profiles[list.SelectedIndex]
+            : null;
+
+        await ApplyProfileActionAsync(action, chosenProfile);
+    }
+
+    private async Task ApplyProfileActionAsync(
+        TouchProfileAction action, TouchLayoutProfile? profile)
+    {
+        switch (action)
+        {
+            case TouchProfileAction.Use when profile is not null:
+                gamepad.SelectProfile(profile.Id);
+                break;
+
+            case TouchProfileAction.New:
+                if (await AskForNameAsync(
+                        "New layout",
+                        TouchProfileLibraryEditor.DefaultNewProfileName) is { } created)
+                {
+                    gamepad.CreateProfile(created);
+                }
+
+                break;
+
+            case TouchProfileAction.Duplicate when profile is not null:
+                gamepad.DuplicateProfile(profile.Id);
+                break;
+
+            case TouchProfileAction.Rename when profile is not null:
+                if (await AskForNameAsync("Rename layout", profile.Name) is { } renamed)
+                {
+                    gamepad.RenameProfile(profile.Id, renamed);
+                }
+
+                break;
+
+            case TouchProfileAction.Delete when profile is not null:
+                gamepad.DeleteProfile(profile.Id);
+                break;
+
+            case TouchProfileAction.Export when profile is not null:
+                await ExportAsync(profile);
+                break;
+
+            case TouchProfileAction.Import:
+                await ImportAsync();
+                break;
+        }
+    }
+
+    private async Task ExportAsync(TouchLayoutProfile profile)
+    {
+        if (gamepad.Export(profile.Id) is not { } encoded)
         {
             return;
         }
 
-        var picker = new FileSavePicker { SuggestedFileName = state.Library.Selected.Name };
+        var picker = new FileSavePicker { SuggestedFileName = profile.Name };
         picker.FileTypeChoices.Add("Layout", [".json"]);
         Initialize(picker);
 
@@ -824,7 +1246,7 @@ public sealed partial class TouchGamepadView : UserControl
         }
     }
 
-    private async void OnImportProfile(object sender, RoutedEventArgs e)
+    private async Task ImportAsync()
     {
         var picker = new FileOpenPicker();
         picker.FileTypeFilter.Add(".json");
@@ -835,8 +1257,7 @@ public sealed partial class TouchGamepadView : UserControl
             return;
         }
 
-        var refusal = gamepad.Import(await FileIO.ReadTextAsync(file));
-        if (refusal is not null)
+        if (gamepad.Import(await FileIO.ReadTextAsync(file)) is { } refusal)
         {
             await MessageAsync("That layout could not be imported", refusal);
         }
@@ -853,6 +1274,15 @@ public sealed partial class TouchGamepadView : UserControl
                 picker, WinRT.Interop.WindowNative.GetWindowHandle(window));
         }
     }
+
+    private async Task MessageAsync(string title, string message) =>
+        await new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = title,
+            Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
+            CloseButtonText = "Close",
+        }.ShowAsync();
 
     private async Task<string?> AskForNameAsync(string title, string initial)
     {
@@ -872,15 +1302,4 @@ public sealed partial class TouchGamepadView : UserControl
             ? name
             : null;
     }
-
-    private async Task MessageAsync(string title, string message) =>
-        await new ContentDialog
-        {
-            XamlRoot = XamlRoot,
-            Title = title,
-            Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
-            CloseButtonText = "Close",
-        }.ShowAsync();
-
-    private void OnClose(object sender, RoutedEventArgs e) => CloseRequested?.Invoke();
 }
