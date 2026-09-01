@@ -156,8 +156,6 @@ public sealed record TouchLayoutDocument
     /// </summary>
     public const int CurrentSchemaVersion = 2;
 
-    private Dictionary<string, TouchControlInstance>? index;
-
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
 
     public required TouchProfileId ProfileId { get; init; }
@@ -168,13 +166,20 @@ public sealed record TouchLayoutDocument
 
     public IReadOnlyList<TouchControlInstance> Controls { get; init; } = [];
 
-    private Dictionary<string, TouchControlInstance> Index =>
-        index ??= Controls
-            .GroupBy(control => control.InstanceId, StringComparer.Ordinal)
-            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
-
+    /// <summary>
+    /// First instance with this id, or null.
+    ///
+    /// A scan rather than a cached dictionary, deliberately. A lazily populated
+    /// field would participate in this record's generated value equality and make
+    /// two identical documents compare unequal once one of them had been queried —
+    /// which is exactly the bug the composer's "is this the shipped arrangement?"
+    /// check would have silently inherited. Documents hold tens of controls, and the
+    /// per-contact lookup is <see cref="ResolvedTouchLayout.Control"/>, which does
+    /// have an index because it is on the contact path.
+    /// </summary>
     public TouchControlInstance? Instance(string instanceId) =>
-        Index.TryGetValue(instanceId, out var instance) ? instance : null;
+        Controls.FirstOrDefault(control =>
+            string.Equals(control.InstanceId, instanceId, StringComparison.Ordinal));
 
     /// <summary>Instance ids in each group, in document order. Derived; never stored twice.</summary>
     public IReadOnlyDictionary<string, IReadOnlyList<string>> Groups =>
@@ -185,6 +190,38 @@ public sealed record TouchLayoutDocument
                 group => group.Key,
                 group => (IReadOnlyList<string>)group.Select(c => c.InstanceId).ToList(),
                 StringComparer.Ordinal);
+
+    /// <summary>
+    /// Structural equality over the control LIST.
+    ///
+    /// A record compares an <c>IReadOnlyList</c> property by reference, so two
+    /// documents describing the same arrangement would compare unequal. That is not
+    /// a test convenience: the composer decides whether a layout is customized by
+    /// comparing it against the authored default, and reference equality there would
+    /// report every layout as customized forever.
+    /// </summary>
+    public bool Equals(TouchLayoutDocument? other) =>
+        other is not null &&
+        SchemaVersion == other.SchemaVersion &&
+        ProfileId == other.ProfileId &&
+        string.Equals(TemplateId, other.TemplateId, StringComparison.Ordinal) &&
+        BasedOnRevision == other.BasedOnRevision &&
+        Controls.SequenceEqual(other.Controls);
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(SchemaVersion);
+        hash.Add(ProfileId);
+        hash.Add(TemplateId, StringComparer.Ordinal);
+        hash.Add(BasedOnRevision);
+        foreach (var control in Controls)
+        {
+            hash.Add(control);
+        }
+
+        return hash.ToHashCode();
+    }
 
     /// <summary>Members of the group <paramref name="instanceId"/> belongs to, or just itself.</summary>
     public IReadOnlySet<string> GroupMembers(string instanceId)

@@ -15,6 +15,7 @@ public static partial class RepositoryFixtures
     public const string BridgeDescriptorHeader = "tools/fixtures/android_controller_hid.h";
     public const string ControllerLinkFaceMapping = "tools/fixtures/controller_link_face_mapping.csv";
     public const string BridgeReportGoldens = "tools/fixtures/bridge_report_goldens.csv";
+    public const string TouchFaceMapping = "tools/fixtures/touch_face_mapping.csv";
 
     public static string RepositoryRoot { get; } = FindRoot();
 
