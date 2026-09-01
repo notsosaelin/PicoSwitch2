@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml.Media.Animation;
 using PicoSwitch.Companion.App.Pages;
+using PicoSwitch.Companion.App.Touch;
 using PicoSwitch.Companion.Services;
 using Windows.Graphics;
 
@@ -95,6 +96,33 @@ public sealed partial class MainWindow : Window
         };
         ConnectionBanner.Message = relationship.Message ?? connection.Message ??
             "Open Adapter to pair or connect.";
+    }
+
+    /// <summary>
+    /// Enter the Touch Gamepad.
+    ///
+    /// Built fresh each time rather than kept alive behind a collapsed panel, so
+    /// leaving the surface actually unsubscribes it and drops its visuals. The
+    /// things worth remembering across visits - the toolbar dock, the alignment
+    /// settings, the profile library - are persisted, so nothing is lost by it.
+    /// </summary>
+    public void ShowTouchGamepad()
+    {
+        if (TouchGamepadHost.Children.Count > 0)
+        {
+            return;
+        }
+
+        var view = new TouchGamepadView();
+        view.CloseRequested += HideTouchGamepad;
+        TouchGamepadHost.Children.Add(view);
+        TouchGamepadHost.Visibility = Visibility.Visible;
+    }
+
+    public void HideTouchGamepad()
+    {
+        TouchGamepadHost.Children.Clear();
+        TouchGamepadHost.Visibility = Visibility.Collapsed;
     }
 
     private void OnNavigationSelectionChanged(

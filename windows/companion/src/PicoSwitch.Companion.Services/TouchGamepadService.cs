@@ -48,6 +48,15 @@ public sealed record TouchGamepadState
     public TouchAlignmentSettings Alignment { get; init; } = TouchAlignmentSettings.Off;
 
     /// <summary>
+    /// The personality came from the registry rather than from a live adapter.
+    ///
+    /// Worth a sentence to the user: it is what the adapter reported at the last verified
+    /// connection, so it can be out of date. Everything here is local, so a stale answer
+    /// costs a wrong-looking layout and never a wrong button on a console.
+    /// </summary>
+    public bool PersonalityRemembered { get; init; }
+
+    /// <summary>
     /// What to tell the user, when there is something.
     ///
     /// One field rather than several because only one sentence fits, and the priority is
@@ -120,11 +129,21 @@ public sealed class TouchGamepadService
     /// Reloads the library and discards the editor's history, because an undo step from
     /// one controller's layout cannot be applied to another's.
     /// </summary>
-    public void SetPersonality(Personality personality)
+    public void SetPersonality(Personality personality, string? lastConfirmedWireName = null)
     {
-        var mapped = Map(personality);
+        var mapped = TouchProfileSelector.SelectOrRemembered(personality, lastConfirmedWireName);
+        var remembered = mapped is not null && TouchProfileSelector.Select(personality) is null;
+
         if (mapped == state.Value.Personality)
         {
+            // Same controller: only how we KNOW that has changed — an adapter connected
+            // while the user was editing, say. Reloading here would discard their unsaved
+            // work as a side effect of plugging something in.
+            if (remembered != state.Value.PersonalityRemembered)
+            {
+                state.Set(state.Value with { PersonalityRemembered = remembered });
+            }
+
             return;
         }
 
@@ -137,7 +156,7 @@ public sealed class TouchGamepadService
             return;
         }
 
-        Load(mapped.Value);
+        Load(mapped.Value, remembered);
     }
 
     /// <summary>
@@ -292,6 +311,27 @@ public sealed class TouchGamepadService
     /// </summary>
     public void Preview(TouchLayoutDocument document) => Publish(document);
 
+    /// <summary>
+    /// Turn everything <see cref="Preview"/> has shown into ONE undo step.
+    ///
+    /// The counterpart of the preview rule above: a gesture ends when the caller says it
+    /// ends, and what it produced is remembered as the single thing the user did. A
+    /// commit that would record nothing — a press with no movement, a drag that came back
+    /// to where it started — is dropped, because an undo step that appears to do nothing
+    /// is worse than no step at all.
+    /// </summary>
+    public void Commit(string label)
+    {
+        var document = state.Value.Document;
+        if (history is null || document.Equals(history.Current))
+        {
+            return;
+        }
+
+        history.Push(document, label);
+        Publish(document);
+    }
+
     public void Undo()
     {
         if (history?.Undo() is { } document)
@@ -310,16 +350,7 @@ public sealed class TouchGamepadService
 
     // -------------------------------------------------------------------- internals
 
-    private static TouchProfileId? Map(Personality personality) => personality switch
-    {
-        Personality.Pro2 => TouchProfileId.Pro2,
-        Personality.GameCube => TouchProfileId.GameCube,
-        Personality.JoyConLeft => TouchProfileId.JoyConLeft,
-        Personality.JoyConRight => TouchProfileId.JoyConRight,
-        _ => null,
-    };
-
-    private void Load(TouchProfileId personality)
+    private void Load(TouchProfileId personality, bool remembered)
     {
         var loaded = profiles.Load(personality);
         var library = loaded.Library;
@@ -349,6 +380,7 @@ public sealed class TouchGamepadService
         state.Set(new TouchGamepadState
         {
             Personality = personality,
+            PersonalityRemembered = remembered,
             Library = library,
             Document = library.Selected.Document,
             Alignment = state.Value.Alignment,

@@ -27,6 +27,7 @@ public static class AppServices
     private static DiagnosticLog? diagnostics;
     private static DispatcherQueue? dispatcher;
     private static WindowsDocumentStore? documents;
+    private static TouchGamepadService? touchGamepad;
 
     public static DiagnosticLog Diagnostics
     {
@@ -200,6 +201,33 @@ public static class AppServices
             lock (Gate)
             {
                 return controllerLink ??= new ControllerLinkService(
+                    diagnostics ??= new DiagnosticLog());
+            }
+        }
+    }
+
+    /// <summary>
+    /// The on-screen controller: its layouts, its profile library and its editor.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately NOT reached through <see cref="Adapters"/>, and deliberately not
+    /// gated on Controller Link. A layout belongs to the user, the whole subsystem is
+    /// local (WINDOWS_PASS.md §15.8), and the surface has to open, draw and be editable
+    /// with nothing paired — which is exactly the Phase 6a exit criterion.
+    ///
+    /// The confirmed personality still comes from the adapter, through
+    /// <see cref="TouchProfileSelector"/>; what does not come from the adapter is
+    /// PERMISSION to edit.
+    /// </remarks>
+    public static TouchGamepadService TouchGamepad
+    {
+        get
+        {
+            lock (Gate)
+            {
+                return touchGamepad ??= new TouchGamepadService(
+                    new WindowsTouchProfileStore(Documents),
+                    new WindowsTouchOverrideStore(Documents),
                     diagnostics ??= new DiagnosticLog());
             }
         }

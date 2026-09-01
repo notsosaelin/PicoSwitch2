@@ -68,14 +68,28 @@
                 <!--
                   Phase 6a is NOT gated on the §14.5 outcome (WINDOWS_PASS.md §31),
                   so this says so plainly rather than leaving a user to conclude the
-                  whole page is dead.
+                  whole page is dead - and it is reachable from here whatever the
+                  radio turned out to be capable of.
                 -->
-                <TextBlock
+                <Border
                     Margin="0,20,0,0"
-                    Style="{StaticResource BodyTextBlockStyle}"
-                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                    TextWrapping="Wrap"
-                    Text="The on-screen Touch Gamepad is a separate feature and does not depend on any of this. It is not built yet on Windows." />
+                    Padding="20"
+                    CornerRadius="8"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1">
+                    <StackPanel Spacing="10">
+                        <TextBlock
+                            Style="{StaticResource SubtitleTextBlockStyle}"
+                            TextWrapping="Wrap"
+                            Text="On-screen controller" />
+                        <TextBlock
+                            Style="{StaticResource BodyTextBlockStyle}"
+                            TextWrapping="Wrap"
+                            Text="Lay out a touch controller for whichever controller the adapter is emulating, and keep as many named layouts as you like. None of it depends on the radio above: it works with nothing paired, and it cannot drive a console on this PC." />
+                        <Button Click="OnOpenTouchGamepad" Content="Open the on-screen controller" />
+                    </StackPanel>
+                </Border>
 
             </StackPanel>
         </Grid>

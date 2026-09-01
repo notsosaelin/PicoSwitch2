@@ -7,8 +7,49 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Windows Phase 6a complete 2026-09-01: the on-screen controller, its profile library and its
+  layout editor, all working with no adapter and no Controller Link.** §31 states Phase 6a is
+  independent of §14's outcome, and it is: the whole subsystem is local.
+  **The touch core is a Level 1 reimplementation, not a redesign.** `PicoSwitch.Bridge.Core/Touch/`
+  carries contacts, tracker, engine, math, profiles, templates, composer, editor, alignment, audit,
+  profile library and both JSON codecs, ported from `:bridge-core` and sharing its schemas. Two real
+  defects fell out of the port and are C#-specific: a lazily-populated index field participated in
+  generated record equality (the composer would have called every layout customized forever) and
+  `IReadOnlyList` compares by reference, so `TouchLayoutDocument` has hand-written equality with the
+  reason attached. A GameCube shape-sweep failure near 2:1 reproduced a defect the Kotlin side had
+  already documented; it is carried as its own named negative-knowledge test rather than "fixed".
+  **The platform layer is only what §15.2 says it is.** `WindowsTouchProfileStore` /
+  `WindowsTouchOverrideStore` (one document per personality, named by the wire key; an unreadable
+  document is REPORTED and never deleted), `TouchRegionBuilder`, `TouchControlRenderer`,
+  `TouchGamepadView`. Nothing about sticks, sectors, ownership, profile selection or bindings is
+  decided in Windows code.
+  **One deliberate deviation from §15.5, now recorded there:** `UnitScale` is 1 epx per layout unit
+  and `RasterizationScale` is NOT folded in, because WinUI coordinates already carry the user's
+  display scale. The dp→epx nominal conversion (0.6) was rejected — it puts the smallest
+  audit-passing control at 26 epx, under the platform's own 40 epx minimum.
+  **Personality is confirmed, never guessed** (§15.8). `TouchProfileSelector` maps the four gameplay
+  personalities and returns null for `Config`/`Unknown`; with nothing connected it falls back to the
+  active adapter's `LastPersonality` — still a confirmation, just possibly stale, and the surface
+  says "last seen on this adapter" rather than presenting it as live. That fallback is what makes
+  the editor usable away from the hardware, which is what the Phase 6a exit criterion asks for.
+  **Verified on screen, driven through UI Automation, with no adapter attached:** open the surface →
+  Pro Controller 2 layout, 18 controls → create a profile "Racing" → add a second D-pad → the
+  blocking finding "- and Dpad (2) overlap" appears → remove it → the finding clears → add GL
+  (19 controls, Save lights up) → Save → kill the process → relaunch → "Racing", 19 controls. 4
+  Windows suites green (256/161/57/605 = 1079).
+  **Two accessibility defects were found by that pass and fixed:** glyph-only buttons carried a
+  ToolTip but no `AutomationProperties.Name`, so a screen reader announced them as "button" — on the
+  new toolbar and, pre-existing, on two Amiibo page buttons. A guard now fails the build for any
+  glyph-only button without a name. A second guard parses every App XAML file as XML, because the
+  XAML compiler answers an XML-level error by exiting 1 with **no message at all** (a section
+  comment containing a run of dashes cost a bisect to find).
+  **Not verified on screen:** the keyboard-only editor pass (§26.5). The command table
+  (`TouchEditorKeys`) is unit tested, but this session cannot put the app in the foreground, so
+  synthesized keystrokes never reach it. It remains a manual §26.5 item.
+  **Phase 6b does not run** — it is gated on Phase 6, which took §14.6's gate-failed branch.
+
 - **Windows Phase 6 complete 2026-08-31 via §14.6's gate-failed branch: no Controller Link, and a
-  page that says why. Phase 6a not started.** The gate did not pass (below), so §31 Phase 6 "If the
+  page that says why.** The gate did not pass (below), so §31 Phase 6 "If the
   gate fails" is the branch taken: skip the transport, record the negative, and make `ControllerPage`
   name the platform limitation and the missing radio capability. **There is deliberately no
   `BridgeSession`, no `HogpBridgeTransport` and no backends** — building a transport on an
@@ -34,11 +75,10 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   **Verified on hardware:** the app was launched, navigated to Gamepad and Checked, and reached
   `AdvertisingRefused` with the live radio address — independently reproducing the lab probe's
   finding from inside the product. 4 Windows suites green (123/161/55/537).
-  **Phase 6b does not run** (gated on Phase 6). **Phase 6a is untouched and is the available work** —
-  §31 states it is independent of §14's outcome.
+  **Phase 6b does not run** (gated on Phase 6). Phase 6a was the available work and is now complete
+  (above).
 
-- **Windows Phase 6 gate run 2026-08-31: B1 and B2 pass, B3-B6 unmeasured. Phase 6 stays gated;
-  Phase 6a is not gated and is the available work.** WINDOWS_PASS.md §14.5 asks whether a Windows PC
+- **Windows Phase 6 gate run 2026-08-31: B1 and B2 pass, B3-B6 unmeasured. Phase 6 stays gated.** WINDOWS_PASS.md §14.5 asks whether a Windows PC
   can present the 161-byte bridge descriptor over HOGP such that `android_bridge_identify()` matches.
   **The two questions §14.3 expected Windows to block are now retired.** `GattServiceProvider.CreateAsync(0x1812)`
   returns Success — HID is not on the reserved-service list in practice — and both `0x2908` Report
