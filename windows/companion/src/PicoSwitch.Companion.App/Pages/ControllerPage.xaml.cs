@@ -53,6 +53,13 @@ public sealed partial class ControllerPage : Page
     private async void OnCheck(object sender, RoutedEventArgs e) =>
         await controllerLink.CheckAsync();
 
+    /// <summary>
+    /// Enter the Touch Gamepad, which is a full-window mode rather than a page
+    /// (WINDOWS_PASS.md §15.4) — so the shell raises it, not the frame.
+    /// </summary>
+    private void OnOpenTouchGamepad(object sender, RoutedEventArgs e) =>
+        (App.Window as MainWindow)?.ShowTouchGamepad();
+
     private void Render()
     {
         var view = controllerLink.View.Value;

@@ -1,0 +1,259 @@
+<UserControl
+    x:Class="PicoSwitch.Companion.App.Touch.TouchGamepadView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
+    Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
+
+    <!--
+      A full-window MODE, not a navigation destination (WINDOWS_PASS.md §15.4). It
+      owns its presentation and is entered and left explicitly, because rendering a
+      control surface inside the shell's content column would hand it the shell's
+      insets and width limit.
+
+      Nothing in this file decides what to SAY. Every sentence comes from
+      TouchEditorView, and every geometric answer comes from the resolved layout the
+      service publishes; this markup is the paint.
+    -->
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- ========================================================== header -->
+        <Grid Grid.Row="0" Padding="16,10" ColumnSpacing="10"
+              Background="{ThemeResource LayerFillColorDefaultBrush}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0" Spacing="1">
+                <TextBlock x:Name="Title" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                <TextBlock
+                    x:Name="Subtitle"
+                    Style="{StaticResource CaptionTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+
+            <StackPanel
+                Grid.Column="1"
+                Orientation="Horizontal"
+                Spacing="8"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center">
+                <ComboBox
+                    x:Name="ProfilePicker"
+                    AutomationProperties.Name="Layout profile"
+                    MinWidth="200"
+                    SelectionChanged="OnProfilePicked"
+                    ToolTipService.ToolTip="Layout profile" />
+                <Button x:Name="NewProfile" Click="OnNewProfile" Content="New" />
+                <Button x:Name="ProfileMenu" Content="&#xE712;"
+                        AutomationProperties.Name="Profile actions"
+                        FontFamily="Segoe Fluent Icons"
+                        ToolTipService.ToolTip="Profile actions">
+                    <Button.Flyout>
+                        <MenuFlyout>
+                            <MenuFlyoutItem x:Name="DuplicateProfile" Text="Duplicate"
+                                            Click="OnDuplicateProfile" />
+                            <MenuFlyoutItem x:Name="RenameProfile" Text="Rename…"
+                                            Click="OnRenameProfile" />
+                            <MenuFlyoutItem x:Name="DeleteProfile" Text="Delete"
+                                            Click="OnDeleteProfile" />
+                            <MenuFlyoutSeparator />
+                            <MenuFlyoutItem x:Name="ResetProfile" Text="Reset to the default layout"
+                                            Click="OnResetProfile" />
+                            <MenuFlyoutSeparator />
+                            <MenuFlyoutItem x:Name="ExportProfile" Text="Export…"
+                                            Click="OnExportProfile" />
+                            <MenuFlyoutItem Text="Import…" Click="OnImportProfile" />
+                        </MenuFlyout>
+                    </Button.Flyout>
+                </Button>
+            </StackPanel>
+
+            <Button Grid.Column="2" Click="OnClose" Content="Close" />
+        </Grid>
+
+        <!-- ============================================== surface + properties -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <!--
+              The interaction-safe rectangle is built from THIS element's size, and it
+              is the same rectangle the layout is resolved into. Anything drawn over it
+              (the toolbar) is chrome the user can move; anything that steals space from
+              it permanently (the properties pane) is a separate column, so the
+              controller is never laid out under a panel.
+            -->
+            <Grid x:Name="SurfaceHost" Grid.Column="0" SizeChanged="OnSurfaceSizeChanged">
+                <!--
+                  The canvas is a tab stop and handles its own keys, which is what
+                  makes the editor operable with no pointer at all (§26.5). Tab moves
+                  BETWEEN controls only while the canvas holds focus, and Escape with
+                  nothing selected gives focus back — so keyboard navigation is never
+                  trapped inside the layout.
+                -->
+                <Canvas x:Name="Surface" Background="Transparent"
+                        AutomationProperties.Name="Controller layout"
+                        IsTabStop="True"
+                        KeyDown="OnSurfaceKeyDown"
+                        PointerPressed="OnSurfacePressed"
+                        PointerMoved="OnSurfaceMoved"
+                        PointerReleased="OnSurfaceReleased"
+                        PointerCaptureLost="OnSurfaceCaptureLost" />
+
+                <!--
+                  The floating, dockable editor toolbar. Position is computed, never
+                  bound.
+
+                  Every glyph-only control carries an AutomationProperties.Name. A
+                  ToolTip is not a name: without one a screen reader announces "button"
+                  and the whole toolbar becomes unusable, which §26.5's keyboard-first
+                  pass would otherwise pass silently because a sighted tester never
+                  notices.
+                -->
+                <Canvas x:Name="ToolbarLayer" IsHitTestVisible="True">
+                    <Border
+                        x:Name="Toolbar"
+                        Padding="6"
+                        CornerRadius="8"
+                        BorderThickness="1"
+                        Background="{ThemeResource AcrylicInAppFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        SizeChanged="OnToolbarSizeChanged">
+                        <StackPanel x:Name="ToolbarItems" Orientation="Horizontal" Spacing="4">
+                            <Border
+                                x:Name="ToolbarHandle"
+                                AutomationProperties.Name="Move the toolbar"
+                                Width="18"
+                                Background="Transparent"
+                                PointerPressed="OnToolbarPressed"
+                                PointerMoved="OnToolbarMoved"
+                                PointerReleased="OnToolbarReleased"
+                                PointerCaptureLost="OnToolbarReleased">
+                                <TextBlock
+                                    Text="&#xE76F;"
+                                    FontFamily="Segoe Fluent Icons"
+                                    FontSize="14"
+                                    VerticalAlignment="Center"
+                                    HorizontalAlignment="Center"
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </Border>
+                            <Button x:Name="UndoButton" Click="OnUndo" Content="&#xE7A7;"
+                                    AutomationProperties.Name="Undo"
+                                    FontFamily="Segoe Fluent Icons"
+                                    ToolTipService.ToolTip="Undo (Ctrl+Z)" />
+                            <Button x:Name="RedoButton" Click="OnRedo" Content="&#xE7A6;"
+                                    AutomationProperties.Name="Redo"
+                                    FontFamily="Segoe Fluent Icons"
+                                    ToolTipService.ToolTip="Redo (Ctrl+Y)" />
+                            <Button x:Name="AddButton" Content="&#xE710;"
+                                    AutomationProperties.Name="Add a control"
+                                    FontFamily="Segoe Fluent Icons"
+                                    ToolTipService.ToolTip="Add a control">
+                                <Button.Flyout>
+                                    <MenuFlyout x:Name="AddMenu" />
+                                </Button.Flyout>
+                            </Button>
+                            <Button x:Name="DeleteButton" Click="OnDelete" Content="&#xE74D;"
+                                    AutomationProperties.Name="Remove"
+                                    FontFamily="Segoe Fluent Icons"
+                                    ToolTipService.ToolTip="Remove (Delete)" />
+                            <Button x:Name="GroupButton" Click="OnGroup" Content="&#xF16E;"
+                                    AutomationProperties.Name="Group"
+                                    FontFamily="Segoe Fluent Icons"
+                                    ToolTipService.ToolTip="Group (Ctrl+G)" />
+                            <Button x:Name="UngroupButton" Click="OnUngroup" Content="&#xF16D;"
+                                    AutomationProperties.Name="Ungroup"
+                                    FontFamily="Segoe Fluent Icons"
+                                    ToolTipService.ToolTip="Ungroup (Ctrl+Shift+G)" />
+                            <ToggleButton x:Name="GridToggle" Click="OnToggleGrid" Content="&#xF0E2;"
+                                          AutomationProperties.Name="Grid"
+                                          FontFamily="Segoe Fluent Icons"
+                                          ToolTipService.ToolTip="Grid (G)" />
+                            <ToggleButton x:Name="SnapToggle" Click="OnToggleSnap" Content="&#xE8AA;"
+                                          AutomationProperties.Name="Snap"
+                                          FontFamily="Segoe Fluent Icons"
+                                          ToolTipService.ToolTip="Snap (S)" />
+                            <Button x:Name="DiscardButton" Click="OnDiscard" Content="Discard" />
+                            <Button x:Name="SaveButton" Click="OnSave" Content="Save"
+                                    Style="{StaticResource AccentButtonStyle}" />
+                        </StackPanel>
+                    </Border>
+                </Canvas>
+            </Grid>
+
+            <!--
+              The properties pane a desktop can afford and a phone cannot (§15.4). Its
+              own column, so the controller is never resolved into space a panel is
+              sitting on.
+            -->
+            <Border
+                x:Name="Properties"
+                Grid.Column="1"
+                Width="264"
+                Padding="16"
+                BorderThickness="1,0,0,0"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                Background="{ThemeResource LayerFillColorDefaultBrush}">
+                <StackPanel Spacing="10">
+                    <TextBlock x:Name="SelectionSummary"
+                               Style="{StaticResource BodyStrongTextBlockStyle}"
+                               TextWrapping="Wrap" />
+
+                    <StackPanel x:Name="SizePanel" Spacing="4">
+                        <TextBlock Text="Size" Style="{StaticResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <Slider x:Name="ScaleSlider"
+                                Minimum="55" Maximum="175" StepFrequency="1"
+                                ValueChanged="OnScaleChanged" />
+                    </StackPanel>
+
+                    <CheckBox x:Name="LatchToggle" Content="Hold to latch"
+                              Click="OnLatchToggled" />
+
+                    <Button x:Name="ResetControl" Click="OnResetControl"
+                            HorizontalAlignment="Stretch"
+                            Content="Reset this control" />
+
+                    <TextBlock Text="Layout checks"
+                               Margin="0,10,0,0"
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <ItemsControl x:Name="AuditList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}" TextWrapping="Wrap"
+                                           Margin="0,0,0,6"
+                                           Style="{StaticResource CaptionTextBlockStyle}" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- ========================================================== status -->
+        <StackPanel Grid.Row="2" Spacing="0">
+            <muxc:InfoBar
+                x:Name="StatusBar"
+                IsOpen="True"
+                IsClosable="False"
+                Severity="Informational" />
+            <muxc:InfoBar
+                x:Name="LinkBar"
+                IsOpen="False"
+                IsClosable="False"
+                Severity="Informational"
+                Title="Not connected to a console" />
+        </StackPanel>
+    </Grid>
+</UserControl>

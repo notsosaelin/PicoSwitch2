@@ -95,5 +95,19 @@
                 <Frame x:Name="ContentFrame" Grid.Row="1" />
             </Grid>
         </muxc:NavigationView>
+
+        <!--
+            The Touch Gamepad is a MODE, not a destination (WINDOWS_PASS.md §15.4):
+            it owns its whole presentation and is entered and left explicitly.
+
+            It covers row 1 only. That hides the navigation chrome, which is the
+            point, while leaving the extended title bar - and therefore the window's
+            only drag region - reachable. An overlay across row 0 as well would make
+            the window unmovable for as long as the surface was open.
+        -->
+        <Grid
+            x:Name="TouchGamepadHost"
+            Grid.Row="1"
+            Visibility="Collapsed" />
     </Grid>
 </Window>

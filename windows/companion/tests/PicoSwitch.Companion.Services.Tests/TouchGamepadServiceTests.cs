@@ -240,6 +240,45 @@ public sealed class TouchGamepadServiceTests
         Assert.True(state.CanUndo);
     }
 
+    [Fact]
+    public void ADragIsOneUndoStepNoMatterHowManyFramesItTook()
+    {
+        // Preview keeps the canvas following the finger; Commit is what the gesture ENDING
+        // means. Fifty steps for one drag would make undo useless.
+        using var fixture = new TouchGamepadFixture();
+        var service = fixture.NewService();
+        var start = service.State.Value.Document.Instance(TouchLayoutV1.Dpad)!;
+
+        for (var frame = 1; frame <= 20; frame++)
+        {
+            service.Preview(TouchLayoutEditor.Place(
+                service.State.Value.Document, Select(TouchLayoutV1.Dpad),
+                start.AnchorX + (frame * 0.001f), start.AnchorY));
+        }
+
+        service.Commit("Move");
+
+        Assert.True(service.State.Value.CanUndo);
+        service.Undo();
+
+        Assert.Equal(start.AnchorX, service.State.Value.Document.Instance(TouchLayoutV1.Dpad)!.AnchorX, 4);
+        Assert.False(service.State.Value.CanUndo);
+    }
+
+    [Fact]
+    public void AGestureThatChangedNothingLeavesNoUndoStep()
+    {
+        // A press with no movement, or a drag that came back to where it started. An undo
+        // step that appears to do nothing is worse than no step at all.
+        using var fixture = new TouchGamepadFixture();
+        var service = fixture.NewService();
+
+        service.Commit("Move");
+
+        Assert.False(service.State.Value.CanUndo);
+        Assert.False(service.State.Value.Dirty);
+    }
+
     // ------------------------------------------------------------------ persistence
 
     [Fact]

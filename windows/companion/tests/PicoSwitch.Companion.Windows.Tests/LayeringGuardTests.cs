@@ -161,6 +161,73 @@ public sealed class LayeringGuardTests
         Assert.Contains("DISABLE_XAML_GENERATED_MAIN", project, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void EveryXamlFileInTheAppIsWellFormedXml()
+    {
+        // The XAML compiler fails an XML-level parse error by EXITING 1 WITH NO OUTPUT:
+        // no file, no line, no message, just `MSB3073 ... exited with code 1`. Cost a
+        // bisect once, on a section-separator comment that contained a run of dashes —
+        // which XML forbids inside a comment. This turns that silent failure into a named
+        // one, and it is cheap enough to run on every file.
+        var files = AppXamlFiles().ToList();
+
+        Assert.NotEmpty(files);
+
+        foreach (var file in files)
+        {
+            var problem = Record.Exception(() => System.Xml.Linq.XDocument.Load(file));
+            Assert.True(problem is null, $"{Path.GetFileName(file)}: {problem?.Message}");
+        }
+    }
+
+    [Fact]
+    public void AGlyphOnlyButtonAlwaysCarriesAnAccessibleName()
+    {
+        // A ToolTip is not a name. Without AutomationProperties.Name a screen reader
+        // announces a glyph button as "button", which makes a whole icon toolbar unusable
+        // — and a sighted tester never notices, so §26.5's keyboard-first pass would go on
+        // passing. Found exactly that way on the Touch Gamepad toolbar; kept as a rule.
+        var offenders = new List<string>();
+
+        foreach (var file in AppXamlFiles())
+        {
+            foreach (var element in System.Xml.Linq.XDocument.Load(file).Descendants())
+            {
+                if (element.Name.LocalName is not ("Button" or "ToggleButton" or
+                    "AppBarButton" or "HyperlinkButton" or "RepeatButton"))
+                {
+                    continue;
+                }
+
+                var content = element.Attribute("Content")?.Value;
+
+                // Segoe Fluent Icons live in the Unicode private use area, so a Content
+                // that is one such character is a picture and nothing else.
+                if (content is not { Length: 1 } || content[0] < '' || content[0] > '')
+                {
+                    continue;
+                }
+
+                if (element.Attribute("AutomationProperties.Name") is null)
+                {
+                    var name = element.Attributes()
+                        .FirstOrDefault(attribute => attribute.Name.LocalName == "Name")?.Value;
+                    offenders.Add($"{Path.GetFileName(file)}: {name ?? content}");
+                }
+            }
+        }
+
+        Assert.Empty(offenders);
+    }
+
+    private static IEnumerable<string> AppXamlFiles() => Directory
+        .EnumerateFiles(
+            Path.Combine(CompanionRoot, "src", "PicoSwitch.Companion.App"),
+            "*.xaml",
+            SearchOption.AllDirectories)
+        .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}"))
+        .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"));
+
     private static string ConcatenatedSources(string relativeProject)
     {
         var directory = Path.Combine(

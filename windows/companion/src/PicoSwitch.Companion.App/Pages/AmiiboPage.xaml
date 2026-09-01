@@ -342,6 +342,7 @@
                 <Button Grid.Column="2" x:Name="SortDirectionButton"
                         Style="{StaticResource PageButtonStyle}" MinWidth="40"
                         FontFamily="Segoe MDL2 Assets" Content="&#xE74A;"
+                        AutomationProperties.Name="Reverse the order"
                         ToolTipService.ToolTip="Reverse the order"
                         Click="OnToggleSortDirection" />
 
@@ -536,6 +537,7 @@
                             HorizontalAlignment="Right" Visibility="Collapsed"
                             Content="&#xE711;" FontFamily="Segoe MDL2 Assets"
                             Height="28" MinWidth="28" Padding="0"
+                            AutomationProperties.Name="Close details"
                             ToolTipService.ToolTip="Close details"
                             Click="OnCloseInspector" />
 
