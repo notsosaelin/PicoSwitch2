@@ -69,6 +69,29 @@ function Invoke-Dotnet {
     if ($LASTEXITCODE -ne 0) { throw "dotnet $($Arguments -join ' ') failed with exit code $LASTEXITCODE" }
 }
 
+function Find-FrameworkMsbuild {
+    Get-ChildItem -Path @(
+        "${env:ProgramFiles}\Microsoft Visual Studio"
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio"
+    ) -Recurse -Filter 'MSBuild.exe' -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -like '*\Bin\amd64\MSBuild.exe' } |
+        Select-Object -First 1 -ExpandProperty FullName
+}
+
+$msbuild = $null
+if ($App -or $Msix) {
+    $msbuild = Find-FrameworkMsbuild
+    if (-not $msbuild) {
+        throw 'The Controller Link host needs Visual C++ Build Tools; .NET Framework MSBuild was not found.'
+    }
+
+    $hostProject = 'src/PicoSwitch.ControllerLink.Host/PicoSwitch.ControllerLink.Host.vcxproj'
+    Write-Host "$msbuild $hostProject" -ForegroundColor DarkGray
+    & $msbuild $hostProject -restore -t:Build `
+        "-p:Configuration=$Configuration" "-p:Platform=$Platform" -v:m -nologo
+    if ($LASTEXITCODE -ne 0) { throw "Controller Link host build failed with exit code $LASTEXITCODE" }
+}
+
 if ($Core) {
     foreach ($project in $coreProjects) {
         Invoke-Dotnet @('build', $project, '-c', $Configuration, '--nologo')
@@ -96,6 +119,7 @@ if ($App) {
         $appProject
         '-c', $Configuration
         "-p:Platform=$Platform"
+        '-p:SkipControllerLinkHostBuild=true'
         '--nologo'
     )
 }
@@ -106,20 +130,10 @@ if ($Msix) {
     # which the .NET SDK's MSBuild cannot resolve; .NET Framework MSBuild can.
     # See docs/README.md §4 -- this is a Windows App SDK packaging gap, not a
     # project defect, and hiding it behind a retry would only make it puzzling.
-    $msbuild = Get-ChildItem -Path @(
-        "${env:ProgramFiles}\Microsoft Visual Studio"
-        "${env:ProgramFiles(x86)}\Microsoft Visual Studio"
-    ) -Recurse -Filter 'MSBuild.exe' -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -like '*\Bin\amd64\MSBuild.exe' } |
-        Select-Object -First 1 -ExpandProperty FullName
-
-    if (-not $msbuild) {
-        throw 'MSIX packaging needs .NET Framework MSBuild (Visual Studio or Build Tools); none found.'
-    }
-
     Write-Host "$msbuild $appProject (MSIX)" -ForegroundColor DarkGray
     & $msbuild $appProject -restore -t:Build `
         "-p:Configuration=$Configuration" "-p:Platform=$Platform" `
+        -p:SkipControllerLinkHostBuild=true `
         -p:WindowsPackageType=MSIX -p:GenerateAppxPackageOnBuild=true `
         -p:AppxPackageSigningEnabled=false -v:m -nologo
     if ($LASTEXITCODE -ne 0) { throw "MSIX packaging failed with exit code $LASTEXITCODE" }
