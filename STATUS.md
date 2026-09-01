@@ -7,6 +7,39 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Windows Touch Gamepad presentation corrected 2026-09-01: it is a dedicated screen, not an
+  overlay.** The first Phase 6a build rendered the controller as a translucent layer over a live
+  Gamepad page — the navigation rail, both cards, the connection banner and the desktop were all
+  visible through it.
+  **Root cause, in two halves.** `TouchGamepadHost` was a background-less sibling `Grid` layered
+  over a NavigationView that stayed composed, so the shell was never removed; and the surface set
+  `Background` on its `UserControl` while leaving its root `Grid` unpainted, which paints nothing.
+  Over a window carrying a `MicaBackdrop`, the only brushes it did carry were translucent Layer
+  fills and `InfoBar`s — hence the see-through.
+  **Fixed by removing the architecture, not by darkening it.** The Android companion is the
+  reference: `CompanionApp.kt` returns early when the mode is active and never composes its
+  scaffold. Windows now collapses the NavigationView, empties the title strip to the caption band
+  (the extended title bar is the window's only drag region, so it cannot go entirely in windowed
+  mode), drops the backdrop, and paints an opaque ground on the surface's own root.
+  **Play/edit parity followed from it.** Android's play mode is controls and nothing else, with the
+  editor reached from a menu; the Windows surface had shown a permanent toolbar, a properties pane
+  and two status strips. It now matches: play mode carries the controller, one menu button and a
+  link pill in the layout's quiet band (`BANNER_BAND` = 0.22, Android's own value), and the editor
+  is one floating dockable toolbar with Android's button set and its "More" menu. The named-layout
+  library, with duplicate/rename/delete/export/import, moved from the header bar into a dialog.
+  **One real rendering defect fell out of the comparison:** face buttons drew no letter, because the
+  renderer read `spec.Label` while the letter is derived from the button's POSITION through
+  `ControllerLayoutResolver.FaceLabel` — the call the Android renderer and `TouchControlNaming` both
+  make. Fixed; X/Y/A/B now draw.
+  **Verified on screen** (UI Automation + window captures): play mode shows only the controller,
+  the menu button and the pill, with none of the shell's elements present in the tree; the menu, edit
+  mode, the presenter-based full screen (title bar, border and caption buttons all gone), Escape's
+  full ladder, exit back to the Gamepad page, reopen, and maximize/restore/full-screen round trips
+  with the layout's normalized positions stable to ~0.001 and no control reshaped.
+  **Guarded:** the surface's root must declare an opaque background, no attribute on it may name an
+  Acrylic/Mica/Layer material, entering the mode must collapse the NavigationView and null the
+  backdrop, and full screen must go through `AppWindow.SetPresenter`.
+
 - **Windows Phase 6a complete 2026-09-01: the on-screen controller, its profile library and its
   layout editor, all working with no adapter and no Controller Link.** §31 states Phase 6a is
   independent of §14's outcome, and it is: the whole subsystem is local.
@@ -23,6 +56,14 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   document is REPORTED and never deleted), `TouchRegionBuilder`, `TouchControlRenderer`,
   `TouchGamepadView`. Nothing about sticks, sectors, ownership, profile selection or bindings is
   decided in Windows code.
+  **The surface is a DEDICATED SCREEN, in the shape the Android one established** (corrected
+  2026-09-01, see the entry below). `ShowTouchGamepad` collapses the NavigationView, empties the
+  title strip to the bare caption band and drops the window's Mica backdrop; the surface paints its
+  own opaque ground. Play is the default mode and carries only the controller, one menu button and
+  a status pill in the layout's quiet band; the editor's floating dockable toolbar exists only
+  inside edit mode. Full screen is `AppWindowPresenterKind.FullScreen`. Escape walks §8's ladder:
+  cancel a live drag → close the menu → leave the editor (confirming unsaved work) → leave full
+  screen → leave the Touch Gamepad.
   **One deliberate deviation from §15.5, now recorded there:** `UnitScale` is 1 epx per layout unit
   and `RasterizationScale` is NOT folded in, because WinUI coordinates already carry the user's
   display scale. The dp→epx nominal conversion (0.6) was rejected — it puts the smallest
@@ -43,9 +84,9 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   glyph-only button without a name. A second guard parses every App XAML file as XML, because the
   XAML compiler answers an XML-level error by exiting 1 with **no message at all** (a section
   comment containing a run of dashes cost a bisect to find).
-  **Not verified on screen:** the keyboard-only editor pass (§26.5). The command table
-  (`TouchEditorKeys`) is unit tested, but this session cannot put the app in the foreground, so
-  synthesized keystrokes never reach it. It remains a manual §26.5 item.
+  **The keyboard-only editor pass (§26.5) is now verified on screen too** — see the entry below;
+  the app takes the foreground once it has been full screen, and synthesized keystrokes then reach
+  it (Tab selects, arrows nudge, Ctrl+Z undoes, Escape walks its ladder).
   **Phase 6b does not run** — it is gated on Phase 6, which took §14.6's gate-failed branch.
 
 - **Windows Phase 6 complete 2026-08-31 via §14.6's gate-failed branch: no Controller Link, and a

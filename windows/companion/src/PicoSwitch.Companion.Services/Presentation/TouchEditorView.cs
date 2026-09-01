@@ -10,6 +10,25 @@ public enum TouchEditorSeverity
     Blocking,
 }
 
+/// <summary>
+/// What the on-screen controller is currently for.
+///
+/// The two modes the Android surface has, and for the same reason: in
+/// <see cref="Play"/> the screen is a controller and touches are input, in
+/// <see cref="Edit"/> the screen is a canvas and touches manipulate scene objects.
+/// Conflating them is precisely how an edit drag becomes an A press — and, on the
+/// presentation side, how the editor's chrome ends up permanently covering a surface
+/// whose whole job is to be pressed.
+///
+/// Play is the default, exactly as on Android. The editor is entered deliberately from
+/// the menu and left deliberately.
+/// </summary>
+public enum TouchSurfaceMode
+{
+    Play,
+    Edit,
+}
+
 /// <summary>One line of the audit, ready to draw.</summary>
 public sealed record TouchAuditLine(string Message, bool Blocking)
 {
@@ -86,13 +105,46 @@ public sealed record TouchEditorView
     public bool CanUngroup { get; init; }
 
     /// <summary>
-    /// Why editing a layout is worth doing on a PC that cannot play it.
+    /// The short status the gameplay surface shows, unobtrusively. Null once a link exists.
+    /// </summary>
+    /// <remarks>
+    /// Short because of WHERE it goes: a pill in the layout's own quiet centre band, the
+    /// same place and the same shape as the Android surface's link banner. The band is
+    /// kept clear by the layout itself, so a status there shadows nothing the user is
+    /// trying to press — and it takes no height from the controller, unlike the status
+    /// strip it replaces.
+    /// </remarks>
+    public string? LinkNote { get; init; }
+
+    /// <summary>
+    /// The whole explanation, for the menu.
     ///
     /// §15.8 is explicit: where Controller Link is unavailable the surface still opens and
     /// remains fully editable, "and the UI must say exactly that rather than appearing
-    /// broken". Null once a link exists.
+    /// broken". Saying it needs more room than a gameplay surface should give it, so the
+    /// sentence lives one tap away instead of across the bottom of the controller.
     /// </summary>
-    public string? LinkNote { get; init; }
+    public string? LinkDetail { get; init; }
+
+    /// <summary>What the surface is currently for.</summary>
+    public TouchSurfaceMode Mode { get; init; } = TouchSurfaceMode.Play;
+
+    /// <summary>
+    /// Whether the editor's chrome may be drawn at all.
+    ///
+    /// The rule the Windows surface got wrong: on Android the toolbar exists only inside
+    /// edit mode, and play mode is controls and nothing else. A permanently visible
+    /// toolbar, inspector and status strip turn a gameplay surface into a debugging
+    /// overlay — which is the state the 2026-09-01 regression screenshot captured.
+    /// </summary>
+    public bool ShowEditorChrome => Mode == TouchSurfaceMode.Edit && Editable;
+
+    /// <summary>
+    /// Whether "use the shipped layout" would do anything.
+    ///
+    /// False on the factory profile, which already IS the shipped layout.
+    /// </summary>
+    public bool CanResetToDefault { get; init; }
 
     /// <summary>Before any personality has been confirmed.</summary>
     public static TouchEditorView Neutral { get; } = new()
@@ -104,11 +156,19 @@ public sealed record TouchEditorView
         Editable = false,
     };
 
-    public static TouchEditorView Of(TouchGamepadState state, bool controllerLinkAvailable)
+    public static TouchEditorView Of(
+        TouchGamepadState state,
+        bool controllerLinkAvailable,
+        TouchSurfaceMode mode = TouchSurfaceMode.Play)
     {
         if (state.Personality is not { } personality)
         {
-            return Neutral with { LinkNote = LinkNoteFor(controllerLinkAvailable) };
+            return Neutral with
+            {
+                Mode = mode,
+                LinkNote = LinkNoteFor(controllerLinkAvailable),
+                LinkDetail = LinkDetailFor(controllerLinkAvailable),
+            };
         }
 
         var profile = TouchProfileCatalog.Require(personality);
@@ -125,8 +185,10 @@ public sealed record TouchEditorView
 
         return new TouchEditorView
         {
+            Mode = mode,
             Title = profile.DisplayName,
             ProfileName = state.Library.Selected.Name,
+            CanResetToDefault = !state.Library.Selected.IsFactory,
             Subtitle = state.PersonalityRemembered
                 ? $"{state.Library.Selected.Name} · last seen on this adapter"
                 : state.Library.Selected.Name,
@@ -148,10 +210,22 @@ public sealed record TouchEditorView
             CanUngroup = state.Editable &&
                 instances.Any(instance => instance.GroupId is not null),
             LinkNote = LinkNoteFor(controllerLinkAvailable),
+            LinkDetail = LinkDetailFor(controllerLinkAvailable),
         };
     }
 
+    /// <summary>
+    /// The pill, in the Android surface's own words for this exact state.
+    ///
+    /// Android's link banner says "This device cannot act as a controller" when the host
+    /// cannot be one. Saying the same thing here keeps the two surfaces describing one
+    /// condition the same way.
+    /// </summary>
     private static string? LinkNoteFor(bool available) => available
+        ? null
+        : "This PC cannot act as a controller";
+
+    private static string? LinkDetailFor(bool available) => available
         ? null
         : "This PC cannot send a controller to the adapter, so the on-screen controller " +
           "cannot drive a console here. Layouts, profiles and validation are entirely " +

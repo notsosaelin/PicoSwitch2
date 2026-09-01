@@ -29,6 +29,11 @@ public enum TouchEditorCommand
     ToggleGrid,
     NextControl,
     PreviousControl,
+
+    /// <summary>Open the surface's own menu — the way to edit, switch layout, or leave.</summary>
+    Menu,
+
+    ToggleFullscreen,
     Exit,
 }
 
@@ -102,7 +107,18 @@ public static class TouchEditorKeys
             "Tab" => shift ? TouchEditorCommand.PreviousControl : TouchEditorCommand.NextControl,
 
             "Delete" or "Back" => TouchEditorCommand.Delete,
+
+            // Escape is resolved by the surface, not here: §8 gives it a PRIORITY —
+            // finish a live interaction, else drop out of full screen, else leave the
+            // Touch Gamepad — and only the surface knows which of those apply. The table
+            // names the first rung; the caller walks the rest.
             "Escape" => TouchEditorCommand.Deselect,
+
+            // The two surface-level affordances. F11 is the Windows full-screen idiom and
+            // has no Android counterpart; the context-menu key is the closest thing a
+            // keyboard has to Android's Back-opens-the-menu gesture.
+            "F11" => TouchEditorCommand.ToggleFullscreen,
+            "Application" => TouchEditorCommand.Menu,
 
             // VirtualKey has no OemPlus/OemMinus member, so the main-row keys arrive as
             // their raw codes. The numpad ones have names. Both are accepted; a user

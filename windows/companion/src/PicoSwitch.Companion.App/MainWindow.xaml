@@ -97,13 +97,21 @@
         </muxc:NavigationView>
 
         <!--
-            The Touch Gamepad is a MODE, not a destination (WINDOWS_PASS.md §15.4):
-            it owns its whole presentation and is entered and left explicitly.
+            The Touch Gamepad is a MODE, not a destination (WINDOWS_PASS.md §15.4),
+            and it REPLACES the shell rather than covering it: ShowTouchGamepad
+            collapses the NavigationView above, empties the title strip and drops
+            the window's Mica backdrop. This is the Windows form of the Android
+            companion's early return, where the scaffold is simply never composed.
 
-            It covers row 1 only. That hides the navigation chrome, which is the
-            point, while leaving the extended title bar - and therefore the window's
-            only drag region - reachable. An overlay across row 0 as well would make
-            the window unmovable for as long as the surface was open.
+            It occupies row 1, which is the whole client area once the title strip
+            is reduced to the caption band. Row 0 keeps that band because an
+            extended title bar is the window's only drag region, and a windowed
+            controller that cannot be moved is not finished.
+
+            Do NOT give this host a translucent background or restore an overlay
+            arrangement here. The first version layered the surface over a live
+            NavigationView, and the rail, cards and status bars showed through the
+            controller.
         -->
         <Grid
             x:Name="TouchGamepadHost"

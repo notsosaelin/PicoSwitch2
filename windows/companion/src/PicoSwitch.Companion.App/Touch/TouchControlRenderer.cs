@@ -2,6 +2,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
+using PicoSwitch.Bridge.Core;
 using PicoSwitch.Bridge.Touch;
 using Windows.Foundation;
 using Windows.UI;
@@ -335,6 +336,16 @@ public sealed class TouchControlRenderer(Canvas canvas)
             return geometry;
         }
 
+        /// <summary>
+        /// What is written on the control.
+        ///
+        /// A face button's letter is NOT in its label: the template stores a POSITION, and
+        /// which letter that position carries is a property of the controller being drawn.
+        /// Resolving it through <see cref="ControllerLayoutResolver.FaceLabel"/> — the same
+        /// call the Android renderer makes, and the same one <see cref="TouchControlNaming"/>
+        /// makes for the editor's own text — is what keeps a touch slot sending the letter
+        /// it draws (I13). Reading <c>spec.Label</c> alone left every face button blank.
+        /// </summary>
         private static (string Text, bool Symbol) LegendFor(TouchControlSpec spec) => spec.Glyph switch
         {
             // Segoe Fluent Icons: a square for Capture, a home for Home. The portable
@@ -342,7 +353,10 @@ public sealed class TouchControlRenderer(Canvas canvas)
             // whole contribution.
             TouchControlGlyph.Capture => ("", true),
             TouchControlGlyph.Home => ("", true),
-            _ => (spec.Label, false),
+            _ => spec.Action is TouchControlAction.Face face
+                ? (ControllerLayoutResolver.FaceLabel(face.Position, TouchControlNaming.FaceLayout),
+                   false)
+                : (spec.Label, false),
         };
     }
 
