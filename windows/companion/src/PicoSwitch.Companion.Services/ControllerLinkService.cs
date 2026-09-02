@@ -9,32 +9,45 @@ using PicoSwitch.Management;
 namespace PicoSwitch.Companion.Services;
 
 /// <summary>
-/// Production Controller Link orchestration. The full-trust app owns trusted
-/// management and normalized input; the same-package AppContainer owns only the
-/// Windows HOGP peripheral. This class is the one lifetime boundary between them.
+/// Controller Link orchestration over the trusted management link (Path C).
+///
+/// ## The shape, and why it is this small
+///
+/// Windows has no Classic HID Device role, and a second LE relationship to the
+/// adapter is refused by the controller with 0x0B, so there is no second
+/// connection to manage. Controller state rides a binary characteristic on the
+/// management session that is already open.
+///
+/// That removes a whole class of state this service used to own. Nothing
+/// advertises, nothing pairs, nothing dials this PC, and the link cannot be
+/// lost independently of its carrier — if management is up the data plane is
+/// reachable, and if management goes Controller Link goes with it. What remains
+/// is genuinely small: gate on trusted management, arm both ends, stream, and
+/// neutralize on every exit.
+///
+/// ## What did not change
+///
+/// Everything above the transport is the code the HOGP carrier used:
+/// ControllerInputSession owns normalized state, ControllerReportEncoder owns
+/// the wire layout, the 125 Hz scheduler is latest-state-wins, BridgeOutputCodec
+/// and RumbleShaping own feedback. Only the boundary moved.
 /// </summary>
 public sealed class ControllerLinkService : IAsyncDisposable
 {
     private static readonly TimeSpan ReportInterval = TimeSpan.FromMilliseconds(8);
-    private static readonly TimeSpan RememberedReconnectGrace = TimeSpan.FromSeconds(2);
-    private static readonly TimeSpan PairingPollInterval = TimeSpan.FromMilliseconds(500);
-    private static readonly TimeSpan PairingDeadline = TimeSpan.FromSeconds(32);
 
     private readonly IControllerLinkManagement management;
     private readonly ControllerInputSession input;
     private readonly IControllerOutputBackend output;
-    private readonly IControllerLinkHostFactory hostFactory;
     private readonly DiagnosticLog diagnostics;
     private readonly StateValue<ControllerLinkView> view;
     private readonly SemaphoreSlim lifecycle = new(1, 1);
-    private readonly object stateGate = new();
 
-    private IControllerLinkHostConnection? host;
+    private IControllerLinkDataPlane? dataPlane;
     private CancellationTokenSource? sessionCancellation;
     private Task? publisherTask;
     private int stopping;
-    private int connectionGeneration;
-    private bool hostConnected;
+    private ushort sequence;
     private int shapedLeft;
     private int shapedRight;
     private long reportsGenerated;
@@ -44,27 +57,19 @@ public sealed class ControllerLinkService : IAsyncDisposable
     private long outputReportsDecoded;
     private long malformedOutputReports;
     private long outputDeliveryFailures;
-    private long totalOutputLatencyTicks;
-    private long maximumOutputLatencyTicks;
-    private long finalReportsQueued;
-    private long finalReportsSent;
-    private long finalReportsCoalesced;
-    private long finalOutputReportsReceived;
-    private int remotePairingActive;
+    private ControllerLinkMetrics finalMetrics = ControllerLinkMetrics.Empty;
     private bool disposed;
 
     public ControllerLinkService(
         IControllerLinkManagement management,
         ControllerInputSession input,
         IControllerOutputBackend output,
-        DiagnosticLog diagnostics,
-        IControllerLinkHostFactory? hostFactory = null)
+        DiagnosticLog diagnostics)
     {
         this.management = management;
         this.input = input;
         this.output = output;
         this.diagnostics = diagnostics;
-        this.hostFactory = hostFactory ?? ControllerLinkHostFactory.Instance;
         view = new StateValue<ControllerLinkView>(ReadyView());
         management.Changed += OnManagementChanged;
     }
@@ -75,24 +80,33 @@ public sealed class ControllerLinkService : IAsyncDisposable
     {
         get
         {
-            var current = host;
+            var plane = dataPlane;
+            if (plane is null)
+            {
+                return finalMetrics with
+                {
+                    ReportsGenerated = Interlocked.Read(ref reportsGenerated),
+                };
+            }
+
             var intervals = Interlocked.Read(ref reportIntervals);
-            var outputs = Interlocked.Read(ref outputReportsDecoded);
             return new ControllerLinkMetrics(
                 Interlocked.Read(ref reportsGenerated),
-                current?.InputReportsQueued ?? Interlocked.Read(ref finalReportsQueued),
-                current?.InputReportsSent ?? Interlocked.Read(ref finalReportsSent),
-                current?.InputReportsCoalesced ?? Interlocked.Read(ref finalReportsCoalesced),
+                plane.StatesPublished,
+                plane.FramesWritten,
+                plane.StatesCoalesced,
+                plane.FrameWriteFailures,
+                plane.MaximumInFlight,
                 intervals == 0 ? TimeSpan.Zero : TicksToTimeSpan(
                     Interlocked.Read(ref totalReportIntervalTicks) / intervals),
                 TicksToTimeSpan(Interlocked.Read(ref maximumReportIntervalTicks)),
-                current?.OutputReportsReceived ?? Interlocked.Read(ref finalOutputReportsReceived),
-                outputs,
+                plane.AverageWriteLatency,
+                plane.MaximumWriteLatency,
+                plane.OutputFramesReceived,
+                Interlocked.Read(ref outputReportsDecoded),
                 Interlocked.Read(ref malformedOutputReports),
                 Interlocked.Read(ref outputDeliveryFailures),
-                outputs == 0 ? TimeSpan.Zero : TicksToTimeSpan(
-                    Interlocked.Read(ref totalOutputLatencyTicks) / outputs),
-                TicksToTimeSpan(Interlocked.Read(ref maximumOutputLatencyTicks)));
+                plane.AttMtu);
         }
     }
 
@@ -102,7 +116,7 @@ public sealed class ControllerLinkService : IAsyncDisposable
         await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (host is not null)
+            if (dataPlane is not null)
             {
                 return;
             }
@@ -118,38 +132,59 @@ public sealed class ControllerLinkService : IAsyncDisposable
             input.Neutralize();
             output.Apply(RumbleRequest.None);
             SetView(ControllerLinkPhase.Starting);
-            diagnostics.Info("controller-link", "activating same-package Bluetooth host");
 
-            var opened = await hostFactory.OpenAsync(cancellationToken).ConfigureAwait(false);
-            host = opened;
-            opened.StateChanged += OnHostStateChanged;
-            opened.OutputReportReceived += OnOutputReport;
-            opened.Closed += OnHostClosed;
+            // Arm the adapter FIRST. It measures the negotiated ATT MTU and
+            // refuses below one whole frame, so this answers "may I stream"
+            // before a single gameplay byte moves.
+            var state = await management.StartDataPlaneAsync(cancellationToken)
+                .ConfigureAwait(false);
+            diagnostics.Info(
+                "controller-link",
+                $"adapter data plane: active={state.Active} version={state.Version} " +
+                $"frame={state.FrameBytes} mtu={state.AttMtu}/{state.MinimumAttMtu}");
 
-            if (opened.Handshake is { } hello)
+            if (!state.Active)
             {
-                diagnostics.Info(
-                    "controller-link",
-                    $"helper handshake: build={hello.HelperBuild:x8} ipc={ControllerLinkHostConnection.IpcVersion} " +
-                    $"bridge={hello.BridgeContract} descriptor={hello.DescriptorBytes}/" +
-                    $"{hello.DescriptorSha256} input={hello.InputReportBytes} output={hello.OutputReportBytes}");
+                SetView(ControllerLinkPhase.Error, RefusalReason(state));
+                return;
             }
 
-            await opened.StartAsync(cancellationToken).ConfigureAwait(false);
+            var plane = management.TryCreateDataPlane();
+            if (plane is null)
+            {
+                await SafeStopDataPlaneAsync().ConfigureAwait(false);
+                SetView(
+                    ControllerLinkPhase.Unavailable,
+                    management.UnavailableReason
+                        ?? "The management connection went away while starting.");
+                return;
+            }
+
+            if (!await plane.OpenAsync(cancellationToken).ConfigureAwait(false))
+            {
+                await plane.DisposeAsync().ConfigureAwait(false);
+                await SafeStopDataPlaneAsync().ConfigureAwait(false);
+                SetView(
+                    ControllerLinkPhase.Error,
+                    "This adapter's firmware does not support Controller Link. Update the adapter.");
+                return;
+            }
+
+            dataPlane = plane;
+            plane.OutputFrameReceived += OnOutputFrame;
+            plane.Closed += OnCarrierLost;
+
             sessionCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             publisherTask = PublishReportsAsync(sessionCancellation.Token);
-            if (view.Value.Phase == ControllerLinkPhase.Starting)
-            {
-                SetView(ControllerLinkPhase.WaitingForConnection);
-            }
-
-            BeginConnectionAttempt();
-            diagnostics.Info("controller-link", "advertising settled at Started; report scheduler active");
+            SetView(ControllerLinkPhase.Streaming);
+            diagnostics.Info(
+                "controller-link",
+                $"streaming at {1000.0 / ReportInterval.TotalMilliseconds:F0} Hz, mtu={plane.AttMtu}");
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             diagnostics.Error("controller-link", $"start failed: {error.Message}");
-            await TearDownLockedAsync(callHostStop: false).ConfigureAwait(false);
+            await TearDownLockedAsync(tellAdapter: true).ConfigureAwait(false);
             SetView(ControllerLinkPhase.Error, ProductError(error));
         }
         finally
@@ -163,7 +198,7 @@ public sealed class ControllerLinkService : IAsyncDisposable
         await lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (host is null)
+            if (dataPlane is null)
             {
                 SetReadyOrUnavailable();
                 return;
@@ -173,7 +208,7 @@ public sealed class ControllerLinkService : IAsyncDisposable
             SetView(ControllerLinkPhase.Stopping);
             input.Neutralize();
             ApplyOutput(RumbleRequest.None);
-            await TearDownLockedAsync(callHostStop: true, cancellationToken).ConfigureAwait(false);
+            await TearDownLockedAsync(tellAdapter: true, cancellationToken).ConfigureAwait(false);
             diagnostics.Info("controller-link", $"stopped: {Metrics.Summary()}");
             SetReadyOrUnavailable();
         }
@@ -200,6 +235,7 @@ public sealed class ControllerLinkService : IAsyncDisposable
     private async Task PublishReportsAsync(CancellationToken cancellationToken)
     {
         long previous = 0;
+        var frame = new byte[ControllerLinkDataPlane.FrameBytes];
         try
         {
             using var timer = new PeriodicTimer(ReportInterval);
@@ -215,7 +251,13 @@ public sealed class ControllerLinkService : IAsyncDisposable
                 }
 
                 previous = now;
-                host?.PublishInput(ControllerReportEncoder.Encode(input.Snapshot));
+
+                // One tick, one complete normalized state, one frame handed to
+                // the bounded writer. Whether it reaches the air now or replaces
+                // a pending frame is the writer's decision, not this loop's.
+                var payload = ControllerReportEncoder.Encode(input.Snapshot);
+                ControllerLinkDataPlane.EncodeInput(payload, unchecked(sequence++), frame);
+                dataPlane?.PublishInput(frame);
                 Interlocked.Increment(ref reportsGenerated);
             }
         }
@@ -224,66 +266,20 @@ public sealed class ControllerLinkService : IAsyncDisposable
         }
         catch (Exception error)
         {
-            OnHostClosed($"Controller report channel failed: {error.Message}");
+            OnCarrierLost($"Controller report scheduler failed: {error.Message}");
         }
     }
 
-    private void OnHostStateChanged(ControllerLinkHostState state, string? detail)
+    private void OnOutputFrame(byte[] frame)
     {
-        diagnostics.Info(
-            "controller-link",
-            $"host state={state}" + (string.IsNullOrWhiteSpace(detail) ? string.Empty : $" detail={detail}"));
-
-        switch (state)
+        var decodedFrame = ControllerLinkDataPlane.DecodeOutput(frame);
+        if (decodedFrame is null)
         {
-            case ControllerLinkHostState.Ready:
-            case ControllerLinkHostState.Starting:
-                SetView(ControllerLinkPhase.Starting);
-                break;
-            case ControllerLinkHostState.Advertising:
-                SetView(ControllerLinkPhase.Advertising);
-                break;
-            case ControllerLinkHostState.WaitingForConnection:
-                SetView(ControllerLinkPhase.WaitingForConnection);
-                break;
-            case ControllerLinkHostState.Connected:
-                lock (stateGate)
-                {
-                    hostConnected = true;
-                    connectionGeneration++;
-                }
-
-                SetView(ControllerLinkPhase.Connected);
-                break;
-            case ControllerLinkHostState.Disconnected:
-                lock (stateGate)
-                {
-                    hostConnected = false;
-                }
-
-                input.Neutralize();
-                ApplyOutput(RumbleRequest.None);
-                SetView(ControllerLinkPhase.Reconnecting, detail);
-                BeginConnectionAttempt();
-                break;
-            case ControllerLinkHostState.Stopped:
-                if (Volatile.Read(ref stopping) == 0)
-                {
-                    OnHostClosed(detail ?? "Controller Link host stopped unexpectedly.");
-                }
-
-                break;
-            case ControllerLinkHostState.Error:
-                OnHostClosed(detail ?? "Windows Bluetooth peripheral error.");
-                break;
+            Interlocked.Increment(ref malformedOutputReports);
+            return;
         }
-    }
 
-    private void OnOutputReport(ControllerLinkOutputReport report)
-    {
-        var decoded = BridgeOutputCodec.Decode(
-            report.Payload,
-            ControllerReportEncoder.OutputReportId);
+        var decoded = BridgeOutputCodec.Decode(decodedFrame.Payload, decodedFrame.ReportId);
         if (decoded is null)
         {
             Interlocked.Increment(ref malformedOutputReports);
@@ -291,10 +287,6 @@ public sealed class ControllerLinkService : IAsyncDisposable
         }
 
         Interlocked.Increment(ref outputReportsDecoded);
-        Interlocked.Add(ref totalOutputLatencyTicks, Math.Max(0, report.MainReceiveTimestamp - report.HostTimestamp));
-        UpdateMaximum(
-            ref maximumOutputLatencyTicks,
-            Math.Max(0, report.MainReceiveTimestamp - report.HostTimestamp));
 
         shapedLeft = RumbleShaping.Shape(decoded.Value.Rumble.Left, shapedLeft);
         shapedRight = RumbleShaping.Shape(decoded.Value.Rumble.Right, shapedRight);
@@ -323,109 +315,27 @@ public sealed class ControllerLinkService : IAsyncDisposable
         }
     }
 
-    private void BeginConnectionAttempt()
+    /// <summary>
+    /// The carrier went away. Controller Link cannot outlive it, and unlike the
+    /// HOGP host there is nothing separate still running that would need
+    /// stopping — so this is a teardown, not a reconnect.
+    /// </summary>
+    private void OnCarrierLost(string reason)
     {
-        CancellationToken token;
-        int generation;
-        lock (stateGate)
-        {
-            if (host is null || sessionCancellation is null || hostConnected)
-            {
-                return;
-            }
-
-            generation = ++connectionGeneration;
-            token = sessionCancellation.Token;
-        }
-
-        _ = CoordinateConnectionAsync(generation, token);
-    }
-
-    private async Task CoordinateConnectionAsync(int generation, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await Task.Delay(RememberedReconnectGrace, cancellationToken).ConfigureAwait(false);
-            if (!AttemptCurrent(generation) || !management.Ready)
-            {
-                return;
-            }
-
-            SetView(ControllerLinkPhase.Connecting, "Asking the adapter to find this controller.");
-            var status = await management.StartPairingAsync(cancellationToken).ConfigureAwait(false);
-            Interlocked.Exchange(ref remotePairingActive, status.Active ? 1 : 0);
-            diagnostics.Info(
-                "controller-link",
-                $"remote pairing: op={status.Operation} state={status.State.WireName()} " +
-                $"reason={status.Reason.WireName()}");
-
-            var deadline = Stopwatch.GetTimestamp() +
-                (long)(PairingDeadline.TotalSeconds * Stopwatch.Frequency);
-            while (AttemptCurrent(generation) && Stopwatch.GetTimestamp() < deadline)
-            {
-                if (!status.Active)
-                {
-                    if (status.State == PairingState.Paired)
-                    {
-                        await Task.Delay(PairingPollInterval, cancellationToken).ConfigureAwait(false);
-                        continue;
-                    }
-
-                    SetView(
-                        ControllerLinkPhase.WaitingForConnection,
-                        PairingProblem(status));
-                    return;
-                }
-
-                await Task.Delay(PairingPollInterval, cancellationToken).ConfigureAwait(false);
-                status = await management.PairingStatusAsync(cancellationToken).ConfigureAwait(false);
-                Interlocked.Exchange(ref remotePairingActive, status.Active ? 1 : 0);
-            }
-
-            if (AttemptCurrent(generation))
-            {
-                SetView(
-                    ControllerLinkPhase.WaitingForConnection,
-                    "The adapter did not connect before its pairing window closed.");
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception error)
-        {
-            diagnostics.Warn("controller-link", $"adapter connect workflow failed: {error.Message}");
-            if (AttemptCurrent(generation))
-            {
-                SetView(ControllerLinkPhase.WaitingForConnection, ProductError(error));
-            }
-        }
-    }
-
-    private bool AttemptCurrent(int generation)
-    {
-        lock (stateGate)
-        {
-            return host is not null && !hostConnected && connectionGeneration == generation;
-        }
-    }
-
-    private void OnHostClosed(string reason)
-    {
-        if (Volatile.Read(ref stopping) != 0 || host is null)
+        if (Volatile.Read(ref stopping) != 0 || dataPlane is null)
         {
             return;
         }
 
-        _ = HandleUnexpectedLossAsync(reason);
+        _ = HandleCarrierLossAsync(reason);
     }
 
-    private async Task HandleUnexpectedLossAsync(string reason)
+    private async Task HandleCarrierLossAsync(string reason)
     {
         await lifecycle.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (host is null || Volatile.Read(ref stopping) != 0)
+            if (dataPlane is null || Volatile.Read(ref stopping) != 0)
             {
                 return;
             }
@@ -433,8 +343,12 @@ public sealed class ControllerLinkService : IAsyncDisposable
             Interlocked.Exchange(ref stopping, 1);
             input.Neutralize();
             ApplyOutput(RumbleRequest.None);
-            await TearDownLockedAsync(callHostStop: false).ConfigureAwait(false);
-            diagnostics.Error("controller-link", $"host lost: {reason}; {Metrics.Summary()}");
+
+            // Do not talk to the adapter: the reason we are here is that the
+            // link to it is gone. Its own stale-input watchdog neutralizes the
+            // console within 300 ms, which is exactly what that watchdog is for.
+            await TearDownLockedAsync(tellAdapter: false).ConfigureAwait(false);
+            diagnostics.Error("controller-link", $"carrier lost: {reason}; {Metrics.Summary()}");
             SetView(ControllerLinkPhase.Error, ProductError(new InvalidOperationException(reason)));
         }
         finally
@@ -448,7 +362,7 @@ public sealed class ControllerLinkService : IAsyncDisposable
     {
         if (management.Ready)
         {
-            if (host is null && view.Value.Phase is
+            if (dataPlane is null && view.Value.Phase is
                 ControllerLinkPhase.Unavailable or ControllerLinkPhase.Stopped)
             {
                 SetView(ControllerLinkPhase.Ready);
@@ -457,7 +371,7 @@ public sealed class ControllerLinkService : IAsyncDisposable
             return;
         }
 
-        if (host is null)
+        if (dataPlane is null)
         {
             SetView(ControllerLinkPhase.Unavailable, management.UnavailableReason);
             return;
@@ -468,62 +382,34 @@ public sealed class ControllerLinkService : IAsyncDisposable
 
     private async Task StopForManagementLossAsync()
     {
-        diagnostics.Warn("controller-link", "trusted management connection lost; stopping safely");
-        await StopAsync().ConfigureAwait(false);
+        diagnostics.Warn("controller-link", "trusted management lost; stopping safely");
+        await lifecycle.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (dataPlane is not null)
+            {
+                Interlocked.Exchange(ref stopping, 1);
+                input.Neutralize();
+                ApplyOutput(RumbleRequest.None);
+                await TearDownLockedAsync(tellAdapter: false).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref stopping, 0);
+            lifecycle.Release();
+        }
+
         SetView(ControllerLinkPhase.Unavailable, management.UnavailableReason);
     }
 
     private async Task TearDownLockedAsync(
-        bool callHostStop,
+        bool tellAdapter,
         CancellationToken cancellationToken = default)
     {
         var currentCancellation = sessionCancellation;
         sessionCancellation = null;
         currentCancellation?.Cancel();
-
-        var currentHost = host;
-        host = null;
-        lock (stateGate)
-        {
-            hostConnected = false;
-            connectionGeneration++;
-        }
-
-        if (currentHost is not null)
-        {
-            Interlocked.Exchange(ref finalReportsQueued, currentHost.InputReportsQueued);
-            Interlocked.Exchange(ref finalReportsSent, currentHost.InputReportsSent);
-            Interlocked.Exchange(ref finalReportsCoalesced, currentHost.InputReportsCoalesced);
-            Interlocked.Exchange(ref finalOutputReportsReceived, currentHost.OutputReportsReceived);
-            currentHost.StateChanged -= OnHostStateChanged;
-            currentHost.OutputReportReceived -= OnOutputReport;
-            currentHost.Closed -= OnHostClosed;
-            if (callHostStop)
-            {
-                try
-                {
-                    await currentHost.StopAsync(cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception error) when (error is not OperationCanceledException)
-                {
-                    diagnostics.Warn("controller-link", $"helper stop failed: {error.Message}");
-                }
-            }
-
-            await currentHost.DisposeAsync().ConfigureAwait(false);
-        }
-
-        if (Interlocked.Exchange(ref remotePairingActive, 0) != 0 && management.Ready)
-        {
-            try
-            {
-                await management.CancelPairingAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception error) when (error is not OperationCanceledException)
-            {
-                diagnostics.Debug("controller-link", $"pairing cancel after stop failed: {error.Message}");
-            }
-        }
 
         var currentPublisher = publisherTask;
         publisherTask = null;
@@ -538,9 +424,40 @@ public sealed class ControllerLinkService : IAsyncDisposable
             }
         }
 
+        var plane = dataPlane;
+        if (plane is not null)
+        {
+            // Snapshot BEFORE clearing the field, or a stopped session reports
+            // zeroes and the run that just happened becomes unmeasurable.
+            finalMetrics = Metrics;
+            dataPlane = null;
+            plane.OutputFrameReceived -= OnOutputFrame;
+            plane.Closed -= OnCarrierLost;
+            await plane.DisposeAsync().ConfigureAwait(false);
+        }
+
+        if (tellAdapter && management.Ready)
+        {
+            await SafeStopDataPlaneAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         currentCancellation?.Dispose();
         input.Neutralize();
         ApplyOutput(RumbleRequest.None);
+    }
+
+    private async Task SafeStopDataPlaneAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await management.StopDataPlaneAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            // The adapter's watchdog neutralizes on its own if this never
+            // lands, so a failed stop is untidy rather than unsafe.
+            diagnostics.Debug("controller-link", $"adapter stop failed: {error.Message}");
+        }
     }
 
     private void SetReadyOrUnavailable() =>
@@ -556,37 +473,33 @@ public sealed class ControllerLinkService : IAsyncDisposable
     private void SetView(ControllerLinkPhase phase, string? detail = null) =>
         view.Set(ControllerLinkView.Of(phase, detail, management.Ready));
 
-    private static string PairingProblem(PairingStatus status) => status.State switch
+    /// <summary>
+    /// Turn the adapter's refusal into something a user can act on. The MTU
+    /// case is worth naming: it is a property of the negotiated link rather
+    /// than a fault, and reconnecting genuinely can fix it.
+    /// </summary>
+    private static string RefusalReason(ControllerLinkState state)
     {
-        PairingState.Blocked => status.Reason switch
+        if (!state.MtuOk && state.AttMtu > 0)
         {
-            PairingReason.StorageFull => "The adapter's controller bond store is full.",
-            PairingReason.ManagementDisabled => "Controller pairing is disabled on the adapter.",
-            PairingReason.LockedOut => "The adapter temporarily locked controller pairing.",
-            PairingReason.Busy => "The adapter is busy with another pairing request.",
-            _ => "The adapter refused to start controller pairing.",
-        },
-        PairingState.TimedOut => "The adapter did not find this controller before pairing timed out.",
-        PairingState.Cancelled => "Controller pairing was cancelled.",
-        _ => "The adapter is waiting for this controller.",
-    };
+            return "This Bluetooth connection is too small to carry controller input. " +
+                   "Disconnect and reconnect the adapter.";
+        }
+
+        if (state.Version != 0 && state.Version != ControllerLinkDataPlane.Version)
+        {
+            return "The adapter and this app disagree about Controller Link. Update both.";
+        }
+
+        return "The adapter refused to start Controller Link.";
+    }
 
     private static string ProductError(Exception error)
     {
         var message = error.Message;
-        if (message.Contains("packaged", StringComparison.OrdinalIgnoreCase))
+        if (message.Contains("unknown command", StringComparison.OrdinalIgnoreCase))
         {
-            return "Controller Link requires the packaged PicoSwitch Companion build.";
-        }
-
-        if (message.Contains("out of sync", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Installed Controller Link components are out of sync.";
-        }
-
-        if (message.Contains("advertis", StringComparison.OrdinalIgnoreCase))
-        {
-            return "Windows could not start Bluetooth controller advertising.";
+            return "This adapter's firmware does not support Controller Link. Update the adapter.";
         }
 
         return message;
@@ -601,15 +514,10 @@ public sealed class ControllerLinkService : IAsyncDisposable
         outputReportsDecoded = 0;
         malformedOutputReports = 0;
         outputDeliveryFailures = 0;
-        totalOutputLatencyTicks = 0;
-        maximumOutputLatencyTicks = 0;
         shapedLeft = 0;
         shapedRight = 0;
-        finalReportsQueued = 0;
-        finalReportsSent = 0;
-        finalReportsCoalesced = 0;
-        finalOutputReportsReceived = 0;
-        remotePairingActive = 0;
+        sequence = 0;
+        finalMetrics = ControllerLinkMetrics.Empty;
     }
 
     private static void UpdateMaximum(ref long target, long candidate)
@@ -631,25 +539,39 @@ public sealed class ControllerLinkService : IAsyncDisposable
         TimeSpan.FromSeconds(ticks / (double)Stopwatch.Frequency);
 }
 
+/// <summary>
+/// Everything a qualification run needs to tell "the scheduler is slow" from
+/// "the radio is behind" from "the adapter is dropping frames".
+/// </summary>
 public sealed record ControllerLinkMetrics(
     long ReportsGenerated,
-    long ReportsQueued,
-    long ReportsSent,
-    long ReportsCoalesced,
+    long StatesPublished,
+    long WritesIssued,
+    long StatesCoalesced,
+    long WriteFailures,
+    int MaximumInFlight,
     TimeSpan AverageReportInterval,
     TimeSpan MaximumReportInterval,
-    long OutputReportsReceived,
+    TimeSpan AverageWriteLatency,
+    TimeSpan MaximumWriteLatency,
+    long OutputFramesReceived,
     long OutputReportsDecoded,
     long MalformedOutputReports,
     long OutputDeliveryFailures,
-    TimeSpan AverageOutputPipeLatency,
-    TimeSpan MaximumOutputPipeLatency)
+    int AttMtu)
 {
+    public static readonly ControllerLinkMetrics Empty = new(
+        0, 0, 0, 0, 0, 0,
+        TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero, TimeSpan.Zero,
+        0, 0, 0, 0, 0);
+
     public string Summary() =>
-        $"generated={ReportsGenerated} queued={ReportsQueued} sent={ReportsSent} " +
-        $"coalesced={ReportsCoalesced} intervalAvgMs={AverageReportInterval.TotalMilliseconds:F2} " +
-        $"intervalMaxMs={MaximumReportInterval.TotalMilliseconds:F2} output={OutputReportsReceived}/" +
-        $"{OutputReportsDecoded} malformed={MalformedOutputReports} outputFailures={OutputDeliveryFailures} " +
-        $"outputPipeAvgMs={AverageOutputPipeLatency.TotalMilliseconds:F2} " +
-        $"outputPipeMaxMs={MaximumOutputPipeLatency.TotalMilliseconds:F2}";
+        $"generated={ReportsGenerated} published={StatesPublished} written={WritesIssued} " +
+        $"coalesced={StatesCoalesced} writeFailures={WriteFailures} maxInFlight={MaximumInFlight} " +
+        $"intervalAvgMs={AverageReportInterval.TotalMilliseconds:F2} " +
+        $"intervalMaxMs={MaximumReportInterval.TotalMilliseconds:F2} " +
+        $"writeAvgMs={AverageWriteLatency.TotalMilliseconds:F2} " +
+        $"writeMaxMs={MaximumWriteLatency.TotalMilliseconds:F2} " +
+        $"output={OutputFramesReceived}/{OutputReportsDecoded} " +
+        $"malformed={MalformedOutputReports} outputFailures={OutputDeliveryFailures} mtu={AttMtu}";
 }
