@@ -494,15 +494,25 @@ public sealed class ControllerLinkService : IAsyncDisposable
         return "The adapter refused to start Controller Link.";
     }
 
+    /// <summary>
+    /// Turn a failure into a sentence a user can act on.
+    ///
+    /// "This firmware has no such command" is classified by the management
+    /// layer's own AdapterCommandException.IsUnsupported(), not by matching the
+    /// adapter's wording here. There are four accepted refusal phrasings and
+    /// they are the management contract's business -- one of them, "command
+    /// unavailable over Bluetooth", is what the adapter says when a command
+    /// exists but is not on its wireless allowlist, and a string match on
+    /// "unknown command" alone would have shown the user raw protocol text.
+    /// </summary>
     private static string ProductError(Exception error)
     {
-        var message = error.Message;
-        if (message.Contains("unknown command", StringComparison.OrdinalIgnoreCase))
+        if (error is AdapterCommandException adapterError && adapterError.IsUnsupported())
         {
             return "This adapter's firmware does not support Controller Link. Update the adapter.";
         }
 
-        return message;
+        return error.Message;
     }
 
     private void ResetMetrics()

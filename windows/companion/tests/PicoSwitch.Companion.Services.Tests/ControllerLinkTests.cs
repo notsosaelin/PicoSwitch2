@@ -440,16 +440,38 @@ public sealed class ControllerLinkTests
         await service.DisposeAsync();
     }
 
-    [Fact]
-    public async Task SurvivesAThrowingStart()
+    [Theory]
+    [InlineData("unknown command")]
+    [InlineData("unavailable")]
+    // Measured on real firmware 2026-09-02: this is what the adapter says when a
+    // command exists but is not on its wireless allowlist, and it reached the
+    // user as raw protocol text until the classification moved to
+    // AdapterCommandException.IsUnsupported().
+    [InlineData("command unavailable over Bluetooth")]
+    public async Task ReportsOlderFirmwareInProductLanguage(string adapterMessage)
     {
         var (service, management, _, output) = Build();
-        management.StartThrows = new InvalidOperationException("unknown command");
+        management.StartThrows = new AdapterCommandException("clink start", null, adapterMessage);
 
         await service.StartAsync();
 
         Assert.Equal(ControllerLinkPhase.Error, service.View.Value.Phase);
         Assert.Contains("Update the adapter", service.View.Value.Explanation);
+        Assert.DoesNotContain("Bluetooth", service.View.Value.Explanation);
+        Assert.True(output.Applied.All(r => r.Silent));
+        await service.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task SurfacesAnUnexpectedFailureRatherThanSwallowingIt()
+    {
+        var (service, management, _, output) = Build();
+        management.StartThrows = new InvalidOperationException("radio on fire");
+
+        await service.StartAsync();
+
+        Assert.Equal(ControllerLinkPhase.Error, service.View.Value.Phase);
+        Assert.Contains("radio on fire", service.View.Value.Explanation);
         Assert.True(output.Applied.All(r => r.Silent));
         await service.DisposeAsync();
     }
