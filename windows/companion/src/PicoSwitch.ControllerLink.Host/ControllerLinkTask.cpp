@@ -490,6 +490,34 @@ namespace winrt::PicoSwitch::ControllerLink::Host::implementation
                 co_return false;
             }
 
+            // NEGATIVE KNOWLEDGE — do not add a co-resident
+            // BluetoothLEAdvertisementPublisher here to "force legacy PDUs".
+            //
+            // The theory was attractive: PicoSwitch2 is built without
+            // ENABLE_LE_EXTENDED_ADVERTISING, so its central only ever receives
+            // LEGACY advertising reports, and if Windows advertised this hosted
+            // GATT service through an extended-PDU set the adapter could never
+            // see it.
+            //
+            // BTHPORT HCIRAW ETW on 2026-09-02 (Intel AX210, driver 24.40.10.8)
+            // falsified the premise. StartAdvertising programs TWO sets:
+            //
+            //   handle 1  props 0x0013  connectable + scannable + LEGACY PDUs
+            //             ADV  = Flags, Complete 16-bit UUIDs 0x180A,0x1812
+            //             SCAN_RSP = Complete Local Name
+            //   handle 2  props 0x0001  connectable, extended PDUs
+            //
+            // Windows already emits exactly the legacy ADV_IND the adapter needs,
+            // beside an extended set for modern centrals. A second publisher adds
+            // only a THIRD set that is provably useless here: the WinRT publisher
+            // has no IsConnectable (that property exists on the *received* args
+            // and on GattServiceProviderAdvertisingParameters, not on the
+            // publisher), so it can only emit ADV_NONCONN_IND — measured as
+            // props 0x0010 — carrying no HID UUID. Nothing can connect to it and
+            // the adapter's discovery predicate rejects it, while it still costs
+            // radio airtime the connectable set needs.
+            //
+            // See docs/experiments/windows-hogp-legacy-advertising-2026-09-02.md.
             SendHostState(static_cast<uint8_t>(host_state::advertising));
             SendHostState(static_cast<uint8_t>(host_state::waiting));
             std::thread([strong = get_strong()] { strong->PipeLoop(); }).detach();
@@ -566,9 +594,12 @@ namespace winrt::PicoSwitch::ControllerLink::Host::implementation
                     std::scoped_lock lock(state_gate);
                     std::copy(bytes.begin(), bytes.end(), latest_output.begin());
                 }
-                output_received.fetch_add(1);
+                auto const count = output_received.fetch_add(1) + 1;
                 WritePipeFrame(static_cast<uint16_t>(message_type::output_report), bytes);
-                Log(L"output report received count=" + to_hstring(output_received.load()));
+                if (count == 1 || count % 128 == 0)
+                {
+                    Log(L"output report received count=" + to_hstring(count));
+                }
             }
             else
             {
