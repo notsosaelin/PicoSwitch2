@@ -3901,6 +3901,14 @@ static void clink_publish_neutral(void)
 
 bool btstack_host_companion_link_active(void) { return clink.active; }
 
+bool btstack_host_companion_link_streaming(void)
+{
+    // Armed is not the same as driving. A link that has been started but has
+    // received nothing, or one the watchdog has neutralized because the
+    // companion died, is not a controller the user is holding.
+    return clink.active && !clink.neutralized && clink.frames_applied > 0u;
+}
+
 static void clink_set_subscribed(bool subscribed)
 {
     if (clink.subscribed == subscribed) return;

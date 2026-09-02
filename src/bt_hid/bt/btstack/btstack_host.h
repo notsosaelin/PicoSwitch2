@@ -333,6 +333,13 @@ bool btstack_host_companion_link_start(void);
 void btstack_host_companion_link_stop(void);
 
 bool btstack_host_companion_link_active(void);
+
+/// True when the companion is not merely armed but actually driving the console:
+/// at least one frame applied, and the stale-input watchdog has not since
+/// neutralized. This is what "a controller is connected" means for Path C, and
+/// it is what the owner LED keys on -- Android goes solid once input is
+/// confirmed, not when a transport is merely open.
+bool btstack_host_companion_link_streaming(void);
 uint16_t btstack_host_companion_link_mtu(void);
 
 typedef struct {
