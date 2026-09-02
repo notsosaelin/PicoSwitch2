@@ -826,6 +826,33 @@ public sealed class ManagementClient(
     /// it: losing this session, or the PC, cannot leave the adapter discoverable.
     /// <see cref="CancelPairingAsync"/> is a courtesy, not a safety mechanism.
     /// </summary>
+    /// <summary>
+    /// Arm the Controller Link data plane. The adapter measures the negotiated
+    /// ATT MTU here and refuses below the frame size, so the returned state is
+    /// the answer to "may I stream", not merely "did the command land".
+    /// </summary>
+    public Task<ControllerLinkState> StartControllerLinkAsync(CancellationToken ct = default) =>
+        ExchangeAsync(ManagementCommands.ControllerLinkStart,
+                      ManagementProtocol.ControllerLink, ct);
+
+    /// <summary>
+    /// Release the data plane. The adapter publishes neutral before dropping
+    /// the source, and keeps the management link up: Controller Link stopping
+    /// is not carrier loss.
+    /// </summary>
+    public Task<ControllerLinkState> StopControllerLinkAsync(CancellationToken ct = default) =>
+        ExchangeAsync(ManagementCommands.ControllerLinkStop,
+                      ManagementProtocol.ControllerLink, ct);
+
+    /// <summary>
+    /// Read-only, and the capability probe. Firmware without a data plane
+    /// answers `unknown command`, which the optional-family probe reports as
+    /// Unsupported -- so support is discoverable without starting anything.
+    /// </summary>
+    public Task<ControllerLinkState> ControllerLinkStatusAsync(CancellationToken ct = default) =>
+        ExchangeAsync(ManagementCommands.ControllerLinkStatus,
+                      ManagementProtocol.ControllerLink, ct);
+
     public Task<PairingStatus> StartPairingAsync(CancellationToken ct = default) =>
         ExchangeAsync(ManagementCommands.PairingStart, ManagementProtocol.PairingStatus, ct);
 

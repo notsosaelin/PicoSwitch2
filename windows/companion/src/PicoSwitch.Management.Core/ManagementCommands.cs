@@ -43,6 +43,25 @@ public static partial class ManagementCommands
     public const string PairingStatus = "pairing status";
     public const string PairingCancel = "pairing cancel";
 
+    /// <summary>
+    /// Windows Controller Link (Path C) control plane.
+    ///
+    /// Control only. Gameplay rides a separate binary characteristic on the
+    /// same connection -- 125 Hz of controller state on this newline-framed
+    /// single-flight channel would starve management, which is why the data
+    /// plane exists at all.
+    /// </summary>
+    public const string ControllerLinkStart = "clink start";
+
+    public const string ControllerLinkStop = "clink stop";
+
+    /// <summary>
+    /// Read-only, and the capability probe: firmware without a data plane
+    /// answers `unknown command`, so a companion can discover support without
+    /// starting anything.
+    /// </summary>
+    public const string ControllerLinkStatus = "clink status";
+
     public const string KbmResetAll = "kbm reset all";
     public const string AmiiboCancel = "amiibo cancel";
     public const string AmiiboPersist = "amiibo persist";

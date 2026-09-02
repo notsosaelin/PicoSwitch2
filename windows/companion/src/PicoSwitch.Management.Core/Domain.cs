@@ -525,6 +525,41 @@ public sealed record PairingStatus(
     public bool Active => State.IsActive();
 }
 
+/// <summary>
+/// Windows Controller Link (Path C) data-plane state, from the adapter's
+/// control plane.
+///
+/// This doubles as the capability probe. Firmware without a data plane answers
+/// <c>unknown command</c>, which the optional-family probe turns into
+/// Unsupported — so a companion learns "this adapter cannot" without writing a
+/// single gameplay frame.
+///
+/// <see cref="AttMtu"/> and <see cref="MinimumAttMtu"/> are reported together
+/// deliberately. The negotiated MTU is a property of the live link, not of the
+/// firmware, so the adapter states both and the companion refuses BEFORE
+/// streaming rather than discovering a fragmenting MTU mid-game.
+/// </summary>
+public sealed record ControllerLinkState(
+    bool Active = false,
+    bool Subscribed = false,
+    int Version = 0,
+    int FrameBytes = 0,
+    int AttMtu = 0,
+    int MinimumAttMtu = 0,
+    bool MtuOk = false,
+    long Generation = 0,
+    long FramesReceived = 0,
+    long FramesApplied = 0,
+    long FramesStale = 0,
+    long FramesShort = 0,
+    long FramesVersion = 0,
+    long FramesOpcode = 0,
+    long FramesRejectedState = 0,
+    long OutputsSent = 0,
+    long OutputsFailed = 0,
+    long Neutralizations = 0,
+    long MaxGapMillis = 0);
+
 public sealed record PeerPage(ValueList<PeerInfo> Entries, int Total, int? Next);
 
 public sealed record PeerInventory
