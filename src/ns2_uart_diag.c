@@ -2509,7 +2509,8 @@ static void handle_command(void) {
                  "\"bonds\":%u,\"bond_cap\":%u,\"bonded_adv\":%lu,"
                  "\"nontarget_adv\":%lu,\"rpa_adv\":%lu,"
                  "\"dial\":{\"n\":%lu,\"addr\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
-                 "\"addr_type\":%u,\"status\":\"0x%02X\",\"rpa_trust\":%s},"
+                 "\"addr_type\":%u,\"status\":\"0x%02X\",\"rpa_trust\":%s,"
+                 "\"cmd\":\"0x%04X\",\"cmd_status\":\"0x%02X\"},"
                  "\"target_connects\":%lu,\"target_success\":%lu,"
                  "\"target_fail\":%lu,\"last_status\":\"0x%02X\","
                  "\"reencrypt_start\":%lu,\"reencrypt_ok\":%lu,"
@@ -2549,6 +2550,7 @@ static void handle_command(void) {
                  d.last_dial_addr[3], d.last_dial_addr[4], d.last_dial_addr[5],
                  d.last_dial_addr_type, d.last_dial_status,
                  d.last_dial_rpa_trust ? "true" : "false",
+                 d.last_dial_cmd_opcode, d.last_dial_cmd_status,
                  (unsigned long)d.target_connect_attempts,
                  (unsigned long)d.target_connect_successes,
                  (unsigned long)d.target_connect_failures,

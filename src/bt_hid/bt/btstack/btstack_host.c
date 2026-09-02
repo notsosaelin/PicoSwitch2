@@ -2318,6 +2318,10 @@ static uint8_t last_dial_addr_type;
 static uint8_t last_dial_status;
 static bool last_dial_rpa_trust;
 static uint32_t dial_attempts;
+// The controller's own verdict on the create-connection command, which
+// gap_connect()'s return value cannot express. See HCI_EVENT_COMMAND_STATUS.
+static uint16_t last_dial_cmd_opcode;
+static uint8_t last_dial_cmd_status;
 
 static uint32_t bonded_adv_reports;
 static uint32_t nontarget_adv_reports;
@@ -5980,6 +5984,25 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 switch2_last_cmd_status = hci_event_command_status_get_status(packet);
                 printf("[SW2_BLE] HCI Start Encryption command status=0x%02X\n",
                        switch2_last_cmd_status);
+            } else if (opcode == HCI_OPCODE_HCI_LE_CREATE_CONNECTION ||
+                       opcode == HCI_OPCODE_HCI_LE_EXTENDED_CREATE_CONNECTION) {
+                // gap_connect() returns success when it QUEUES a connection,
+                // not when the controller accepts the command, so its status
+                // cannot distinguish "dialled and the peer never answered" from
+                // "the controller refused the command outright". This is the
+                // only place that difference is observable.
+                //
+                // It matters for a peer dialled by IDENTITY address: Core spec
+                // Peer_Address_Type 0x02/0x03 is valid only where the
+                // controller supports address resolution and the peer's IRK is
+                // in its resolving list. A controller that does not will reject
+                // the command here (typically 0x12, Invalid HCI Command
+                // Parameters) and no CONNECT_IND is ever emitted -- which from
+                // outside is indistinguishable from a peer that is not there.
+                last_dial_cmd_opcode = opcode;
+                last_dial_cmd_status = hci_event_command_status_get_status(packet);
+                printf("[BTSTACK_HOST] LE create connection command status=0x%02X\n",
+                       last_dial_cmd_status);
             }
             break;
         }
@@ -12241,6 +12264,8 @@ void btstack_host_get_reconnect_diag(btstack_host_reconnect_diag_t *out)
     out->last_dial_status = last_dial_status;
     out->last_dial_rpa_trust = last_dial_rpa_trust;
     out->dial_attempts = dial_attempts;
+    out->last_dial_cmd_opcode = last_dial_cmd_opcode;
+    out->last_dial_cmd_status = last_dial_cmd_status;
     out->reencryption_started = hid_state.reencryption_started;
     out->reencryption_successes = hid_state.reencryption_successes;
     out->reencryption_failures = hid_state.reencryption_failures;
