@@ -46,20 +46,52 @@ public interface IControllerLinkDataPlane : IAsyncDisposable
     Task<bool> OpenAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Send one gameplay frame, write-without-response.
+    /// Hand the newest gameplay frame to the writer.
     ///
-    /// Returns false rather than throwing on a failed write: at 125 Hz a
-    /// dropped frame is superseded by the next one, and tearing down a healthy
-    /// link over one lost packet would be worse than the packet. Persistent
-    /// failure surfaces through the counters and, eventually, <see cref="Closed"/>.
+    /// Never blocks and never queues. The implementation holds ONE latest-state
+    /// mailbox with at most one write in flight: a frame arriving while a write
+    /// is outstanding REPLACES the pending frame rather than joining a queue,
+    /// because an older controller state has no value once a newer one exists.
+    ///
+    /// <c>WriteWithoutResponse</c> means the adapter sends no ATT Write
+    /// Response — not that the local WinRT operation may be discarded.
+    /// Discarding it would leave unbounded overlapping operations in the stack
+    /// with no backpressure and no completion status, which is an unbounded
+    /// queue of stale frames built out of concurrency instead of out of a list.
+    ///
+    /// Still write-without-response: no ATT response, no gameplay ACK, no
+    /// per-frame round trip, and no retransmission of a failed historical
+    /// state. A failed write is superseded, not retried.
     /// </summary>
-    bool TryWriteInput(ReadOnlySpan<byte> frame);
+    void PublishInput(ReadOnlySpan<byte> frame);
 
+    /// <summary>Frames handed to the writer by the report scheduler.</summary>
+    long StatesPublished { get; }
+
+    /// <summary>
+    /// Frames replaced in the mailbox before they could be sent — latest-state
+    /// -wins doing its job. A large ratio means the radio is behind the
+    /// scheduler, which is a measurement, not a fault.
+    /// </summary>
+    long StatesCoalesced { get; }
+
+    /// <summary>GATT writes actually issued and accepted by the stack.</summary>
     long FramesWritten { get; }
 
     long FrameWriteFailures { get; }
 
     long OutputFramesReceived { get; }
+
+    /// <summary>
+    /// Must never exceed 1. Exposed rather than asserted so hardware
+    /// qualification can prove the writer stayed bounded instead of assuming it.
+    /// </summary>
+    int MaximumInFlight { get; }
+
+    /// <summary>Local <c>WriteValueWithResultAsync</c> completion latency.</summary>
+    TimeSpan AverageWriteLatency { get; }
+
+    TimeSpan MaximumWriteLatency { get; }
 }
 
 /// <summary>
