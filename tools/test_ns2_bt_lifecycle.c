@@ -55,6 +55,44 @@ static void test_pairing_admission(void)
            NS2_BT_ADMISSION_REJECT);
 }
 
+// A deferred pairing-window close that never resolves latches the pairing
+// window shut for the rest of the boot -- LED stuck blinking, every later
+// window a silent no-op, the BOOTSEL gesture included. Confirmed on hardware
+// 2026-09-02 when a connect attempt outlived its window and the cancel produced
+// no LE_CONNECTION_COMPLETE for resolve_deferred_pairing_close() to act on.
+// These pin the exits that do not depend on an HCI event arriving.
+static void test_pairing_deferral_cannot_latch(void)
+{
+    const uint32_t bound = 12000u;
+
+    // Nothing deferred: never asks for a resolve.
+    assert(!ns2_bt_pairing_deferral_resolved(false, true, 0u, 99999u, bound));
+    assert(!ns2_bt_pairing_deferral_resolved(false, false, 0u, 99999u, bound));
+
+    // Deferred while the attempt it protects is still in flight and inside the
+    // bound: keep deferring. This is what the deferral exists for, and it must
+    // survive the fix.
+    assert(!ns2_bt_pairing_deferral_resolved(true, true, 1000u, 1000u, bound));
+    assert(!ns2_bt_pairing_deferral_resolved(true, true, 1000u, 12999u, bound));
+
+    // The attempt ended. Resolve, whether or not a completion event was seen.
+    assert(ns2_bt_pairing_deferral_resolved(true, false, 1000u, 1001u, bound));
+
+    // The attempt never leaves flight. The bound resolves it anyway -- this is
+    // the case the hardware hit.
+    assert(ns2_bt_pairing_deferral_resolved(true, true, 1000u, 13000u, bound));
+    assert(ns2_bt_pairing_deferral_resolved(true, true, 1000u, 60000u, bound));
+
+    // A run-loop clock wrap must not extend a deferral into effective
+    // permanence, nor cut one short: unsigned arithmetic keeps the elapsed
+    // time honest across the 2^32 ms boundary.
+    const uint32_t before_wrap = 0xFFFFF000u;
+    assert(ns2_bt_pairing_deferral_resolved(
+        true, true, before_wrap, before_wrap + bound + 1000u, bound));
+    assert(!ns2_bt_pairing_deferral_resolved(
+        true, true, before_wrap, before_wrap + bound - 1000u, bound));
+}
+
 static void test_boot_lockout(void)
 {
     assert(!ns2_bt_boot_pairing_locked(false, false));
@@ -817,6 +855,7 @@ int main(void)
     test_companion_session_trust_is_peer_bound();
     test_inquiry_restart_gap();
     test_pairing_admission();
+    test_pairing_deferral_cannot_latch();
     test_boot_lockout();
     test_install_reset_bootstrap_is_one_shot();
     test_classic_ssp_attempt_admission();

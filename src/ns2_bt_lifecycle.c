@@ -54,6 +54,22 @@ ns2_bt_admission_t ns2_bt_admission_decide(bool pairing_lockout,
                                : NS2_BT_ADMISSION_REJECT;
 }
 
+bool ns2_bt_pairing_deferral_resolved(bool deferred,
+                                      bool connect_in_flight,
+                                      uint32_t deferred_at_ms,
+                                      uint32_t now_ms,
+                                      uint32_t bound_ms)
+{
+    if (!deferred)
+        return false;
+    // The attempt the deferral was protecting is over. This is the ordinary
+    // exit, and unlike the HCI completion path it cannot fail to arrive.
+    if (!connect_in_flight)
+        return true;
+    // Backstop for an attempt that never leaves flight at all.
+    return (uint32_t)(now_ms - deferred_at_ms) >= bound_ms;
+}
+
 bool ns2_bt_classic_trust_present(bool classic_link_key_present,
                                   bool companion_session_trusted)
 {

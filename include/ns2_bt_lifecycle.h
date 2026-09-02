@@ -59,6 +59,34 @@ ns2_bt_admission_t ns2_bt_admission_decide(bool pairing_lockout,
                                             bool pairing_window_open,
                                             bool trust_present);
 
+// A deferred pairing-window close must not outlive the connect it waits for.
+//
+// btstack_host_close_pairing_window() defers the close while a BLE connect is
+// in flight, so an admitted candidate is not cancelled out from under its own
+// attempt. resolve_deferred_pairing_close() clears the deferral from
+// HCI_SUBEVENT_LE_CONNECTION_COMPLETE -- which assumes that event always
+// arrives. It does not: a gap_connect_cancel() for an attempt the controller
+// has already abandoned can produce no completion at all.
+//
+// A deferral that is never resolved latches open_pairing_window() shut for the
+// rest of the boot: the owner LED stays in the pairing blink, and EVERY later
+// pairing attempt -- the BOOTSEL gesture included -- becomes a silent no-op
+// reported to management clients as BLOCKED/BUSY. Only a power cycle recovers.
+//
+// Confirmed on hardware 2026-09-02: the window expired 5 s into a connect
+// attempt, the 10 s watchdog then reset the state to IDLE, and the deferral
+// stayed set with nothing left to clear it. See
+// docs/experiments/windows-hogp-legacy-advertising-2026-09-02.md.
+//
+// Returns true when the deferral must be resolved now: the connect is no longer
+// in flight, or it has outlived `bound_ms` regardless. Unsigned arithmetic, so
+// a run-loop clock wrap cannot extend the deferral.
+bool ns2_bt_pairing_deferral_resolved(bool deferred,
+                                      bool connect_in_flight,
+                                      uint32_t deferred_at_ms,
+                                      uint32_t now_ms,
+                                      uint32_t bound_ms);
+
 // Classic admission trust is cross-transport.
 //
 // Before 2026-08-20 the Classic connection filter admitted every peer that was
