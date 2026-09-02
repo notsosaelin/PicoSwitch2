@@ -305,6 +305,12 @@ typedef struct {
     uint8_t last_dial_status;      // gap_connect() return
     bool last_dial_rpa_trust;      // taken through the RPA-trust branch
     uint32_t dial_attempts;
+    // The CONTROLLER's verdict, which gap_connect()'s return cannot express: it
+    // reports queueing, not acceptance. A controller that refuses the command
+    // (e.g. an identity Peer_Address_Type it cannot resolve) emits no
+    // CONNECT_IND at all, which looks exactly like an absent peer.
+    uint16_t last_dial_cmd_opcode;
+    uint8_t last_dial_cmd_status;
     char last_connected_name[48];
 } btstack_host_reconnect_diag_t;
 
