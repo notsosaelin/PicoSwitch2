@@ -717,6 +717,53 @@ public static class ManagementProtocol
                 Candidates: value.OptionalInt("candidates") ?? 0);
         });
 
+    /// <summary>
+    /// Controller Link data-plane state. The adapter nests everything under
+    /// "clink" so one read answers capability, health and the MTU question.
+    /// </summary>
+    public static ControllerLinkState ControllerLink(string command, string response) =>
+        Decode(command, response, value =>
+        {
+            if (!value.TryGetProperty("clink", out var link) ||
+                link.ValueKind != JsonValueKind.Object)
+            {
+                throw Incomplete(command);
+            }
+
+            JsonElement frames = default;
+            bool hasFrames = link.TryGetProperty("frames", out frames) &&
+                             frames.ValueKind == JsonValueKind.Object;
+            JsonElement outputs = default;
+            bool hasOutputs = link.TryGetProperty("outputs", out outputs) &&
+                              outputs.ValueKind == JsonValueKind.Object;
+
+            long Frame(string name) =>
+                hasFrames ? (frames.OptionalLong(name) ?? 0) : 0;
+            long Output(string name) =>
+                hasOutputs ? (outputs.OptionalLong(name) ?? 0) : 0;
+
+            return new Management.ControllerLinkState(
+                Active: link.OptionalBool("active") ?? false,
+                Subscribed: link.OptionalBool("subscribed") ?? false,
+                Version: link.OptionalInt("version") ?? 0,
+                FrameBytes: link.OptionalInt("frame_bytes") ?? 0,
+                AttMtu: link.OptionalInt("att_mtu") ?? 0,
+                MinimumAttMtu: link.OptionalInt("min_att_mtu") ?? 0,
+                MtuOk: link.OptionalBool("mtu_ok") ?? false,
+                Generation: link.OptionalLong("generation") ?? 0,
+                FramesReceived: Frame("received"),
+                FramesApplied: Frame("applied"),
+                FramesStale: Frame("stale"),
+                FramesShort: Frame("short"),
+                FramesVersion: Frame("version"),
+                FramesOpcode: Frame("opcode"),
+                FramesRejectedState: Frame("rejected_state"),
+                OutputsSent: Output("sent"),
+                OutputsFailed: Output("failed"),
+                Neutralizations: link.OptionalLong("neutralizations") ?? 0,
+                MaxGapMillis: link.OptionalLong("max_gap_ms") ?? 0);
+        });
+
     public static BondEnumeration LegacyBonds(string command, string response) =>
         Decode(command, response, value =>
         {

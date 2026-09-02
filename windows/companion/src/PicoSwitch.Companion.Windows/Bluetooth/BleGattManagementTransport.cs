@@ -1,5 +1,6 @@
 using System.Text;
 using PicoSwitch.Bridge.Core;
+using PicoSwitch.Companion.Windows.ControllerLink;
 using PicoSwitch.Management;
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.Advertisement;
@@ -42,7 +43,7 @@ namespace PicoSwitch.Companion.Windows.Bluetooth;
 /// §31 Phase 2: that a reflashed adapter reaches `RepairRequired` on the FIRST
 /// attempt, and that `mgmt_watch.ps1` shows one client with no churn.
 /// </summary>
-public sealed class BleGattManagementTransport : IManagementTransport
+public sealed class BleGattManagementTransport : IManagementTransport, IControllerLinkDataPlaneProvider
 {
     private const int ConnectTimeoutMillis = 15_000;
     private const int PairingConnectTimeoutMillis = 60_000;
@@ -59,6 +60,36 @@ public sealed class BleGattManagementTransport : IManagementTransport
     private readonly Action<string, string>? log;
 
     private OwnedGatt? owned;
+
+    /// <summary>
+    /// Hand Controller Link two more characteristics on the session this class
+    /// already owns.
+    ///
+    /// Returns null when there is no live session, which is a refusal rather
+    /// than an error: Controller Link requires trusted management, so "not
+    /// connected" is a legitimate answer the caller renders as such.
+    ///
+    /// This is deliberately the ONLY way the data plane reaches the radio.
+    /// There is one Bluetooth session in the product and this class holds it;
+    /// Windows cannot hold a second LE relationship to the adapter, which is
+    /// exactly what retired the HOGP carrier.
+    /// </summary>
+    public IControllerLinkDataPlane? TryCreateDataPlane()
+    {
+        OwnedGatt? current;
+        lock (gate)
+        {
+            current = owned;
+        }
+
+        if (current is null || current.Closed || current.Service is null)
+        {
+            return null;
+        }
+
+        return new GattControllerLinkDataPlane(current.Service, () => current.MaxPduSize);
+    }
+
     private long generation;
     private ManagementConnectionContext context = new();
     private bool disposed;

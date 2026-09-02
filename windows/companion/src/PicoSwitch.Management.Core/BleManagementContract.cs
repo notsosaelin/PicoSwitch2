@@ -15,6 +15,28 @@ public static class BleManagementContract
     public const string ServiceUuid = "7c5ad4ed-2731-417c-b316-058505c7c083";
     public const string RxUuid = "5252186a-817f-489f-ad75-94c3bd444769";
     public const string TxUuid = "81462706-8e64-407a-bc3d-d303529fbe1c";
+
+    /// <summary>
+    /// Windows Controller Link (Path C) data plane, on this SAME service and
+    /// therefore the same bonded encrypted link — no second connection, and no
+    /// second security or pairing system.
+    ///
+    /// Separate characteristics rather than the Rx/Tx command pair above,
+    /// because gameplay and management have incompatible shapes: the command
+    /// channel is newline-framed, single-flight and request/response, and
+    /// 125 Hz of controller state on it would starve management.
+    ///
+    /// Companion to adapter: gameplay frames, write-without-response.
+    /// Firmware side is <c>config_ble_cl_in_uuid</c>.
+    /// </summary>
+    public const string ControllerLinkInUuid = "2f9e54c1-0b7a-4d62-9c18-3e74a52166d0";
+
+    /// <summary>
+    /// Adapter to companion: feedback notifications (rumble, player LED).
+    /// Firmware side is <c>config_ble_cl_out_uuid</c>.
+    /// </summary>
+    public const string ControllerLinkOutUuid = "6b33e18a-c45d-470e-b291-7f0c88ae3914";
+
     public const int AttPayloadWithDefaultMtu = 20;
     public const int MaxReplyPayloadBytes = 511;
 
