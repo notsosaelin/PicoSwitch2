@@ -36,6 +36,11 @@ __pycache__/
 build
 /8Bitdo/research/
 
+# C++/WinRT projection output. Native projects place generated headers beside
+# their sources by default; only the IDL and hand-written implementation belong
+# in Git.
+**/Generated Files/
+
 # Local reference clones and USB captures (large or independently versioned)
 /nso-gc-refs/
 /usbpcaptures/

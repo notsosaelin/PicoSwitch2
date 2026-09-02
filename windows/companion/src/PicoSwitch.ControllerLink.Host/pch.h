@@ -12,10 +12,15 @@
 #include <winrt/Windows.Storage.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
+#include <limits>
 #include <mutex>
+#include <span>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "android_controller_hid.h"
