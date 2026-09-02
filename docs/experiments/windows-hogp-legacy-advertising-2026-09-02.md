@@ -25,19 +25,24 @@ advertising, but the adapter never links and
 ## Background
 
 `src/btstack_config.h` defines `ENABLE_LE_CENTRAL`, `ENABLE_LE_PERIPHERAL` and
-`ENABLE_LE_PRIVACY_ADDRESS_RESOLUTION`. It defines neither
-`ENABLE_LE_EXTENDED_ADVERTISING` nor **`ENABLE_LE_RESOLVING_LIST`**. Both
-omissions matter, and they matter at different layers:
+`ENABLE_LE_PRIVACY_ADDRESS_RESOLUTION`. It does **not** define
+`ENABLE_LE_EXTENDED_ADVERTISING`.
 
-- no extended advertising ⇒ the adapter's `GAP_EVENT_ADVERTISING_REPORT` handler
-  (`btstack_host.c:4623`) can only ever receive **legacy** advertising reports;
-- privacy resolution **without** a resolving list ⇒ BTstack resolves incoming
-  RPAs **in software, on the host**, and hands the application the peer's
-  *identity* address — but the **controller has no resolving list**, so an
-  initiator dialling that identity address cannot match an RPA on the air.
+- No extended advertising ⇒ the adapter's `GAP_EVENT_ADVERTISING_REPORT` handler
+  (`btstack_host.c:4623`) can only ever receive **legacy** advertising reports.
+- `ENABLE_LE_PRIVACY_ADDRESS_RESOLUTION` is what gates BTstack's **controller
+  resolving-list** management in `hci.c` (`hci_load_le_device_db_entry_into_-
+  resolving_list()`, the `LE_RESOLVING_LIST_*` state machine, guarded at
+  `hci.c:4930`, `6243`, `9948` in pico-sdk 2.1.1's BTstack). `hci.c` does **not**
+  rewrite advertising-report addresses in software. So a report that arrives
+  bearing an identity address arrived that way **from the controller**, meaning
+  address resolution is enabled and the peer's IRK is loaded.
 
-The second point is the root cause. It was invisible until discovery was ruled
-out.
+Peer address **type** is therefore the thing to watch: Core spec reserves
+`0x02`/`0x03` (Public/Random *Identity* Address) to tell a controller "resolve
+RPAs against this identity". A dial that passes plain `0x00` asks the controller
+to look for that literal address on air, which a private-addressed peer never
+uses.
 
 ---
 
@@ -209,18 +214,16 @@ intervalMaxMs=29.38`.
    `IsDiscoverable`, `ServiceData` and the two secondary-PHY properties.
 2. The adapter has the PC **bonded**, from the management pairing (R3) —
    which Controller Link *requires*.
-3. `ENABLE_LE_PRIVACY_ADDRESS_RESOLUTION` resolves the advertiser's RPA in
-   software and delivers the **identity** address `14:18:C3:47:C4:89`,
-   type public (R3).
+3. The adapter's controller resolves the advertiser's RPA against the stored IRK
+   and delivers the **identity** address `14:18:C3:47:C4:89` to the handler
+   (R3 — proved by the raw `memcmp` matching, which an on-air RPA cannot do).
 4. Because the delivered address is an identity address,
    `btstack_host_addr_is_rpa()` is false, so `ble_rpa_trust_candidate` is false
    and the code's RPA branch is bypassed.
 5. `btstack_host_connect_ble_candidate()` therefore calls `gap_connect()` on the
-   **identity** address. **`ENABLE_LE_RESOLVING_LIST` is not defined**, so the
-   controller holds no resolving list and the initiator cannot match the RPA
-   that is actually on the air.
-6. The connection request is emitted for an address nobody is advertising from.
-   Windows sees nothing (R5); every attempt times out (R4).
+   **identity** address — and the resulting `LE Create Connection` does not
+   reach the peer.
+6. Windows sees no connection request at all (R5); every attempt times out (R4).
 
 **The irony is load-bearing: Controller Link requires trusted management, and
 the management bond is precisely what makes the HOGP advertisement undialable.**
@@ -260,7 +263,7 @@ while a pairing window expires will latch it.
 |---|---|
 | Does Windows advertise in a format the unchanged adapter can receive? | **Yes** — legacy `ADV_IND`, HID `0x1812`, scan-response name. Confirmed. |
 | Does the adapter discover and admit it? | **Yes** — window opens, candidate admitted, `gap_connect` called three times. Confirmed. |
-| Why does no link form? | The adapter dials the **resolved identity address**; Windows is on air as an **RPA**; the adapter has no controller resolving list. Confirmed. |
+| Why does no link form? | The adapter dials the **resolved identity address**, Windows is on air only as an **RPA**, and the request never reaches Windows. Confirmed. Which field makes the controller miss — most likely the peer address **type** carried in `LE Create Connection` — is the one open detail. |
 | Is there a Windows-side fix? | **No.** The advertising address type is not exposed by any WinRT API, and the publisher that could set data sections cannot advertise connectably. |
 | Was any firmware filter changed? | **No.** Nothing in discovery, admission, scanning or the predicate was touched. |
 
@@ -292,25 +295,31 @@ anything until power-cycled.
 
 ## Remaining unknowns
 
-- Whether the CYW43439 in this adapter supports an LE resolving list of useful
-  depth, and whether the Pico SDK's BTstack build can enable
-  `ENABLE_LE_RESOLVING_LIST` without disturbing the validated management
-  peripheral path.
+- The exact `Peer_Address_Type` the adapter puts in `LE Create Connection`. The
+  bond is stored as type 0 (`btbonds`), and a resolved report should arrive as
+  type `0x02`. If the dial normalises back to `0x00`, the controller stops
+  resolving and looks for a literal public address that is never on air — which
+  would explain R5 exactly. One UART line settles it.
 - Whether any genuine BLE controller in the supported set advertises from an RPA
   after bonding. If one does, this same dial failure already affects it, and the
   fix is not Windows-specific at all.
 
 ## Suggested follow-up — firmware, and not yet authorised
 
-Two independent changes, neither in discovery, admission or the filter:
+**F0 — one line of visibility, first.** Build with
+`pico_enable_stdio_uart(PicoSwitchWGA 1)` (`CMakeLists.txt:398`) so the two
+prints that already exist in `btstack_host_connect_ble_candidate()` — the peer
+address and `gap_connect returned status=%d` — reach UART0, and re-run this
+capture. That names the dialled address and type without changing behaviour, and
+decides F1's shape instead of guessing it.
 
-**F1 — dial an address the peer is actually using.** Either enable
-`ENABLE_LE_RESOLVING_LIST` and populate the controller resolving list from the
-LE device DB so the initiator can match RPAs against a resolved identity, or
-carry the observed on-air address alongside the resolved identity in
-`pending_ble_gamepad` and pass *that* to `gap_connect()`. Both are
-transport-general and would equally fix reconnecting to any bonded BLE
-controller that rotates its address; neither special-cases Windows.
+**F1 — dial an address the peer is actually using.** Depending on F0: either
+carry the identity address **type** (`BD_ADDR_TYPE_LE_PUBLIC_IDENTITY`) through
+to `gap_connect()` so the controller resolves against the resolving list, or
+keep the observed on-air address alongside the resolved identity in
+`pending_ble_gamepad` and dial that. Both are transport-general and would
+equally fix reconnecting to any bonded BLE peer that rotates its address;
+neither special-cases Windows, and neither touches the discovery predicate.
 
 **F2 — make `pairing_close_deferred` un-latchable.** Give the deferred close a
 bounded timeout, or clear it on the connect watchdog's own expiry rather than
