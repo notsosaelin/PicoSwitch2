@@ -1,11 +1,20 @@
 # Windows HOGP: why the adapter never links to the PC
 
 **Date:** 2026-09-02
-**Status:** Root cause identified and confirmed. Two distinct adapter-side
-defects isolated. No firmware change was authorised in this pass, so both remain
-open.
+**Status:** **Root cause confirmed at the HCI level.** Discovery, admission and
+the dial are all correct. The adapter's controller refuses the connection with
+`0x0B ACL Connection Already Exists`, because the Windows HOGP peripheral
+resolves to the **same Bluetooth identity as the active management link**. That
+is an architectural constraint, not a defect, and it needs a product decision.
+
+A second, independent defect found on the way — a latched
+`pairing_close_deferred` that disabled *all* pairing until power cycle — is
+**fixed and hardware-validated** (`94a1ad6`).
+
 **Supersedes:** the working-note theory that Windows advertises the hosted GATT
-service through extended-only PDUs.
+service through extended-only PDUs, and this document's own earlier theories
+that the pairing window never opened and that the dial used the wrong peer
+address type. Both were measured and falsified; see Negative knowledge.
 
 ---
 
@@ -204,6 +213,51 @@ Report path over a 3.7-minute run:
 `generated=27949 queued=27949 sent=27949 coalesced=0 intervalAvgMs=8.00
 intervalMaxMs=29.38`.
 
+### R7 — the dial uses the identity address type, and BTstack accepts it
+
+With the `dial` diagnostic in place (firmware `94a1ad62`):
+
+```
+dial n=3 addr=14:18:C3:47:C4:89 type=2 status=0x00 rpa_trust=false
+```
+
+`type=2` is `BD_ADDR_TYPE_LE_PUBLIC_IDENTITY`, which BTstack passes straight
+through as the HCI `Peer_Address_Type` (`hci.c`, `hci_le_create_connection`).
+**The theory that the dial normalises a resolved identity back to plain `0x00`
+is falsified.** `status` is `gap_connect()`'s return, which reports *queueing*,
+not controller acceptance — so on its own it proves nothing.
+
+### R8 — the controller refuses the command: `0x0B`
+
+With the Command Status diagnostic in place (firmware `1c7fcfcd`), every dial:
+
+```
+dial n=3 addr=14:18:C3:47:C4:89 type=2 gap=0x00 cmd=0x200D CMD_STATUS=0x0B
+```
+
+`cmd 0x200D` is `LE Create Connection`. **`0x0B` is
+`ACL Connection Already Exists`.** The adapter's controller rejects the command
+outright and never puts a `CONNECT_IND` on air — which is why the Windows radio
+sees nothing (R5) and why three attempts each sit out the full 10 s watchdog.
+
+The only ACL to that identity is the **management link**: Windows as central,
+adapter as peripheral, `handle 0x0008` in BTHPORT HCIRAW, established ~40 s
+before the first dial and encrypted throughout.
+
+### R9 — the `pairing_close_deferred` fix holds
+
+Same run, with `94a1ad6` in place:
+
+```
+ 30.8s  win=true  def=false  hid=2  led=pairing
+ 33.0s  win=false def=TRUE   hid=2  led=pairing   ← window expires mid-connect
+ 37.5s  win=false def=false  hid=1  led=idle      ← resolves, LED returns to idle
+```
+
+Before the fix this latched for the rest of the boot. It now clears within one
+watchdog period, the owner LED returns to idle, and pairing remains usable with
+no power cycle. Reproduced across two runs. **Hardware-validated.**
+
 ---
 
 ## Interpretation — the confirmed chain
@@ -221,17 +275,39 @@ intervalMaxMs=29.38`.
    `btstack_host_addr_is_rpa()` is false, so `ble_rpa_trust_candidate` is false
    and the code's RPA branch is bypassed.
 5. `btstack_host_connect_ble_candidate()` therefore calls `gap_connect()` on the
-   **identity** address — and the resulting `LE Create Connection` does not
-   reach the peer.
-6. Windows sees no connection request at all (R5); every attempt times out (R4).
+   **identity** address, with `Peer_Address_Type = 0x02` (R7).
+6. The adapter's controller answers `LE Create Connection` with
+   **`0x0B ACL Connection Already Exists`** (R8) and emits nothing on air.
+7. Windows sees no connection request at all (R5); every attempt sits out the
+   10 s watchdog (R4).
 
-**The irony is load-bearing: Controller Link requires trusted management, and
-the management bond is precisely what makes the HOGP advertisement undialable.**
-An *unbonded* peripheral would not be resolved, `is_rpa` would be true, and the
-adapter would dial the on-air RPA — the path a genuine controller takes.
+### Why `0x0B`, and why it is not a defect
 
-**Confidence: Confirmed.** Every step is a direct HCI capture, a differential
-counter measurement with a control, or a repeated direct state read.
+The adapter already holds an LE ACL to identity `14:18:C3:47:C4:89` — the
+**management link**, Windows as central, adapter as peripheral. Controller Link
+then asks the same controller to open a *second* LE connection, as central, to
+that same identity.
+
+A Bluetooth LE controller identifies peers by device identity, not by role or by
+the address currently on air. Two simultaneous LE connections between the same
+two devices are not a thing the link layer offers, and `0x0B` is precisely the
+error reserved for asking. Windows advertising the HOGP service from an RPA does
+not create a second peer: the RPA resolves to the same identity, which is the
+entire purpose of resolvable private addressing.
+
+**So Controller Link, as architected, cannot connect while management is
+connected on the same radio — not because either side is misbehaving, but
+because both relationships terminate at the same Bluetooth identity.**
+
+The irony is load-bearing and now proven at the HCI level: **Controller Link
+requires trusted management, and the management link is exactly what makes the
+HOGP connection impossible.** A genuine controller is a different device with a
+different identity, so it never hits this. The PC is the one peer that is
+already talking to the adapter when Controller Link asks to talk to it again.
+
+**Confidence: Confirmed.** The chain is a controller-reported HCI status, a
+Windows-side HCI capture, a differential counter measurement with a control, and
+repeated direct state reads.
 
 ### The second defect: `pairing_close_deferred` latches
 
@@ -255,6 +331,11 @@ This is user-visible and was independently reported from the bench before it was
 explained. It is **not** Windows-specific: any BLE connect that never resolves
 while a pairing window expires will latch it.
 
+**Fixed in `94a1ad6` and hardware-validated (R9).** The deferral now resolves on
+"the attempt is no longer in flight" — an exit that cannot fail to happen —
+with a 12 s bound as a backstop, decided by the pure, unit-tested
+`ns2_bt_pairing_deferral_resolved()`.
+
 ---
 
 ## Conclusion
@@ -263,8 +344,10 @@ while a pairing window expires will latch it.
 |---|---|
 | Does Windows advertise in a format the unchanged adapter can receive? | **Yes** — legacy `ADV_IND`, HID `0x1812`, scan-response name. Confirmed. |
 | Does the adapter discover and admit it? | **Yes** — window opens, candidate admitted, `gap_connect` called three times. Confirmed. |
-| Why does no link form? | The adapter dials the **resolved identity address**, Windows is on air only as an **RPA**, and the request never reaches Windows. Confirmed. Which field makes the controller miss — most likely the peer address **type** carried in `LE Create Connection` — is the one open detail. |
-| Is there a Windows-side fix? | **No.** The advertising address type is not exposed by any WinRT API, and the publisher that could set data sections cannot advertise connectably. |
+| Does the adapter dial correctly? | **Yes** — identity address, `Peer_Address_Type = 0x02`. Confirmed. |
+| Why does no link form? | The adapter's controller refuses `LE Create Connection` with **`0x0B ACL Connection Already Exists`**: the Windows HOGP peripheral resolves to the same identity as the live management link, and an LE controller will not hold two connections to one peer device. Confirmed. |
+| Is there a Windows-side fix? | **No.** The advertising address type is not exposed by any WinRT API, an RPA resolves to the same identity by design, and one radio has one identity. |
+| Is there an adapter-side fix? | **Not a local one.** The refusal is a link-layer property, not firmware policy. Resolving it means changing *when* the two relationships coexist — a product decision (see below). |
 | Was any firmware filter changed? | **No.** Nothing in discovery, admission, scanning or the predicate was touched. |
 
 ---
@@ -289,45 +372,83 @@ broke the dial.
 
 **Do not treat the stuck pairing LED as a UI bug.** It is the honest indicator
 of a latched `pairing_close_deferred`, and the adapter really is unable to pair
-anything until power-cycled.
+anything until power-cycled. Fixed in `94a1ad6`.
+
+**Do not trust `gap_connect()`'s return value as evidence the adapter dialled.**
+It reports that BTstack *queued* a connection, not that the controller accepted
+the command. `status=0x00` alongside `CMD_STATUS=0x0B` is exactly what a refused
+dial looks like, and for one hardware session the `0x00` was read as "the dial
+went out and the peer ignored it". Always read the Command Status.
+
+**Do not assume the peer address type was the problem.** It was the obvious
+suspect — the bond is stored type 0, identity types are 0x02/0x03, and a
+mismatch would have explained everything. Measured: the dial already uses 0x02.
+Two separate theories (the pairing window never opening, and the address type
+being wrong) were each plausible, each fitted the evidence available at the
+time, and each was wrong. The Command Status was the only field that could
+distinguish them.
 
 ---
 
 ## Remaining unknowns
 
-- The exact `Peer_Address_Type` the adapter puts in `LE Create Connection`. The
-  bond is stored as type 0 (`btbonds`), and a resolved report should arrive as
-  type `0x02`. If the dial normalises back to `0x00`, the controller stops
-  resolving and looks for a literal public address that is never on air — which
-  would explain R5 exactly. One UART line settles it.
-- Whether any genuine BLE controller in the supported set advertises from an RPA
-  after bonding. If one does, this same dial failure already affects it, and the
-  fix is not Windows-specific at all.
+- Whether the CYW43439 would accept a second connection to the same identity if
+  asked with the on-air RPA and `Peer_Address_Type = 0x01` instead. The spec
+  says peers are identified by resolved identity, so it should refuse
+  identically, but this has not been measured. It is the only cheap experiment
+  that could still overturn the conclusion.
+- Whether Windows, as an LE peripheral, would even accept an incoming connection
+  from a device it is already central to. Untestable until the adapter side can
+  ask.
+- Whether the Android Controller Link path avoids this only because it uses
+  Bluetooth **Classic** HID for the controller link and BLE for management —
+  two different transports to the same identity, which the controller does allow.
+  If so, that is the reason the Android design never met this wall, and it is
+  worth stating explicitly in the Windows architecture notes.
 
-## Suggested follow-up — firmware, and not yet authorised
+## Where this leaves the product — a decision, not a bug fix
 
-**F0 — one line of visibility, first.** Build with
-`pico_enable_stdio_uart(PicoSwitchWGA 1)` (`CMakeLists.txt:398`) so the two
-prints that already exist in `btstack_host_connect_ble_candidate()` — the peer
-address and `gap_connect returned status=%d` — reach UART0, and re-run this
-capture. That names the dialled address and type without changing behaviour, and
-decides F1's shape instead of guessing it.
+`0x0B` is a link-layer property. No amount of firmware policy or Windows API use
+changes the fact that one radio has one identity and an LE controller will not
+hold two connections to one peer. The options are therefore about **when the two
+relationships coexist**, and each has a real cost:
 
-**F1 — dial an address the peer is actually using.** Depending on F0: either
-carry the identity address **type** (`BD_ADDR_TYPE_LE_PUBLIC_IDENTITY`) through
-to `gap_connect()` so the controller resolves against the resolving list, or
-keep the observed on-air address alongside the resolved identity in
-`pending_ble_gamepad` and dial that. Both are transport-general and would
-equally fix reconnecting to any bonded BLE peer that rotates its address;
-neither special-cases Windows, and neither touches the discovery predicate.
+**P1 — hand the radio over.** Drop the BLE management link while Controller Link
+runs, and restore it on Stop. The dial would then succeed. Costs: management is
+unavailable during play, which contradicts §27's same-radio
+management-during-stream qualification; `ControllerLinkService`'s "requires
+active trusted management" invariant weakens to "requires it to start"; §28's
+management-loss handling needs rework so a deliberate handover is not read as
+carrier loss. This is the only option that keeps Controller Link on one radio.
 
-**F2 — make `pairing_close_deferred` un-latchable.** Give the deferred close a
-bounded timeout, or clear it on the connect watchdog's own expiry rather than
-only on `LE_CONNECTION_COMPLETE`. Needed regardless of F1: today, one connect
-that never resolves disables all pairing — gesture included — until the adapter
-is power-cycled.
+**P2 — ship Windows without Controller Link.** §14.6's documented branch.
+Management, Touch Gamepad and the layout editor all ship; the Gamepad page
+explains the constraint. Nothing is faked and nothing is half-built.
 
-Both need a firmware build for Pico W and Pico 2 W, a flash, and regression
-coverage for the existing Android and physical-controller paths. F2 should get a
-host test in `tools/test_ns2_bt_lifecycle.c` pinning that an unresolved connect
-cannot leave the window permanently shut.
+**P3 — Path C (§14.4).** Companion-provided normalized controller state over the
+*existing* management link, as a new firmware input source. No second connection
+is ever needed, because the link that already exists carries the input. This is
+already a sanctioned fallback in `PLAN.md` and
+`docs/bluetooth/android-controller-bridge.md`, and this experiment is the
+strongest evidence yet that it is the right shape for Windows — but it is a
+joint firmware + Windows pass, not a closeout.
+
+**Not viable:** asking Windows for a second identity (one radio, one identity),
+or dialling around the resolution (an RPA resolves to the same identity by
+design).
+
+## Firmware follow-ups from this pass
+
+**F2 — done.** `94a1ad6`, hardware-validated (R9), with
+`ns2_bt_pairing_deferral_resolved()` pinned by host tests including the
+clock-wrap edges.
+
+**F0 — done.** `94a1ad6` and `1c7fcfc` added the `dial` block to `btreconnect`:
+attempt count, address, address type, `gap_connect()` return, RPA-trust branch,
+and the controller's own Command Status. Keep it. It converted an
+indistinguishable failure into a one-line answer, and no other diagnostic in the
+firmware could tell "dialled and refused" from "never dialled".
+
+**F1 — withdrawn.** It assumed the dial was targeting the wrong address. R7 and
+R8 falsified that: the address and type are correct and the controller refuses
+for an unrelated reason. Implementing it would have changed nothing.
