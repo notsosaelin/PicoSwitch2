@@ -200,10 +200,19 @@ void ns2_companion_link_decode_base(const uint8_t *payload,
 // gameplay frames means gameplay has stopped.
 #define NS2_COMPANION_LINK_STALE_MS 300u
 
-// True when the source is publishing but no frame has arrived for `stale_ms`,
-// so the runtime must publish neutral state. Unsigned arithmetic, so a run-loop
-// clock wrap cannot defer neutralization.
-bool ns2_companion_link_input_stale(bool active,
+// True when a source that HAS been streaming has gone quiet for `stale_ms`, so
+// the runtime must publish neutral state.
+//
+// `streaming` is deliberately not "started". The watchdog exists to catch a
+// companion that was driving the console and stopped -- a crash, a kill, a
+// cable pulled. Arming it at start instead fires it during the companion's own
+// setup: resolving the two characteristics uncached and subscribing takes
+// longer than the timeout, so every session began with a spurious
+// neutralization that neutralized nothing and left the counter unusable for
+// spotting the real thing. Measured on hardware 2026-09-02.
+//
+// Unsigned arithmetic, so a run-loop clock wrap cannot defer neutralization.
+bool ns2_companion_link_input_stale(bool streaming,
                                     bool neutralized,
                                     uint32_t last_frame_ms,
                                     uint32_t now_ms,

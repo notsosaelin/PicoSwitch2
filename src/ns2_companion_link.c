@@ -165,15 +165,16 @@ void ns2_companion_link_decode_base(const uint8_t *payload,
     event->button_count = 4u;  // four face buttons, as the canonical layout has
 }
 
-bool ns2_companion_link_input_stale(bool active,
+bool ns2_companion_link_input_stale(bool streaming,
                                     bool neutralized,
                                     uint32_t last_frame_ms,
                                     uint32_t now_ms,
                                     uint32_t stale_ms)
 {
-    // Nothing to neutralize if the link is not carrying input, and neutralizing
-    // twice would republish neutral state over whatever took the console next.
-    if (!active || neutralized)
+    // Nothing to neutralize if the link has never carried input, and
+    // neutralizing twice would republish neutral over whatever took the console
+    // next.
+    if (!streaming || neutralized)
         return false;
 
     return (uint32_t)(now_ms - last_frame_ms) >= stale_ms;
