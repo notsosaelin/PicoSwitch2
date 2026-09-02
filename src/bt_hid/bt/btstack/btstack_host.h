@@ -288,6 +288,23 @@ typedef struct {
     uint8_t last_direct_encrypt_status;
     uint8_t last_direct_encrypt_enabled;
     uint8_t last_switch2_disconnect_reason;
+    // What the last candidate dial actually asked the controller for.
+    //
+    // Every counter above answers "did we see the peer"; none answered "what
+    // address did we then dial, and what did gap_connect() say". That gap cost
+    // a hardware session on 2026-09-02, when the adapter was discovering and
+    // admitting a peer correctly while dialling an address the peer was not
+    // advertising from -- indistinguishable from outside from never trying.
+    //
+    // Peer address TYPE is the load-bearing field: the Core spec reserves
+    // 0x02/0x03 (Public/Random IDENTITY) to tell a controller to resolve RPAs
+    // against an identity, so a dial passing plain 0x00/0x01 asks it to look
+    // for a literal address a private-addressed peer never puts on air.
+    uint8_t last_dial_addr[6];
+    uint8_t last_dial_addr_type;
+    uint8_t last_dial_status;      // gap_connect() return
+    bool last_dial_rpa_trust;      // taken through the RPA-trust branch
+    uint32_t dial_attempts;
     char last_connected_name[48];
 } btstack_host_reconnect_diag_t;
 

@@ -2508,6 +2508,8 @@ static void handle_command(void) {
                  "\"switch2_adv\":%lu,\"target_adv_type\":%u,"
                  "\"bonds\":%u,\"bond_cap\":%u,\"bonded_adv\":%lu,"
                  "\"nontarget_adv\":%lu,\"rpa_adv\":%lu,"
+                 "\"dial\":{\"n\":%lu,\"addr\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
+                 "\"addr_type\":%u,\"status\":\"0x%02X\",\"rpa_trust\":%s},"
                  "\"target_connects\":%lu,\"target_success\":%lu,"
                  "\"target_fail\":%lu,\"last_status\":\"0x%02X\","
                  "\"reencrypt_start\":%lu,\"reencrypt_ok\":%lu,"
@@ -2542,6 +2544,11 @@ static void handle_command(void) {
                  (unsigned long)d.bonded_advertising_reports,
                  (unsigned long)d.nontarget_advertising_reports,
                  (unsigned long)d.rpa_advertising_reports,
+                 (unsigned long)d.dial_attempts,
+                 d.last_dial_addr[0], d.last_dial_addr[1], d.last_dial_addr[2],
+                 d.last_dial_addr[3], d.last_dial_addr[4], d.last_dial_addr[5],
+                 d.last_dial_addr_type, d.last_dial_status,
+                 d.last_dial_rpa_trust ? "true" : "false",
                  (unsigned long)d.target_connect_attempts,
                  (unsigned long)d.target_connect_successes,
                  (unsigned long)d.target_connect_failures,

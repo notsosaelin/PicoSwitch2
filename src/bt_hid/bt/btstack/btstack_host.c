@@ -2312,6 +2312,13 @@ static bool scan_suppressed = false;   // App can suppress auto-restart (e.g. US
 // These three separate "that bond is gone" from "it is advertising and nothing
 // targets it" from "its address rotates". Bounded counters only -- advertising
 // reports arrive continuously, so no per-report logging.
+// Last candidate dial, for `btreconnect`. See btstack_host_reconnect_diag_t.
+static uint8_t last_dial_addr[6];
+static uint8_t last_dial_addr_type;
+static uint8_t last_dial_status;
+static bool last_dial_rpa_trust;
+static uint32_t dial_attempts;
+
 static uint32_t bonded_adv_reports;
 static uint32_t nontarget_adv_reports;
 static uint32_t rpa_adv_reports;
@@ -3019,6 +3026,16 @@ void btstack_host_stop_scan(void)
 // inquiry_active. Stopping inquiry mid-Classic-connect is harmless. No Classic
 // defer logic is needed or added.
 static bool pairing_close_deferred;
+// When the deferral was armed. A deferral must not outlive the connect it
+// protects: resolve_deferred_pairing_close() alone assumed an
+// LE_CONNECTION_COMPLETE that does not always arrive, and an unresolved
+// deferral latched the pairing window shut for the rest of the boot. See
+// ns2_bt_pairing_deferral_resolved().
+static uint32_t pairing_close_deferred_at_ms;
+// One deferral bound. The connect watchdog gives up at BLE_CONNECT_TIMEOUT_MS
+// (10 s); this sits past it so the ordinary "attempt ended" exit is always the
+// one that fires, and the bound is only ever the backstop.
+#define PAIRING_CLOSE_DEFER_BOUND_MS 12000u
 
 // The Classic ACL handle on which this host requested security as part of a
 // FRESH PAIRING, if any.
@@ -3687,6 +3704,7 @@ void btstack_host_close_pairing_window(void)
         printf("[BTSTACK_HOST] Pairing window closing but a BLE connect is in flight -- "
                "deferring close until it resolves\n");
         pairing_close_deferred = true;
+        pairing_close_deferred_at_ms = btstack_run_loop_get_time_ms();
         return;
     }
     btstack_host_stop_scan();
@@ -3858,6 +3876,16 @@ static void btstack_host_connect_ble_candidate(bd_addr_t addr,
     // Create connection
     uint8_t status = gap_connect(addr, addr_type);
     printf("[BTSTACK_HOST] gap_connect returned status=%d\n", status);
+
+    // Record what was actually asked for. stdio is not routed to UART0 in
+    // shipping builds (the diagnostic channel owns that peripheral), so the
+    // prints above are invisible in the field and `btreconnect` is the only
+    // way to tell "dialled the wrong address" from "never dialled".
+    memcpy(last_dial_addr, addr, sizeof(last_dial_addr));
+    last_dial_addr_type = (uint8_t)addr_type;
+    last_dial_status = status;
+    last_dial_rpa_trust = rpa_trust_candidate;
+    dial_attempts++;
 }
 
 void btstack_host_connect_ble(bd_addr_t addr, bd_addr_type_t addr_type)
@@ -4071,6 +4099,27 @@ void btstack_host_process(void)
         gap_connect_cancel();
         hid_state.state = BLE_STATE_IDLE;
         hid_state.reconnect_attempt_time = 0;
+    }
+
+    // A deferred pairing-window close must not outlive its connect.
+    //
+    // The watchdog above resets the state to IDLE and leaves the rest to the
+    // LE_CONNECTION_COMPLETE that gap_connect_cancel() is expected to generate.
+    // That event does not always come -- cancelling an attempt the controller
+    // has already abandoned can produce nothing -- and until 2026-09-02 an
+    // unresolved deferral then latched open_pairing_window() shut for the rest
+    // of the boot: LED stuck in the pairing blink, and every later window a
+    // silent no-op, the BOOTSEL gesture included.
+    //
+    // Checked here rather than only on the HCI path so the ordinary exit is
+    // "the attempt is no longer in flight", which cannot fail to happen.
+    if (ns2_bt_pairing_deferral_resolved(
+            pairing_close_deferred,
+            hid_state.state == BLE_STATE_CONNECTING,
+            pairing_close_deferred_at_ms,
+            btstack_run_loop_get_time_ms(),
+            PAIRING_CLOSE_DEFER_BOUND_MS)) {
+        resolve_deferred_pairing_close();
     }
 
     // Deferred Classic inquiry restart. The gap between rounds is what leaves
@@ -12187,6 +12236,11 @@ void btstack_host_get_reconnect_diag(btstack_host_reconnect_diag_t *out)
     out->target_connect_attempts = hid_state.target_connect_attempts;
     out->target_connect_successes = hid_state.target_connect_successes;
     out->target_connect_failures = hid_state.target_connect_failures;
+    memcpy(out->last_dial_addr, last_dial_addr, sizeof(out->last_dial_addr));
+    out->last_dial_addr_type = last_dial_addr_type;
+    out->last_dial_status = last_dial_status;
+    out->last_dial_rpa_trust = last_dial_rpa_trust;
+    out->dial_attempts = dial_attempts;
     out->reencryption_started = hid_state.reencryption_started;
     out->reencryption_successes = hid_state.reencryption_successes;
     out->reencryption_failures = hid_state.reencryption_failures;
