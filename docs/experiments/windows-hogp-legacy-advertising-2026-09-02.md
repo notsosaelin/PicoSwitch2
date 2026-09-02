@@ -1,8 +1,11 @@
 # Windows HOGP advertising: does the PicoSwitch2 adapter ever see it?
 
 **Date:** 2026-09-02
-**Status:** Question answered. Discovery is not the blocker. A new, narrower
-adapter-side blocker is isolated and remains open.
+**Status:** Question answered. Discovery is not the blocker — Windows advertises
+correctly and the adapter receives it. The blocker is the adapter's controller
+pairing window never opening, isolated to a latched
+`pairing_close_deferred` flag. One free, non-destructive experiment confirms or
+refutes it.
 **Supersedes the root-cause theory in:** the Controller Link work-in-progress
 notes that attributed the failure to Windows using extended advertising PDUs.
 
@@ -173,6 +176,46 @@ Identical `bonded_adv` rate, identical `rpa_adv = 0`, identical
 `hid_state = 1`, identical `calls = 0`. The experiment neither helped nor hurt
 discovery. It is removed.
 
+### R6 — the adapter's controller pairing window never opens
+
+Sampling `btstate` every 2.5 s across a full 42 s Controller Link start:
+
+```
+  2.6s  window_open=false close_deferred=true  hid=1  scan=0/0
+  ...   (every sample identical)
+ 41.7s  window_open=false close_deferred=true  hid=1  scan=0/0
+```
+
+`hid_pairing_window_open` is **false for the entire run**, while the companion's
+diagnostic ring shows the management verb being accepted:
+
+```
+15:47:09.913 INFO [controller-link] activating same-package Bluetooth host
+15:47:10.246 INFO [controller-link] advertising settled at Started; report scheduler active
+15:47:12.372 INFO [pairing]         start op=5 state=discovering reason=none
+15:47:12.372 INFO [controller-link] remote pairing: op=5 state=discovering reason=none
+```
+
+`pairing_close_deferred` is **true in every sample taken today**, across app
+restarts and two management sessions, while `hid_state` is 1
+(`BLE_STATE_SCANNING`) and never 2 (`BLE_STATE_CONNECTING`).
+
+### R7 — the main→helper report path already meets the cadence target
+
+From the same run's counters, over ~3.7 minutes of continuous streaming with no
+peer connected:
+
+```
+generated=27949 queued=27949 sent=27949 coalesced=0
+intervalAvgMs=8.00 intervalMaxMs=29.38
+output=0/0 malformed=0 outputFailures=0
+```
+
+125 Hz sustained, nothing dropped, nothing coalesced. This measures
+`ControllerInputSession → ControllerReportEncoder → binary pipe → AppContainer
+host`; it does **not** measure GATT notification cadence, because no central
+ever subscribed.
+
 ---
 
 ## Interpretation
@@ -207,18 +250,68 @@ The firmware's `printf` diagnostics would say directly — they print
 `CMakeLists.txt:398` builds with `pico_enable_stdio_uart(PicoSwitchWGA 0)`, so
 they go nowhere on a normal build.
 
-Two candidate mechanisms, both untested:
+Two terms decide `ble_candidate_admitted`, and R6 shows both are false:
 
-- **C1 — single-slot `pending_ble_gamepad` thrashing.** The deferral state is one
-  slot for the whole radio. `adv` runs at ~30/s in this RF environment; the PC's
-  `ADV_IND` and its `SCAN_RSP` are separate events, and any other HID-looking
-  peer's `ADV` landing between them overwrites the slot, so the merge
-  (`memcmp(addr, pending.addr, 6) == 0`) fails and `has_hid_uuid` is lost.
-- **C2 — an interaction between address resolution and the deferral/trust
-  bookkeeping** when the same peer identity already holds a peripheral-role
-  management link to this adapter.
+```c
+ble_trust_present       = is_controller && btstack_host_find_le_device(addr, addr_type) >= 0;
+ble_rpa_trust_candidate = is_controller && !ble_trust_present &&
+                          btstack_host_addr_is_rpa(addr, addr_type) && le_device_db_count() > 0;
+fresh_pairing_authorized = hid_pairing_window_open || (…SWITCH2 only…);
+ble_admission            = ns2_bt_admission_decide(pairing_lockout,
+                                                   fresh_pairing_authorized,
+                                                   ble_trust_present);
+ble_candidate_admitted   = ble_admission != REJECT ||
+                           (!pairing_lockout && ble_rpa_trust_candidate);
+```
 
-C1 and C2 are **hypotheses**, not conclusions.
+- `btstack_host_addr_is_rpa(addr, addr_type)` is **false**, because after
+  `ENABLE_LE_PRIVACY_ADDRESS_RESOLUTION` does its work `addr` is the *identity*
+  address `14:18:C3:47:C4:89`, not the RPA that was on the air. So
+  `ble_rpa_trust_candidate` cannot rescue the decision. This is also why
+  `rpa_adv` stays 0 while `bonded_adv` climbs: `btstack_host_addr_is_bonded()`
+  compares the address **ignoring the type** (`btstack_host.c:2324`) and matches,
+  while a type-aware `btstack_host_find_le_device()` need not.
+- `fresh_pairing_authorized` is **false**, measured directly (R6).
+
+With both false and no trust match, `ns2_bt_admission_decide` returns `REJECT`
+(`ns2_bt_lifecycle.c:45`) and the candidate is dropped **one line before**
+`btstack_host_connect_ble_candidate()` — after the counter block, which is
+exactly why `bonded_adv` moves while nothing else does.
+
+### Why the window never opens
+
+`open_pairing_window()` (`ns2_bt_host.c:141`) begins:
+
+```c
+if (btstack_host_pairing_close_deferred()) {
+    return;
+}
+```
+
+`pairing_close_deferred` is set in exactly one place —
+`btstack_host_close_pairing_window()` when `hid_state.state ==
+BLE_STATE_CONNECTING` — and cleared in exactly three:
+`resolve_deferred_pairing_close()` on `HCI_SUBEVENT_LE_CONNECTION_COMPLETE`,
+`btstack_host_clear_transient_radio_state()` when HCI leaves the working state,
+and the destructive `btstack_host_delete_all_bonds()`.
+
+If a pairing window ever closed while a BLE connect was in flight and that
+connect never produced a resolving `LE_CONNECTION_COMPLETE`, the flag latches
+**true for the lifetime of the boot** — and `open_pairing_window()` becomes a
+permanent no-op for both the BOOTSEL gesture and the remote-pairing verb. That
+matches every observation: the flag is true in every sample, the window never
+opens, and no fresh candidate of any kind can be admitted.
+
+**Classification: Strong Evidence, not Confirmed.** One observation does not fit
+cleanly: with `pairing_until_ms` left at 0, the control tick's `else` branch
+should report `MGMT_PAIRING_BLOCKED / REASON_BUSY`, and the companion would then
+say "The adapter is busy with another pairing request" within ~1 s. Instead the
+companion showed `discovering` for the full ~30 s. Either the tick's ordering
+differs from the static reading, or a second mechanism is involved. Settling
+that needs adapter-side observation.
+
+This is **not** a discovery-filter problem, and no adapter discovery, admission
+or scanning logic was changed, broadened or bypassed in this pass.
 
 ---
 
@@ -234,10 +327,18 @@ C1 and C2 are **hypotheses**, not conclusions.
 - A co-resident `BluetoothLEAdvertisementPublisher` cannot help, because the
   WinRT publisher cannot advertise connectably. **Confirmed by API surface and
   by measurement.** Removed from the tree.
+- The adapter's controller pairing window never opens during a Controller Link
+  start, so no fresh candidate can be admitted. **Confirmed.**
+- That is attributable to `pairing_close_deferred` being latched true, which
+  makes `open_pairing_window()` a no-op for both the remote verb and the
+  BOOTSEL gesture. **Strong Evidence.**
+- The Windows main→helper report path sustains 125 Hz with nothing dropped.
+  **Confirmed.** GATT notification cadence to a real peer remains **unmeasured.**
 
-**Confidence:** High for every "Confirmed" line — each is a direct HCI capture
-or a differential counter measurement with a control. C1/C2 are unranked
-hypotheses.
+**Confidence:** High for every "Confirmed" line — each is a direct HCI capture,
+a differential counter measurement with a control, or a repeated direct state
+read. The `pairing_close_deferred` attribution is Strong Evidence with one
+unexplained observation, recorded above rather than rounded up.
 
 ---
 
@@ -260,27 +361,52 @@ a legacy `ADV_IND`; `0x0001` is a genuine extended set.
 
 ## Remaining unknowns
 
-- Which term of `is_controller && … && ble_candidate_admitted` is false on the
-  sightings that increment `bonded_adv`.
-- Whether `pending_ble_gamepad`'s single slot survives a busy RF environment.
-- Whether an already-bonded peer that currently holds a peripheral-role
-  management link to this adapter is reachable by a central-role `gap_connect`.
+- Whether `pairing_close_deferred` latching true is the whole story, or only
+  part of it (see the classification note above).
+- How this adapter's flag came to be set — which past connect attempt closed a
+  window in flight and never resolved.
+- Whether `btstack_host_find_le_device()` matches a resolved *identity* address
+  whose type BTstack reports as `…_IDENTITY` rather than the stored type 0. If
+  it does not, a bonded peer at a resolved address has no trust path at all once
+  the pairing window is shut, which would make the window the only route in.
 
 ## Suggested follow-up
 
-One experiment settles all three, and it is the smallest possible:
+**Experiment 1 — free, non-destructive, decides the root cause.**
 
-> Build the existing firmware with `pico_enable_stdio_uart(PicoSwitchWGA 1)` —
-> or add nothing at all and simply route the *existing*
-> `[BTSTACK_HOST] Generic BLE HID detected` / `gap_connect returned status`
-> prints to UART0 — flash it to the bench adapter, and re-run the capture above
-> while streaming UART.
+> Power-cycle the adapter (unplug and replug; the flag is a file-scope `bool`
+> and initialises to false at boot). Confirm `btstate` reports
+> `close_deferred: false`, then repeat this capture unchanged.
 >
-> No discovery, admission or filter logic changes. The prints already exist and
-> already name the answer. Expect either "Generic BLE HID detected" absent
-> (⇒ C1, the merge is being lost) or present with no `gap_connect` line
-> (⇒ admission), or `gap_connect returned status=<n>` with a non-zero status
-> (⇒ C2, the link-layer refuses the peer).
+> - Window opens, adapter connects, `bridge status` `calls > 0` ⇒ root cause
+>   **confirmed**, and the durable fix is a bounded timeout or an
+>   HCI-failure path that cannot leave `pairing_close_deferred` latched.
+> - Window opens and the adapter still does not connect ⇒ the admission theory
+>   is wrong; the remaining suspect is `btstack_host_find_le_device()` versus
+>   the resolved identity address type.
+> - Window still does not open ⇒ the flag is not the mechanism.
 
-That requires flashing a diagnostic firmware build, which the current pass is
-not authorised to do.
+**Experiment 2 — only if Experiment 1 is inconclusive.**
+
+> Build the existing firmware with `pico_enable_stdio_uart(PicoSwitchWGA 1)`
+> (`CMakeLists.txt:398`) so the *existing* prints reach UART0 — they already
+> say the answer: `Generic BLE HID detected: …` and
+> `gap_connect returned status=…`. Flash the bench adapter and re-run while
+> streaming UART. No discovery, admission or filter logic changes.
+
+Experiment 2 requires flashing a diagnostic firmware build, which the current
+pass is not authorised to do.
+
+---
+
+## What this pass did NOT change
+
+- No firmware change of any kind. No adapter discovery predicate, admission
+  policy, scanning mode, HID check, appearance check or filter was broadened,
+  bypassed, weakened or special-cased. The frozen contract in
+  `btstack_host.c:4739`–`4818` is byte-for-byte as it was.
+- No second Bluetooth radio, no WinUSB/Zadig, no driver change, no rebinding of
+  the Intel radio. Windows retained normal ownership of Bluetooth throughout,
+  including an active management central connection on the same AX210 while the
+  AppContainer host held the peripheral role.
+- No bonds were deleted.
