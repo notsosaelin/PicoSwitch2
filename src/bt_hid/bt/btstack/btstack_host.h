@@ -316,6 +316,49 @@ typedef struct {
 
 void btstack_host_get_reconnect_diag(btstack_host_reconnect_diag_t *out);
 
+// ---------------------------------------------------------------------------
+// Windows Controller Link (Path C) -- companion input source over management
+// ---------------------------------------------------------------------------
+//
+// A first-class companion source, not a Bluetooth HID device. See
+// ns2_companion_link.h for the carrier rationale and the wire contract.
+
+// Arm the data plane on the current trusted management link. Fails when there
+// is no trusted link, or when the negotiated ATT MTU cannot carry one whole
+// gameplay frame -- measured, never assumed.
+bool btstack_host_companion_link_start(void);
+
+// Publish neutral, release the source, and stop. The management link is
+// deliberately left connected: Controller Link stopping is not carrier loss.
+void btstack_host_companion_link_stop(void);
+
+bool btstack_host_companion_link_active(void);
+uint16_t btstack_host_companion_link_mtu(void);
+
+typedef struct {
+    bool active;
+    bool subscribed;
+    bool neutralized;
+    uint8_t version;
+    uint8_t frame_bytes;
+    uint16_t att_mtu;
+    uint16_t min_att_mtu;
+    uint32_t generation;
+    uint32_t frames_received;
+    uint32_t frames_applied;
+    uint32_t frames_stale;          // superseded by a newer frame
+    uint32_t frames_short;          // truncated
+    uint32_t frames_version;        // data-plane version mismatch
+    uint32_t frames_opcode;         // not an input state frame
+    uint32_t frames_rejected_state; // arbiter refused the source
+    uint32_t outputs_sent;
+    uint32_t outputs_failed;
+    uint32_t neutralizations;       // stale-input watchdog firings
+    uint32_t max_gap_ms;            // worst inter-frame gap while streaming
+} btstack_host_companion_link_diag_t;
+
+void btstack_host_companion_link_diag(btstack_host_companion_link_diag_t *out);
+
 // In-band management / BLE coexistence diagnostics (UART-only). A lifecycle event
 // ring + live snapshot + scan-suppression cause counters, added to isolate the
 // "controller and management both drop and cannot recover without a power cycle"

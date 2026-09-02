@@ -1935,6 +1935,72 @@ static void cmd_peers(const char *arg) {
     reply_peers_result();
 }
 
+static void reply_clink_status(void) {
+    btstack_host_companion_link_diag_t d;
+    btstack_host_companion_link_diag(&d);
+    char out[384];
+    snprintf(out, sizeof(out),
+             "{\"clink\":{\"active\":%s,\"subscribed\":%s,\"version\":%u,"
+             "\"frame_bytes\":%u,\"att_mtu\":%u,\"min_att_mtu\":%u,"
+             "\"mtu_ok\":%s,\"generation\":%lu,"
+             "\"frames\":{\"received\":%lu,\"applied\":%lu,\"stale\":%lu,"
+             "\"short\":%lu,\"version\":%lu,\"opcode\":%lu,"
+             "\"rejected_state\":%lu},"
+             "\"outputs\":{\"sent\":%lu,\"failed\":%lu},"
+             "\"neutralizations\":%lu,\"max_gap_ms\":%lu}}",
+             d.active ? "true" : "false",
+             d.subscribed ? "true" : "false",
+             d.version, d.frame_bytes, d.att_mtu, d.min_att_mtu,
+             (d.att_mtu >= d.min_att_mtu) ? "true" : "false",
+             (unsigned long)d.generation,
+             (unsigned long)d.frames_received,
+             (unsigned long)d.frames_applied,
+             (unsigned long)d.frames_stale,
+             (unsigned long)d.frames_short,
+             (unsigned long)d.frames_version,
+             (unsigned long)d.frames_opcode,
+             (unsigned long)d.frames_rejected_state,
+             (unsigned long)d.outputs_sent,
+             (unsigned long)d.outputs_failed,
+             (unsigned long)d.neutralizations,
+             (unsigned long)d.max_gap_ms);
+    reply(out);
+}
+
+// Windows Controller Link (Path C) control plane.
+//
+// The control plane is this JSON command channel; the data plane is a separate
+// binary characteristic pair on the same service and the same bonded link.
+// Gameplay never comes through here -- 125 Hz of controller state on a
+// newline-framed single-flight channel would starve management, which is the
+// whole reason the data plane exists.
+//
+// `status` is also the capability probe: it reports the data-plane version, the
+// frame size and the negotiated ATT MTU beside the minimum, so a companion can
+// refuse before streaming rather than discover a fragmenting MTU mid-game.
+static void cmd_clink(const char *arg) {
+    if (arg == NULL || strcmp(arg, "status") == 0) {
+        reply_clink_status();
+        return;
+    }
+    if (strcmp(arg, "start") == 0) {
+        if (!btstack_host_companion_link_start()) {
+            // The specific reason is in the status block -- MTU too small,
+            // untrusted link, no link at all -- so the caller reads one thing.
+            reply_clink_status();
+            return;
+        }
+        reply_clink_status();
+        return;
+    }
+    if (strcmp(arg, "stop") == 0) {
+        btstack_host_companion_link_stop();
+        reply_clink_status();
+        return;
+    }
+    reply("{\"error\":\"usage: clink start|stop|status\"}");
+}
+
 // Remote controller pairing. Drives the SAME pairing state machine the BOOTSEL
 // gesture drives -- there is no second flow -- and differs only in authority:
 // a request arriving over the air opens controller discovery without admitting
@@ -2238,6 +2304,10 @@ static void handle_line(char *cmd) {
         cmd_peers(cmd + 6);
     } else if (strncmp(cmd, "pairing ", 8) == 0) {
         cmd_pairing(cmd + 8);
+    } else if (strcmp(cmd, "clink") == 0) {
+        cmd_clink(NULL);
+    } else if (strncmp(cmd, "clink ", 6) == 0) {
+        cmd_clink(cmd + 6);
     } else if (strcmp(cmd, "mgmt") == 0) {
         cmd_mgmt(NULL);
     } else if (strncmp(cmd, "mgmt ", 5) == 0) {
