@@ -200,7 +200,13 @@ static void test_stale_input_watchdog(void)
 {
     const uint32_t bound = NS2_COMPANION_LINK_STALE_MS;
 
-    // Inactive link: nothing is held, nothing to neutralize.
+    // Not streaming: nothing is held, nothing to neutralize.
+    //
+    // This covers the startup case specifically. The companion resolves two
+    // characteristics uncached and subscribes before its first frame, which
+    // takes longer than the timeout -- measured on hardware 2026-09-02, where
+    // arming at start produced a spurious neutralization every single session
+    // and left the counter useless for spotting a real stall.
     assert(!ns2_companion_link_input_stale(false, false, 0u, 100000u, bound));
 
     // Streaming normally.

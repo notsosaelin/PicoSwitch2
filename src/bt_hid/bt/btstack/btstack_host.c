@@ -4080,7 +4080,11 @@ static void clink_service_feedback(void)
 // Periodic service: stale-input watchdog plus feedback delivery.
 static void clink_service(uint32_t now_ms)
 {
-    if (ns2_companion_link_input_stale(clink.active, clink.neutralized,
+    // Streaming, not merely started: the companion's own setup (uncached
+    // characteristic discovery plus subscribe) outlasts the timeout, so arming
+    // at start fired a spurious neutralization every session.
+    if (ns2_companion_link_input_stale(clink.active && clink.frames_applied > 0u,
+                                       clink.neutralized,
                                        clink.last_frame_ms, now_ms,
                                        NS2_COMPANION_LINK_STALE_MS)) {
         clink.neutralized = true;
