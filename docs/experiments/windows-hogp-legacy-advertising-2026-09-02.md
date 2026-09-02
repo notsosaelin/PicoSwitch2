@@ -16,6 +16,13 @@ service through extended-only PDUs, and this document's own earlier theories
 that the pairing window never opened and that the dial used the wrong peer
 address type. Both were measured and falsified; see Negative knowledge.
 
+**Followed by:**
+[`windows-classic-hid-device-feasibility-2026-09-02.md`](windows-classic-hid-device-feasibility-2026-09-02.md),
+which asks whether Windows can instead reproduce Android's actual architecture
+(BLE management + BR/EDR Classic HID). It cannot: the Classic HID **Device**
+role does not exist on Windows at any supported layer. BLE HOGP as the Windows
+Controller Link carrier is therefore **retired**, and Path C is recommended.
+
 ---
 
 ## Question
