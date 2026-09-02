@@ -227,7 +227,7 @@ public sealed partial class TouchGamepadView : UserControl
         var view = TouchEditorView.Of(
             state,
             controllerLinkAvailable: AppServices.ControllerLink.View.Value.Phase ==
-                ControllerLinkPhase.Connected,
+                ControllerLinkPhase.Streaming,
             mode);
 
         var editing = view.ShowEditorChrome;

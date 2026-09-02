@@ -1,23 +1,39 @@
 namespace PicoSwitch.Companion.Services.Presentation;
 
+/// <summary>
+/// Controller Link product states.
+///
+/// Path C carries controller state over the management link that is already
+/// open, so several states the HOGP carrier needed no longer exist. They are
+/// removed rather than reinterpreted:
+///
+///   Advertising           — nothing advertises. There is no second radio role.
+///   WaitingForConnection  — nothing connects. The carrier is already up.
+///   Connecting            — the adapter never dials this PC.
+///   Reconnecting          — Controller Link cannot outlive its carrier, so a
+///                           lost link is management's reconnect, not ours.
+///
+/// Keeping them as aliases would leave the UI able to say "waiting for the
+/// adapter to pair" about something that never happens.
+/// </summary>
 public enum ControllerLinkPhase
 {
+    /// <summary>No trusted management link, or the adapter has no data plane.</summary>
     Unavailable,
     Ready,
     Starting,
-    Advertising,
-    WaitingForConnection,
-    Connecting,
-    Connected,
-    Reconnecting,
+    Streaming,
     Stopping,
     Stopped,
     Error,
 }
 
 /// <summary>
-/// Pure user-facing projection of the production Controller Link state machine.
-/// Platform terms (AUMID, AppContainer, HCI) remain diagnostics-only.
+/// Pure user-facing projection of the Controller Link state machine.
+///
+/// The page paints this and decides nothing. Platform terms — ATT MTU,
+/// characteristic, GATT, data plane — stay in diagnostics; a user who opened
+/// the Gamepad page wants to know whether their PC is driving the console.
 /// </summary>
 public sealed record ControllerLinkView(
     ControllerLinkPhase Phase,
@@ -41,23 +57,14 @@ public sealed record ControllerLinkView(
                 phase, "Ready", "Use this PC as the adapter's controller source.",
                 managementReady, false, false),
             ControllerLinkPhase.Starting => new(
-                phase, "Starting…", "Starting the Windows Bluetooth controller host.",
+                phase, "Starting…", "Handing controller input to the adapter.",
                 false, true, true),
-            ControllerLinkPhase.Advertising => new(
-                phase, "Advertising", "The controller is visible; waiting for the adapter.",
-                false, true, true),
-            ControllerLinkPhase.WaitingForConnection => new(
-                phase, "Waiting for adapter…", "The controller is visible; waiting for the adapter.",
-                false, true, true),
-            ControllerLinkPhase.Connecting => new(
-                phase, "Connecting…", detail ?? "The adapter is connecting to this PC.",
-                false, true, true),
-            ControllerLinkPhase.Connected => new(
-                phase, "Connected", "Controller input is streaming to PicoSwitch.",
+            // The product's only running state. There is no separate "connected"
+            // step because there is no second connection to establish: if input
+            // is streaming, the link is up.
+            ControllerLinkPhase.Streaming => new(
+                phase, "Streaming", "This PC is the adapter's controller.",
                 false, true, false),
-            ControllerLinkPhase.Reconnecting => new(
-                phase, "Reconnecting…", detail ?? "The controller link was interrupted.",
-                false, true, true),
             ControllerLinkPhase.Stopping => new(
                 phase, "Stopping…", "Releasing controller input safely.",
                 false, false, true),

@@ -1,5 +1,6 @@
 using PicoSwitch.Bridge.Core;
 using PicoSwitch.Companion.Windows.Bluetooth;
+using PicoSwitch.Companion.Windows.ControllerLink;
 using PicoSwitch.Management;
 
 namespace PicoSwitch.Companion.Services;
@@ -1179,6 +1180,31 @@ public sealed class AdapterRepository(IManagementTransport transport)
 
     public Task<PairingStatus> CancelPairingAsync(CancellationToken cancellationToken = default) =>
         client.CancelPairingAsync(cancellationToken);
+
+    /// <summary>
+    /// The Controller Link data plane on the live management session, when the
+    /// transport can provide one.
+    ///
+    /// Surfaced through the repository rather than by handing the App a
+    /// transport: a page that can reach the transport can eventually open a
+    /// characteristic, and a second management session is the defect this whole
+    /// subsystem is shaped around. Controller Link gets exactly two more
+    /// characteristics on the session that already exists, and nothing else.
+    /// </summary>
+    public IControllerLinkDataPlaneProvider? DataPlanes =>
+        transport as IControllerLinkDataPlaneProvider;
+
+    public Task<ControllerLinkState> StartControllerLinkAsync(
+        CancellationToken cancellationToken = default) =>
+        client.StartControllerLinkAsync(cancellationToken);
+
+    public Task<ControllerLinkState> StopControllerLinkAsync(
+        CancellationToken cancellationToken = default) =>
+        client.StopControllerLinkAsync(cancellationToken);
+
+    public Task<ControllerLinkState> ControllerLinkStatusAsync(
+        CancellationToken cancellationToken = default) =>
+        client.ControllerLinkStatusAsync(cancellationToken);
 
     private async Task SafeDisconnectAsync()
     {

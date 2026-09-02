@@ -5,6 +5,7 @@ using PicoSwitch.Companion.Services.Diagnostics;
 using PicoSwitch.Companion.Services.Presentation;
 using PicoSwitch.Companion.Windows.Bluetooth;
 using PicoSwitch.Companion.Windows.Storage;
+using PicoSwitch.Companion.Windows.ControllerLink;
 using PicoSwitch.Management;
 
 namespace PicoSwitch.Companion.Services;
@@ -122,6 +123,13 @@ public sealed class AdapterConnectionService
     public IReadOnlyStateValue<BluetoothRadioCapabilities> Radio => radio;
 
     public DiagnosticLog Diagnostics => diagnostics;
+
+    /// <summary>
+    /// Controller Link's access to the live management session. Null on a
+    /// transport that cannot carry a data plane, which the caller reports as
+    /// unavailable rather than treating as an error.
+    /// </summary>
+    public IControllerLinkDataPlaneProvider? DataPlanes => repository.DataPlanes;
 
     public ControllerInventoryView Inventory =>
         ControllerInventory.Build(Snapshot.Value.Peers, history.Value.ForAdapter(active.State.ActiveId));
@@ -874,6 +882,41 @@ public sealed class AdapterConnectionService
     public Task<PairingStatus> ControllerPairingStatusAsync(
         CancellationToken cancellationToken = default) =>
         RunExclusiveAsync(() => repository.PairingStatusAsync(cancellationToken));
+
+    /// <summary>
+    /// Arm the adapter's Controller Link data plane.
+    ///
+    /// Single-flight with every other management command, like the pairing
+    /// verbs: this is CONTROL traffic on the JSON channel. Gameplay does not
+    /// come through here -- it rides a separate binary characteristic, which is
+    /// the entire reason the data plane exists.
+    /// </summary>
+    public Task<ControllerLinkState> StartControllerLinkAsync(
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(async () =>
+        {
+            var state = await repository.StartControllerLinkAsync(cancellationToken)
+                .ConfigureAwait(false);
+            diagnostics.Info(
+                "controller-link",
+                $"data plane start: active={state.Active} version={state.Version} " +
+                $"mtu={state.AttMtu}/{state.MinimumAttMtu} ok={state.MtuOk}");
+            return state;
+        });
+
+    public Task<ControllerLinkState> StopControllerLinkAsync(
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(async () =>
+        {
+            var state = await repository.StopControllerLinkAsync(cancellationToken)
+                .ConfigureAwait(false);
+            diagnostics.Info("controller-link", $"data plane stop: active={state.Active}");
+            return state;
+        });
+
+    public Task<ControllerLinkState> ControllerLinkStatusAsync(
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(() => repository.ControllerLinkStatusAsync(cancellationToken));
 
     public Task<PairingStatus> CancelControllerPairingAsync(
         CancellationToken cancellationToken = default) =>
