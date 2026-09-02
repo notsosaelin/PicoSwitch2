@@ -755,6 +755,17 @@ static const uint8_t config_ble_tx_uuid[] = {
     0x81, 0x46, 0x27, 0x06, 0x8E, 0x64, 0x40, 0x7A,
     0xBC, 0x3D, 0xD3, 0x03, 0x52, 0x9F, 0xBE, 0x1C,
 };
+// Controller Link data plane. Same service, same bonded encrypted link, but a
+// separate characteristic pair so gameplay never queues behind a management
+// command and a management command never waits on gameplay.
+static const uint8_t config_ble_cl_in_uuid[] = {   // companion -> adapter
+    0x2F, 0x9E, 0x54, 0xC1, 0x0B, 0x7A, 0x4D, 0x62,
+    0x9C, 0x18, 0x3E, 0x74, 0xA5, 0x21, 0x66, 0xD0,
+};
+static const uint8_t config_ble_cl_out_uuid[] = {  // adapter -> companion
+    0x6B, 0x33, 0xE1, 0x8A, 0xC4, 0x5D, 0x47, 0x0E,
+    0xB2, 0x91, 0x7F, 0x0C, 0x88, 0xAE, 0x39, 0x14,
+};
 
 // Advertisement UUID bytes use Bluetooth little-endian wire order. The full
 // friendly name lives in scan response data so the primary advertisement stays
@@ -792,6 +803,14 @@ static struct {
     uint16_t rx_value_handle;
     uint16_t tx_value_handle;
     uint16_t tx_ccc_handle;
+    // Windows Controller Link data plane, on the SAME service and the SAME
+    // bonded encrypted ACL as the JSON command channel above. Gameplay must not
+    // ride the command channel: it is newline-framed, single-flight and
+    // request/response, and 125 Hz of controller state would starve management.
+    // See ns2_companion_link.h.
+    uint16_t cl_in_value_handle;    // companion -> adapter, write-without-response
+    uint16_t cl_out_value_handle;   // adapter -> companion, notify
+    uint16_t cl_out_ccc_handle;
     btstack_context_callback_registration_t tx_request;
     uint8_t tx_chunk[512];
     // Identity of the connected management/companion client. Recorded because
@@ -1355,6 +1374,17 @@ static int host_att_write_callback(hci_con_handle_t con_handle, uint16_t att_han
         return ATT_ERROR_SUCCESS;
     }
 
+    // Controller Link data plane. The characteristics are declared so the GATT
+    // layout is stable for a companion that discovers the service, but the
+    // runtime that consumes frames is not wired up yet. Refuse explicitly
+    // rather than accepting writes into nothing: a companion must be able to
+    // tell "this firmware has no data plane" from "it took my frames and
+    // silently dropped them".
+    if (att_handle == config_ble.cl_in_value_handle ||
+        att_handle == config_ble.cl_out_ccc_handle) {
+        return ATT_ERROR_WRITE_NOT_PERMITTED;
+    }
+
     if (att_handle == config_ble.tx_ccc_handle) {
         if (transaction_mode != ATT_TRANSACTION_MODE_NONE) {
             return ATT_ERROR_WRITE_REQUEST_REJECTED;
@@ -1421,6 +1451,23 @@ static void setup_att_server(void) {
         ATT_PROPERTY_NOTIFY | ATT_PROPERTY_DYNAMIC,
         ATT_SECURITY_NONE, ATT_SECURITY_ENCRYPTED, NULL, 0);
     config_ble.tx_ccc_handle = (uint16_t)(config_ble.tx_value_handle + 1u);
+
+    // Controller Link data plane, in the same service so it inherits the same
+    // bond, encryption and allowlist. Input is WRITE_WITHOUT_RESPONSE on
+    // purpose: at 125 Hz an acknowledged write would serialise gameplay behind
+    // a round trip, and a lost frame is superseded by the next one anyway --
+    // the sequence number in the frame, not ATT, is what enforces "latest state
+    // wins" (ns2_companion_link.h).
+    config_ble.cl_in_value_handle = att_db_util_add_characteristic_uuid128(
+        config_ble_cl_in_uuid,
+        ATT_PROPERTY_WRITE_WITHOUT_RESPONSE | ATT_PROPERTY_DYNAMIC,
+        ATT_SECURITY_NONE, ATT_SECURITY_ENCRYPTED, NULL, 0);
+    config_ble.cl_out_value_handle = att_db_util_add_characteristic_uuid128(
+        config_ble_cl_out_uuid,
+        ATT_PROPERTY_NOTIFY | ATT_PROPERTY_DYNAMIC,
+        ATT_SECURITY_NONE, ATT_SECURITY_ENCRYPTED, NULL, 0);
+    config_ble.cl_out_ccc_handle = (uint16_t)(config_ble.cl_out_value_handle + 1u);
+
     config_ble.service_available = true;
 
     att_server_init(att_db_util_get_address(), host_att_read_callback, host_att_write_callback);

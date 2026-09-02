@@ -66,6 +66,7 @@ $tests = @(
     @{ g='management'; n='test_ns2_input_arbiter';                  src='tools/test_ns2_input_arbiter.c src/bt_hid/ns2_input_arbiter.c';                flags='' }
     @{ g='management'; n='test_ns2_ble_reconnect';                  src='tools/test_ns2_ble_reconnect.c src/ns2_ble_reconnect.c';                       flags='' }
     @{ g='management'; n='test_ns2_bt_lifecycle';                   src='tools/test_ns2_bt_lifecycle.c src/ns2_bt_lifecycle.c';                         flags='' }
+    @{ g='management'; n='test_ns2_companion_link';                 src='tools/test_ns2_companion_link.c src/ns2_companion_link.c';                     flags='-Itools' }
     @{ g='management'; n='test_ns2_bt_health';                      src='tools/test_ns2_bt_health.c src/ns2_bt_health.c';                               flags='' }
     # Model-based lifecycle test: deterministic seeded operation sequences over
     # the pure policy objects, invariants checked after every transition. Pure

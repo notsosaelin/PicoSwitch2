@@ -39,6 +39,19 @@ typedef enum {
     INPUT_TRANSPORT_I2C,        // I2C peer (STEMMA QT / QWIIC)
     INPUT_TRANSPORT_GPIO,       // Direct GPIO buttons/analog (pad input)
     INPUT_TRANSPORT_UART,       // UART peer (inter-MCU link, dual-RP2040 boards)
+    // Companion-originated state over the trusted management link (Path C).
+    //
+    // Its own transport identity ON PURPOSE. The Windows companion carries
+    // controller state on the management ACL because Windows has no Classic HID
+    // Device role (docs/experiments/
+    // windows-classic-hid-device-feasibility-2026-09-02.md). Describing that as
+    // BT_CLASSIC or BT_BLE would make source ownership, stale-input
+    // neutralization, diagnostics attribution and feedback routing all behave as
+    // if a controller were paired to the adapter. None is.
+    //
+    // The wire payload reuses the canonical bridge report format; the transport
+    // does not pretend to be the transport that format usually arrives on.
+    INPUT_TRANSPORT_COMPANION,
 } input_transport_t;
 
 // ============================================================================
