@@ -76,6 +76,27 @@ public sealed class ControllerInputStateTests
     }
 
     [Fact]
+    public void OnePolledPhysicalFramePublishesOneCompleteSnapshot()
+    {
+        var state = new ControllerInputState();
+        var notifications = 0;
+        state.State.Changed += () => notifications++;
+
+        state.ApplyPhysicalFrame(
+            ControllerButtonSet.Of(ControllerButton.A, ControllerButton.R1),
+            new AnalogFrame(10, 20, 30, 40, 50, 60, DpadState.FromAxes(1f, -1f)));
+
+        Assert.Equal(1, notifications);
+        var published = state.State.Value;
+        Assert.True(published.Buttons.Contains(ControllerButton.B));
+        Assert.True(published.Buttons.Contains(ControllerButton.R1));
+        Assert.True(published.DpadUp);
+        Assert.True(published.DpadRight);
+        Assert.Equal(10, published.LeftX);
+        Assert.Equal(60, published.RightTrigger);
+    }
+
+    [Fact]
     public void VirtualButtonsAreIndependentOfPhysicalOnesAndOfAuthority()
     {
         var state = new ControllerInputState();

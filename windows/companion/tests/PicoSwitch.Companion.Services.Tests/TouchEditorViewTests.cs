@@ -315,16 +315,15 @@ public sealed class TouchEditorViewTests
         var view = TouchEditorView.Of(
             fixture.NewService().State.Value, controllerLinkAvailable: false);
 
-        // Short on the gameplay surface, in the Android link banner's own words for this
-        // state, because it goes in a pill in the layout's quiet band…
+        // Short on the gameplay surface because it goes in a pill in the layout's quiet band…
         Assert.NotNull(view.LinkNote);
-        Assert.Contains("cannot act as a controller", view.LinkNote!, StringComparison.Ordinal);
+        Assert.Contains("not connected", view.LinkNote!, StringComparison.Ordinal);
         Assert.DoesNotContain("\n", view.LinkNote!, StringComparison.Ordinal);
 
         // …and the whole explanation is one tap away in the menu, rather than laid across
         // the bottom of the controller.
         Assert.NotNull(view.LinkDetail);
-        Assert.Contains("cannot drive a console", view.LinkDetail!, StringComparison.Ordinal);
+        Assert.Contains("Start Controller Link", view.LinkDetail!, StringComparison.Ordinal);
 
         Assert.True(view.Editable);
     }

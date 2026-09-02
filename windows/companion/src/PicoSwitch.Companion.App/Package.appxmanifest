@@ -60,8 +60,8 @@
 
   <Capabilities>
     <!--
-      `bluetooth` covers both the GATT client used for management and, if
-      WINDOWS_PASS.md §14.5 passes, the peripheral role used for Controller Link.
+      `bluetooth` covers both the GATT client used for management and the
+      AppContainer peripheral role used for Controller Link.
 
       There is deliberately no `internetClient`: the app talks to an adapter over
       Bluetooth and to nothing else, and the Wi-Fi prohibition in

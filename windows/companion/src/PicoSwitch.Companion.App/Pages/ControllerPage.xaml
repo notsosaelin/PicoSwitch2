@@ -46,15 +46,9 @@
                             x:Name="Explanation"
                             Style="{StaticResource BodyTextBlockStyle}"
                             TextWrapping="Wrap" />
-                        <TextBlock
-                            x:Name="RadioLine"
-                            Style="{StaticResource CaptionTextBlockStyle}"
-                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                            TextWrapping="Wrap"
-                            Visibility="Collapsed" />
-
                         <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
-                            <Button x:Name="CheckButton" Click="OnCheck" Content="Check this PC" />
+                            <Button x:Name="StartButton" Click="OnStart" Content="Start Controller Link" />
+                            <Button x:Name="StopButton" Click="OnStop" Content="Stop" />
                             <ProgressRing
                                 x:Name="Busy"
                                 Width="20"
@@ -86,7 +80,7 @@
                         <TextBlock
                             Style="{StaticResource BodyTextBlockStyle}"
                             TextWrapping="Wrap"
-                            Text="Lay out a touch controller for whichever controller the adapter is emulating, and keep as many named layouts as you like. None of it depends on the radio above: it works with nothing paired, and it cannot drive a console on this PC." />
+                            Text="Lay out a touch controller for whichever controller the adapter is emulating, and use it as a Controller Link input source." />
                         <Button Click="OnOpenTouchGamepad" Content="Open the on-screen controller" />
                     </StackPanel>
                 </Border>

@@ -1,210 +1,324 @@
+using System.Diagnostics;
+using PicoSwitch.Bridge.Core;
 using PicoSwitch.Companion.Services.Diagnostics;
 using PicoSwitch.Companion.Services.Presentation;
-using PicoSwitch.Companion.Windows.Bluetooth;
+using PicoSwitch.Companion.Windows.ControllerLink;
+using PicoSwitch.Management;
 using Xunit;
 
 namespace PicoSwitch.Companion.Services.Tests;
 
-/// <summary>
-/// Controller Link in its gate-failed shape (`WINDOWS_PASS.md` §14.6, §31 Phase 6
-/// "If the gate fails").
-///
-/// The §14.5 experiment ran on 2026-08-31 and did not pass: B1 and B2 succeeded,
-/// B3–B6 were never reached because the radio refuses the connectable
-/// advertisement, and package identity was tested and ruled out. What ships
-/// instead is a page that explains that specifically — and §33.2 accepts the
-/// negative result **only** on that condition, which is why the sentences are
-/// asserted here rather than written in XAML.
-///
-/// Every test runs without a radio.
-/// </summary>
 public sealed class ControllerLinkViewTests
 {
-    [Fact]
-    public void TheMeasuredCaseNamesTheCapabilityThatIsMissing()
+    [Theory]
+    [InlineData(ControllerLinkPhase.Unavailable, false, false)]
+    [InlineData(ControllerLinkPhase.Ready, true, false)]
+    [InlineData(ControllerLinkPhase.Starting, false, true)]
+    [InlineData(ControllerLinkPhase.WaitingForConnection, false, true)]
+    [InlineData(ControllerLinkPhase.Connected, false, false)]
+    [InlineData(ControllerLinkPhase.Error, true, false)]
+    public void EveryProductStateHasDeterministicActions(
+        ControllerLinkPhase phase,
+        bool canStart,
+        bool busy)
     {
-        // The state this project's only test machine is in. "Not supported on
-        // Windows" would be both unhelpful and false, since Windows published the
-        // service perfectly well.
-        var view = ControllerLinkView.Of(new ControllerLinkCapability(
-            ControllerLinkStep.AdvertisingRefused,
-            ClaimsPeripheralRole: true,
-            RadioAddress: "14:18:C3:47:C4:89"));
+        var view = ControllerLinkView.Of(phase, managementReady: true);
 
-        Assert.Contains("advertise", view.Headline, StringComparison.OrdinalIgnoreCase);
-
-        // The two facts a user needs in order to act: it is the radio, and it is
-        // not their adapter or their setup.
-        Assert.Contains("radio or its driver", view.Explanation, StringComparison.Ordinal);
-        Assert.Contains("not of the adapter", view.Explanation, StringComparison.Ordinal);
-
-        // And the reason to believe it: the refusal is not specific to this
-        // feature.
-        Assert.Contains("no meaning at all", view.Explanation, StringComparison.Ordinal);
+        Assert.False(string.IsNullOrWhiteSpace(view.Headline));
+        Assert.False(string.IsNullOrWhiteSpace(view.Explanation));
+        Assert.Equal(canStart, view.CanStart);
+        Assert.Equal(busy, view.Busy);
     }
 
     [Fact]
-    public void TheRadioLineShowsTheClaimNextToTheBehaviourWhenTheyDisagree()
+    public void ProductCopyDoesNotExposeImplementationTerms()
     {
-        // `IsPeripheralRoleSupported` reports true on the test radio while every
-        // connectable advertisement aborts. Hiding that contradiction to look
-        // tidy would remove the single most useful line on the page for anyone
-        // deciding whether another Bluetooth adapter would help.
-        var view = ControllerLinkView.Of(new ControllerLinkCapability(
-            ControllerLinkStep.AdvertisingRefused,
-            ClaimsPeripheralRole: true,
-            RadioAddress: "14:18:C3:47:C4:89"));
-
-        Assert.NotNull(view.RadioLine);
-        Assert.Contains("reports support", view.RadioLine, StringComparison.Ordinal);
-        Assert.Contains("does not perform it", view.RadioLine, StringComparison.Ordinal);
-        Assert.Contains("14:18:C3:47:C4:89", view.RadioLine, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void ARadioThatDoesNotClaimTheRoleIsNotAccusedOfContradictingItself()
-    {
-        var view = ControllerLinkView.Of(new ControllerLinkCapability(
-            ControllerLinkStep.NoPeripheralRole, ClaimsPeripheralRole: false));
-
-        Assert.NotNull(view.RadioLine);
-        Assert.Contains("does not report support", view.RadioLine, StringComparison.Ordinal);
-        Assert.DoesNotContain("does not perform it", view.RadioLine, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void AWorkingRadioIsNotPromisedAWorkingFeature()
-    {
-        // The revisit path, and the one most at risk of over-claiming. Advertising
-        // removes the platform blocker; it does not answer B3 — whether the
-        // adapter's HOGP client proceeds without the Device Information Service
-        // that Windows forbids an application from publishing. No radio has ever
-        // reached the point where that could be asked.
-        var view = ControllerLinkView.Of(new ControllerLinkCapability(
-            ControllerLinkStep.Advertising, ClaimsPeripheralRole: true));
-
-        Assert.Contains("not built yet", view.Headline, StringComparison.Ordinal);
-        Assert.Contains("does not mean controller input works", view.Explanation,
-            StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Device Information Service", view.Explanation, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void EveryOutcomeSaysSomethingAndOffersARecheck()
-    {
-        // A page that can reach a state with no text is worse than no page. The
-        // recheck matters just as much: "we can revisit this later" is only true
-        // if a user who swaps in another Bluetooth adapter can ask again.
-        foreach (var step in Enum.GetValues<ControllerLinkStep>())
+        foreach (var phase in Enum.GetValues<ControllerLinkPhase>())
         {
-            var view = ControllerLinkView.Of(new ControllerLinkCapability(step));
-
-            Assert.False(string.IsNullOrWhiteSpace(view.Headline), $"{step} has no headline");
-            Assert.False(string.IsNullOrWhiteSpace(view.Explanation), $"{step} has no explanation");
-            Assert.True(view.ShowRecheck, $"{step} cannot be re-measured");
+            var current = ControllerLinkView.Of(phase, managementReady: true);
+            var text = current.Headline + current.Explanation;
+            Assert.DoesNotContain("AppContainer", text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("AUMID", text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("HCI", text, StringComparison.OrdinalIgnoreCase);
         }
-    }
-
-    [Fact]
-    public void NoOutcomeClaimsControllerLinkWorks()
-    {
-        // The whole page exists because the feature does not exist. Nothing on it
-        // may read as though it does.
-        foreach (var step in Enum.GetValues<ControllerLinkStep>())
-        {
-            var view = ControllerLinkView.Of(new ControllerLinkCapability(step, true, "AA:BB"));
-            var text = $"{view.Headline} {view.Explanation}";
-
-            Assert.DoesNotContain("is supported", text, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain("is ready", text, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain("you can now", text, StringComparison.OrdinalIgnoreCase);
-        }
-    }
-
-    [Fact]
-    public void NothingIsClaimedBeforeAnythingIsMeasured()
-    {
-        Assert.Equal(ControllerLinkStep.Unknown, ControllerLinkView.Idle.Step);
-        Assert.Null(ControllerLinkView.Idle.RadioLine);
-        Assert.False(ControllerLinkView.Idle.Measuring);
     }
 }
 
-/// <summary>The service around the probe, over a scripted measurement.</summary>
 public sealed class ControllerLinkServiceTests
 {
-    private static ControllerLinkService Service(
-        Func<CancellationToken, Task<ControllerLinkCapability>> measure) =>
-        new(new DiagnosticLog(), measure);
-
     [Fact]
-    public async Task AMeasurementReplacesTheIdleView()
+    public async Task TrustedManagementIsRequiredBeforeHelperActivation()
     {
-        var service = Service(_ => Task.FromResult(
-            new ControllerLinkCapability(ControllerLinkStep.AdvertisingRefused, true, "AA:BB")));
+        var fixture = new Fixture(ready: false);
+        await using var service = fixture.Service;
 
-        Assert.Equal(ControllerLinkStep.Unknown, service.View.Value.Step);
+        await service.StartAsync();
 
-        await service.CheckAsync();
-
-        Assert.Equal(ControllerLinkStep.AdvertisingRefused, service.View.Value.Step);
-        Assert.Equal(ControllerLinkStep.AdvertisingRefused, service.Capability.Step);
-        Assert.False(service.View.Value.Measuring);
+        Assert.Equal(0, fixture.Factory.OpenCalls);
+        Assert.Equal(ControllerLinkPhase.Unavailable, service.View.Value.Phase);
+        Assert.Contains("trusted", service.View.Value.Explanation, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task AProbeThatThrowsLeavesThePageSayingSomething()
+    public async Task StartActivatesHostAndWaitsForARealConnection()
     {
-        // A page stuck on "measuring…" forever is the failure this prevents: the
-        // user cannot act and cannot find out why.
-        var service = Service(_ => throw new InvalidOperationException("radio exploded"));
+        var fixture = new Fixture();
+        await using var service = fixture.Service;
 
-        await service.CheckAsync();
+        await service.StartAsync();
 
-        Assert.False(service.View.Value.Measuring);
-        Assert.True(service.View.Value.ShowRecheck);
-        Assert.False(string.IsNullOrWhiteSpace(service.View.Value.Explanation));
+        Assert.Equal(1, fixture.Factory.OpenCalls);
+        Assert.Equal(1, fixture.Host.StartCalls);
+        Assert.Equal(ControllerLinkPhase.WaitingForConnection, service.View.Value.Phase);
+        Assert.NotEqual(ControllerLinkPhase.Connected, service.View.Value.Phase);
+        await service.StopAsync();
     }
 
     [Fact]
-    public async Task ASecondCheckWhileOneIsRunningIsIgnored()
+    public async Task HostSubscriptionIsTheOnlyConnectedSuccessSignal()
     {
-        // Two overlapping probes would race each other's StopAdvertising and
-        // could leave the machine advertising after both returned.
-        var started = 0;
-        var release = new TaskCompletionSource();
-        var service = Service(async _ =>
+        var fixture = new Fixture();
+        await using var service = fixture.Service;
+        await service.StartAsync();
+
+        fixture.Host.RaiseState(ControllerLinkHostState.Connected);
+
+        Assert.Equal(ControllerLinkPhase.Connected, service.View.Value.Phase);
+        await service.StopAsync();
+    }
+
+    [Fact]
+    public async Task StopNeutralizesInputBeforeTransportTeardown()
+    {
+        var fixture = new Fixture();
+        var source = new ControllerSourceIdentity("test", "Test pad", 1, 2);
+        fixture.Input.ApplyPhysicalFrame(
+            source,
+            ControllerButtonSet.Of(ControllerButton.A),
+            AnalogFrame.Neutral with { LeftX = 255 });
+        await using var service = fixture.Service;
+        await service.StartAsync();
+        fixture.Input.ApplyPhysicalFrame(
+            source,
+            ControllerButtonSet.Of(ControllerButton.A),
+            AnalogFrame.Neutral with { LeftX = 255 });
+
+        await service.StopAsync();
+
+        Assert.Equal(ControllerState.Neutral, fixture.Input.Snapshot);
+        Assert.Equal(RumbleRequest.None, fixture.Output.Last);
+        Assert.Equal(1, fixture.Host.StopCalls);
+    }
+
+    [Fact]
+    public async Task ManagementLossStopsTheHostAndNeutralizes()
+    {
+        var fixture = new Fixture();
+        await using var service = fixture.Service;
+        await service.StartAsync();
+        fixture.Host.RaiseState(ControllerLinkHostState.Connected);
+
+        fixture.Management.SetReady(false);
+        await WaitForAsync(() => service.View.Value.Phase == ControllerLinkPhase.Unavailable);
+
+        Assert.Equal(1, fixture.Host.StopCalls);
+        Assert.Equal(ControllerState.Neutral, fixture.Input.Snapshot);
+    }
+
+    [Fact]
+    public async Task OutputReportUsesSharedDecoderAndRumbleShaping()
+    {
+        var fixture = new Fixture();
+        await using var service = fixture.Service;
+        await service.StartAsync();
+
+        fixture.Host.RaiseOutput([100, 200, 3, 1]);
+
+        Assert.Equal(new RumbleRequest(96, 208), fixture.Output.Last);
+        Assert.Equal(1, service.Metrics.OutputReportsDecoded);
+        Assert.Equal(0, service.Metrics.MalformedOutputReports);
+        await service.StopAsync();
+    }
+
+    [Fact]
+    public async Task MalformedOutputIsRejectedWithoutChangingActuators()
+    {
+        var fixture = new Fixture();
+        await using var service = fixture.Service;
+        await service.StartAsync();
+
+        fixture.Host.RaiseOutput([1, 2]);
+
+        Assert.Equal(RumbleRequest.None, fixture.Output.Last);
+        Assert.Equal(1, service.Metrics.MalformedOutputReports);
+        await service.StopAsync();
+    }
+
+    [Fact]
+    public async Task UnexpectedHelperLossBecomesRecoverableErrorAndNeutralizes()
+    {
+        var fixture = new Fixture();
+        await using var service = fixture.Service;
+        await service.StartAsync();
+        fixture.Host.RaiseState(ControllerLinkHostState.Connected);
+
+        fixture.Host.RaiseClosed("crashed");
+        await WaitForAsync(() => service.View.Value.Phase == ControllerLinkPhase.Error);
+
+        Assert.True(service.View.Value.CanStart);
+        Assert.Equal(ControllerState.Neutral, fixture.Input.Snapshot);
+        Assert.Equal(RumbleRequest.None, fixture.Output.Last);
+    }
+
+    [Fact]
+    public async Task ReportPublisherUsesBoundedHostMailboxAtBridgeCadence()
+    {
+        var fixture = new Fixture();
+        await using var service = fixture.Service;
+        await service.StartAsync();
+
+        await Task.Delay(70);
+        await service.StopAsync();
+
+        Assert.InRange(fixture.Host.InputReportsQueued, 4, 20);
+        Assert.All(fixture.Host.Published, report => Assert.Equal(26, report.Length));
+        Assert.InRange(service.Metrics.AverageReportInterval.TotalMilliseconds, 4, 16);
+    }
+
+    private static async Task WaitForAsync(Func<bool> predicate)
+    {
+        var deadline = Stopwatch.GetTimestamp() + (2 * Stopwatch.Frequency);
+        while (!predicate() && Stopwatch.GetTimestamp() < deadline)
         {
-            Interlocked.Increment(ref started);
-            await release.Task;
-            return new ControllerLinkCapability(ControllerLinkStep.Advertising);
-        });
+            await Task.Delay(10);
+        }
 
-        var first = service.CheckAsync();
-        await service.CheckAsync();
-
-        Assert.Equal(1, started);
-
-        release.SetResult();
-        await first;
-        Assert.Equal(ControllerLinkStep.Advertising, service.View.Value.Step);
+        Assert.True(predicate(), "condition did not settle before deadline");
     }
 
-    [Fact]
-    public async Task TheOutcomeReachesTheDiagnosticLog()
+    private sealed class Fixture
     {
-        // The line a support bundle needs. "This radio cannot" and "the feature is
-        // unfinished" are indistinguishable to a user, and only this tells them
-        // apart after the fact.
-        var log = new DiagnosticLog();
-        var service = new ControllerLinkService(log, _ => Task.FromResult(
-            new ControllerLinkCapability(ControllerLinkStep.AdvertisingRefused, true, "AA:BB:CC")));
+        public Fixture(bool ready = true)
+        {
+            Management = new FakeManagement(ready);
+            Host = new FakeHost();
+            Factory = new FakeFactory(Host);
+            Input = new ControllerInputSession();
+            Output = new FakeOutput();
+            Service = new ControllerLinkService(
+                Management, Input, Output, new DiagnosticLog(), Factory);
+        }
 
-        await service.CheckAsync();
+        public FakeManagement Management { get; }
 
-        Assert.Contains(log.Snapshot(), entry =>
-            entry.Source == "gamepad" &&
-            entry.Message.Contains("AdvertisingRefused", StringComparison.Ordinal) &&
-            entry.Message.Contains("claimsPeripheralRole=True", StringComparison.Ordinal));
+        public FakeHost Host { get; }
+
+        public FakeFactory Factory { get; }
+
+        public ControllerInputSession Input { get; }
+
+        public FakeOutput Output { get; }
+
+        public ControllerLinkService Service { get; }
+    }
+
+    private sealed class FakeManagement(bool ready) : IControllerLinkManagement
+    {
+        public bool Ready { get; private set; } = ready;
+
+        public string? UnavailableReason => Ready ? null : "Connect to a trusted PicoSwitch adapter first.";
+
+        public event Action? Changed;
+
+        public void SetReady(bool value)
+        {
+            Ready = value;
+            Changed?.Invoke();
+        }
+
+        public Task<PairingStatus> StartPairingAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new PairingStatus(1, PairingState.Discovering));
+
+        public Task<PairingStatus> PairingStatusAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new PairingStatus(1, PairingState.Discovering));
+
+        public Task<PairingStatus> CancelPairingAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new PairingStatus(1, PairingState.Cancelled));
+    }
+
+    private sealed class FakeFactory(FakeHost host) : IControllerLinkHostFactory
+    {
+        public int OpenCalls { get; private set; }
+
+        public Task<IControllerLinkHostConnection> OpenAsync(
+            CancellationToken cancellationToken = default)
+        {
+            OpenCalls++;
+            return Task.FromResult<IControllerLinkHostConnection>(host);
+        }
+    }
+
+    private sealed class FakeHost : IControllerLinkHostConnection
+    {
+        public event Action<ControllerLinkHostState, string?>? StateChanged;
+        public event Action<ControllerLinkOutputReport>? OutputReportReceived;
+        public event Action<string>? Closed;
+
+        public HostHello? Handshake { get; } = new(
+            ControllerLinkIpcProtocol.HelperBuild,
+            4,
+            161,
+            26,
+            4,
+            ControllerLinkHostConnection.DescriptorSha256);
+
+        public long InputReportsQueued { get; private set; }
+        public long InputReportsSent => InputReportsQueued;
+        public long InputReportsCoalesced => 0;
+        public long OutputReportsReceived { get; private set; }
+        public int StartCalls { get; private set; }
+        public int StopCalls { get; private set; }
+        public List<byte[]> Published { get; } = [];
+
+        public Task StartAsync(CancellationToken cancellationToken = default)
+        {
+            StartCalls++;
+            StateChanged?.Invoke(ControllerLinkHostState.Starting, null);
+            StateChanged?.Invoke(ControllerLinkHostState.Advertising, null);
+            StateChanged?.Invoke(ControllerLinkHostState.WaitingForConnection, null);
+            return Task.CompletedTask;
+        }
+
+        public void PublishInput(ReadOnlySpan<byte> report)
+        {
+            InputReportsQueued++;
+            Published.Add(report.ToArray());
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken = default)
+        {
+            StopCalls++;
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public void RaiseState(ControllerLinkHostState state) => StateChanged?.Invoke(state, null);
+
+        public void RaiseClosed(string reason) => Closed?.Invoke(reason);
+
+        public void RaiseOutput(byte[] payload)
+        {
+            OutputReportsReceived++;
+            var now = Stopwatch.GetTimestamp();
+            OutputReportReceived?.Invoke(new ControllerLinkOutputReport(1, now, now, payload));
+        }
+    }
+
+    private sealed class FakeOutput : IControllerOutputBackend
+    {
+        public RumbleRequest Last { get; private set; }
+
+        public void Apply(RumbleRequest request) => Last = request;
     }
 }

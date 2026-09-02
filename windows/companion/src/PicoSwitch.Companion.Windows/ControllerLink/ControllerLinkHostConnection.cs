@@ -19,7 +19,7 @@ namespace PicoSwitch.Companion.Windows.ControllerLink;
 /// Controller Link host. App-service messages only activate and stop the host;
 /// all report-rate traffic uses the fixed binary pipe contract.
 /// </summary>
-public sealed class ControllerLinkHostConnection : IAsyncDisposable
+public sealed class ControllerLinkHostConnection : IControllerLinkHostConnection
 {
     public const string AppServiceName = "PicoSwitch.ControllerLink.Host";
     public const int IpcVersion = ControllerLinkIpcProtocol.Version;

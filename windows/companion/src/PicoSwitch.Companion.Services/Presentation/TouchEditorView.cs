@@ -41,8 +41,8 @@ public sealed record TouchAuditLine(string Message, bool Blocking)
 ///
 /// The same rule as <see cref="ControllerLinkView"/>: a sentence written in markup cannot
 /// be asserted, and several of these sentences are ones the project has committed to
-/// getting right — the neutral state when no personality is confirmed, the honest note
-/// that this build cannot drive a console (`WINDOWS_PASS.md` §15.8), and the difference
+/// getting right — the neutral state when no personality is confirmed, the honest link
+/// state shown before Controller Link connects, and the difference
 /// between an advisory finding and one that blocks play.
 ///
 /// It decides nothing about geometry. The resolved layout arrives already composed,
@@ -119,10 +119,9 @@ public sealed record TouchEditorView
     /// <summary>
     /// The whole explanation, for the menu.
     ///
-    /// §15.8 is explicit: where Controller Link is unavailable the surface still opens and
-    /// remains fully editable, "and the UI must say exactly that rather than appearing
-    /// broken". Saying it needs more room than a gameplay surface should give it, so the
-    /// sentence lives one tap away instead of across the bottom of the controller.
+    /// The surface still opens and remains fully editable before Controller Link
+    /// connects. Saying why needs more room than the gameplay surface should give it,
+    /// so the sentence lives one tap away.
     /// </summary>
     public string? LinkDetail { get; init; }
 
@@ -215,21 +214,17 @@ public sealed record TouchEditorView
     }
 
     /// <summary>
-    /// The pill, in the Android surface's own words for this exact state.
-    ///
-    /// Android's link banner says "This device cannot act as a controller" when the host
-    /// cannot be one. Saying the same thing here keeps the two surfaces describing one
-    /// condition the same way.
+    /// The unobtrusive gameplay pill is absent only while a real link is connected.
     /// </summary>
     private static string? LinkNoteFor(bool available) => available
         ? null
-        : "This PC cannot act as a controller";
+        : "Controller Link is not connected";
 
     private static string? LinkDetailFor(bool available) => available
         ? null
-        : "This PC cannot send a controller to the adapter, so the on-screen controller " +
-          "cannot drive a console here. Layouts, profiles and validation are entirely " +
-          "local, so everything on this screen still works.";
+        : "Start Controller Link from the Gamepad page after connecting to a trusted " +
+          "PicoSwitch adapter. Layouts, profiles and validation remain available while " +
+          "the controller link is stopped.";
 
     private static string Summary(TouchGamepadState state)
     {
