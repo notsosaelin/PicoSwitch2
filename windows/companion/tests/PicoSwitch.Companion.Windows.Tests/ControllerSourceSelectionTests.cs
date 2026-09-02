@@ -1,5 +1,6 @@
 using PicoSwitch.Bridge.Core;
 using PicoSwitch.Companion.Windows.Input;
+using PicoSwitch.Management;
 using Xunit;
 
 namespace PicoSwitch.Companion.Windows.Tests;
@@ -206,5 +207,32 @@ public sealed class ControllerIdentityParsingTests
     public void RejectsWhatIsNotAnIdentity(string? instanceId)
     {
         Assert.False(WindowsControllerSourceCatalog.TryParseIdentity(instanceId, out _));
+    }
+
+    [Fact]
+    public void AdapterPersonalityKeysAreTheManagementWireNames()
+    {
+        // The adapter reports "jcl", not "joycon2l". A guessed key would never
+        // match, and the failure mode is the worst kind: the adapter-echo guard
+        // would look present in the code and quietly do nothing, so the loop it
+        // exists to prevent would happen anyway.
+        //
+        // Every controller personality must be covered; Config is not a
+        // controller and correctly is not.
+        foreach (var personality in Enum.GetValues<Personality>())
+        {
+            if (personality is Personality.Config or Personality.Unknown)
+            {
+                continue;
+            }
+
+            var wire = Personalities.WireName(personality);
+            Assert.True(
+                WindowsControllerSourceCatalog.PersonalityProductId(wire) is not null,
+                $"personality '{wire}' has no USB product id in the adapter-echo guard");
+        }
+
+        Assert.Null(WindowsControllerSourceCatalog.PersonalityProductId("joycon2l"));
+        Assert.Equal((ushort)0x2069, WindowsControllerSourceCatalog.PersonalityProductId("pro2"));
     }
 }

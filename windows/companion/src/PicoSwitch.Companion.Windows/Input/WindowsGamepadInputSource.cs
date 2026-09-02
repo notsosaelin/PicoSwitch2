@@ -5,9 +5,25 @@ using Windows.Gaming.Input;
 namespace PicoSwitch.Companion.Windows.Input;
 
 /// <summary>
-/// Windows.Gaming.Input adapter for Controller Link. One selected gamepad is
+/// Windows.Gaming.Input adapter for Controller Link. One selected controller is
 /// sampled at the bridge cadence and published as one complete normalized frame.
-/// The renderer and AppContainer helper never poll physical controllers.
+///
+/// ## Which controller, and how it is chosen
+///
+/// Enumeration and selection belong to
+/// <see cref="WindowsControllerSourceCatalog"/> and
+/// <see cref="ControllerSourceSelection"/>: RawGameController is the superset
+/// surface, HID supplies real names and the built-in/external distinction, and
+/// the shared ambiguity rule decides when the user must choose. This class does
+/// not re-decide any of that — it holds the resolved selection and polls it.
+///
+/// ## What it can and cannot read
+///
+/// Reading named buttons and axes needs <c>Windows.Gaming.Input.Gamepad</c>,
+/// which covers XInput-class devices only. A selected source that is not
+/// gamepad-class is held and reported through <see cref="UnreadableReason"/>
+/// rather than silently producing nothing — which is what the first
+/// implementation did for every non-Xbox controller.
 /// </summary>
 public sealed class WindowsGamepadInputSource : IControllerOutputBackend, IAsyncDisposable
 {
@@ -17,9 +33,14 @@ public sealed class WindowsGamepadInputSource : IControllerOutputBackend, IAsync
 
     private readonly Lock gate = new();
     private readonly CancellationTokenSource lifetime = new();
+    private readonly WindowsControllerSourceCatalog catalog = new();
     private readonly Task pollTask;
     private Gamepad? selected;
     private ControllerSourceIdentity? selectedIdentity;
+    private WindowsControllerSource? selectedSource;
+    private IReadOnlyList<WindowsControllerSource> sources = [];
+    private string? rememberedId;
+    private string? unresolvedReason;
     private long framesPublished;
     private long pollFailures;
     private bool disposed;
@@ -28,12 +49,118 @@ public sealed class WindowsGamepadInputSource : IControllerOutputBackend, IAsync
     {
         Gamepad.GamepadAdded += OnGamepadAdded;
         Gamepad.GamepadRemoved += OnGamepadRemoved;
+        pollTask = PollAsync(lifetime.Token);
+    }
+
+    /// <summary>Everything Windows currently offers, usable or not.</summary>
+    public IReadOnlyList<WindowsControllerSource> Sources
+    {
+        get { lock (gate) { return sources; } }
+    }
+
+    /// <summary>The resolved source, or null when none is usable or the user must choose.</summary>
+    public WindowsControllerSource? SelectedSource
+    {
+        get { lock (gate) { return selectedSource; } }
+    }
+
+    /// <summary>
+    /// Why nothing is selected, or why the selection cannot produce input.
+    /// Null when a readable source is held.
+    /// </summary>
+    public string? UnreadableReason
+    {
+        get
+        {
+            lock (gate)
+            {
+                return selectedSource?.UnreadableReason ?? unresolvedReason;
+            }
+        }
+    }
+
+    public event Action? SourcesChanged;
+
+    /// <summary>
+    /// Re-enumerate and re-resolve. Safe to call at any time; the poll loop
+    /// picks up the new selection on its next tick.
+    /// </summary>
+    /// <param name="adapterPersonality">
+    /// What the connected adapter is emulating, so its own USB output is kept
+    /// out of automatic selection.
+    /// </param>
+    public async Task RefreshAsync(
+        string? adapterPersonality = null,
+        CancellationToken cancellationToken = default)
+    {
+        var found = await catalog.EnumerateAsync(adapterPersonality, cancellationToken)
+            .ConfigureAwait(false);
+
+        string? remembered;
         lock (gate)
         {
-            SelectFirstAvailableLocked();
+            remembered = rememberedId;
         }
 
-        pollTask = PollAsync(lifetime.Token);
+        var resolved = ControllerSourceSelection.Resolve(found, remembered);
+        var reason = ControllerSourceSelection.UnresolvedReason(found, resolved);
+
+        lock (gate)
+        {
+            sources = found;
+            selectedSource = resolved;
+            unresolvedReason = reason;
+            BindLocked(resolved);
+        }
+
+        SourcesChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Remember an explicit choice. It outranks every heuristic, including the
+    /// adapter-echo guard — someone may be testing that loop on purpose. Pass
+    /// null to return to automatic selection.
+    /// </summary>
+    public Task SelectAsync(string? sourceId, string? adapterPersonality = null)
+    {
+        lock (gate)
+        {
+            rememberedId = sourceId;
+        }
+
+        return RefreshAsync(adapterPersonality);
+    }
+
+    /// <summary>
+    /// Attach the WinRT Gamepad projection for the resolved source, when there
+    /// is one. A non-gamepad-class source still resolves and is still reported;
+    /// it simply has no projection to read.
+    /// </summary>
+    private void BindLocked(WindowsControllerSource? source)
+    {
+        selected = null;
+        selectedIdentity = null;
+        if (source is null || !source.IsGamepadClass)
+        {
+            return;
+        }
+
+        foreach (var pad in Gamepad.Gamepads)
+        {
+            var raw = RawGameController.FromGameController(pad);
+            if (raw?.NonRoamableId != source.Id)
+            {
+                continue;
+            }
+
+            selected = pad;
+            selectedIdentity = new ControllerSourceIdentity(
+                source.Id,
+                source.Name,
+                (ushort)source.Candidate.VendorId,
+                (ushort)source.Candidate.ProductId);
+            return;
+        }
     }
 
     public event Action<ControllerSourceIdentity, ControllerButtonSet, AnalogFrame>? Frame;
@@ -136,14 +263,10 @@ public sealed class WindowsGamepadInputSource : IControllerOutputBackend, IAsync
         }
     }
 
-    private void OnGamepadAdded(object? sender, Gamepad gamepad)
-    {
-        lock (gate)
-        {
-            selected ??= gamepad;
-            selectedIdentity ??= Identity(gamepad);
-        }
-    }
+    // Arrival re-resolves through the catalog rather than grabbing whatever
+    // appeared: "first gamepad wins" is exactly the rule that made the adapter's
+    // own USB echo selectable.
+    private void OnGamepadAdded(object? sender, Gamepad gamepad) => _ = RefreshAsync();
 
     private void OnGamepadRemoved(object? sender, Gamepad gamepad)
     {
@@ -166,35 +289,16 @@ public sealed class WindowsGamepadInputSource : IControllerOutputBackend, IAsync
             removed = selectedIdentity;
             selected = null;
             selectedIdentity = null;
-            SelectFirstAvailableLocked();
         }
 
+        // Tell downstream before re-resolving, so a late poll cannot publish a
+        // frame attributed to a controller that has already gone.
         if (removed is not null)
         {
             Removed?.Invoke(removed);
         }
-    }
 
-    private void SelectFirstAvailableLocked()
-    {
-        selected = Gamepad.Gamepads.FirstOrDefault();
-        selectedIdentity = selected is null ? null : Identity(selected);
-    }
-
-    private static ControllerSourceIdentity Identity(Gamepad gamepad)
-    {
-        var raw = RawGameController.FromGameController(gamepad);
-        var id = raw?.NonRoamableId;
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            id = $"windows-gamepad-{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(gamepad):x8}";
-        }
-
-        return new ControllerSourceIdentity(
-            id,
-            raw?.DisplayName ?? "Windows gamepad",
-            raw?.HardwareVendorId ?? 0,
-            raw?.HardwareProductId ?? 0);
+        _ = RefreshAsync();
     }
 
     private static ControllerButtonSet Buttons(GamepadButtons buttons)
