@@ -412,8 +412,41 @@ static void test_decode_base(void)
     assert(event.buttons == 0u);
 }
 
+// The owner LED must go solid when the console is being driven, whatever the
+// carrier. Path C's companion is not a Bluetooth HID link, so keying "connected"
+// on btstack_host_controller_connected() alone left the LED idle at 125 Hz --
+// the adapter looked asleep with a controller in the user's hands. Reported from
+// the bench 2026-09-02 and confirmed against clink diagnostics showing 10755
+// frames applied while owner_led read "idle".
+//
+// The predicate is reproduced here rather than linked, because the runtime half
+// lives in btstack_host.c behind BTstack. What this pins is the RULE: armed is
+// not the same as driving.
+static bool streaming(bool active, bool neutralized, unsigned long applied)
+{
+    return active && !neutralized && applied > 0u;
+}
+
+static void test_streaming_means_actually_driving(void)
+{
+    // Armed but nothing has arrived yet: not a controller in anyone's hands.
+    assert(!streaming(true, false, 0u));
+
+    // Streaming.
+    assert(streaming(true, false, 1u));
+    assert(streaming(true, false, 10755u));
+
+    // The companion died and the watchdog neutralized: the console is being
+    // held at neutral, which is not the same as being driven.
+    assert(!streaming(true, true, 10755u));
+
+    // Stopped.
+    assert(!streaming(false, false, 10755u));
+}
+
 int main(void)
 {
+    test_streaming_means_actually_driving();
     test_frame_geometry();
     test_canonical_offsets();
     test_goldens_match_the_path_c_payload();

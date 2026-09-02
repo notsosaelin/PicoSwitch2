@@ -415,7 +415,15 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
     // scan_active=false with scan starts == stops.
     ns2_kbm_runtime_status_t discovery_status;
     ns2_kbm_runtime_status(&discovery_status);
-    const bool controller_ready = btstack_host_controller_connected();
+    // "A controller is driving the console", not "a Bluetooth HID link exists".
+    //
+    // Path C's companion source is not a BT HID connection, so keying this on
+    // btstack_host_controller_connected() alone left the owner LED idle while
+    // the console was being driven at 125 Hz -- the adapter looked asleep with a
+    // controller in the user's hands. Android goes solid once input is
+    // confirmed, and this is the same statement on the same LED.
+    const bool controller_ready = btstack_host_controller_connected() ||
+                                  btstack_host_companion_link_streaming();
     const bool source_complete = ns2_kbm_logical_source_complete(
         discovery_status.keyboard_connected, discovery_status.mouse_connected,
         controller_ready);
