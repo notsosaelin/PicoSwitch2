@@ -46,17 +46,33 @@ public sealed class WindowsControllerSourceCatalog
     /// a candidate might be the connected adapter's own output — never to hide
     /// anything, because a genuine controller carries the same identity.
     /// </summary>
+    /// <remarks>
+    /// Keys are the management wire names from <c>Personalities.WireName</c>,
+    /// not invented ones — the adapter reports "jcl", not "joycon2l", and a
+    /// guessed key would silently never match, which is the worst outcome here:
+    /// the guard would look present and do nothing.
+    /// </remarks>
     private static readonly IReadOnlyDictionary<string, ushort> PersonalityProducts =
         new Dictionary<string, ushort>(StringComparer.OrdinalIgnoreCase)
         {
             ["pro2"] = 0x2069,   // Pro Controller 2
             ["gc"] = 0x2073,     // NSO GameCube Controller
-            ["joycon2l"] = 0x2067,
-            ["joycon2r"] = 0x2066,
-            ["pro"] = 0x2009,    // Switch Pro Controller
+            ["jcl"] = 0x2067,    // Joy-Con 2 (L)
+            ["jcr"] = 0x2066,    // Joy-Con 2 (R)
         };
 
     private const ushort NintendoVendor = 0x057E;
+
+    /// <summary>
+    /// The USB product id a management personality wire name emulates, or null
+    /// when that name is not a controller personality. Exposed so a test can
+    /// prove every personality is covered — a missing one makes the
+    /// adapter-echo guard silently inert.
+    /// </summary>
+    public static ushort? PersonalityProductId(string? wireName) =>
+        wireName is not null && PersonalityProducts.TryGetValue(wireName, out var product)
+            ? product
+            : null;
 
     /// <summary>
     /// Enumerate the current sources.

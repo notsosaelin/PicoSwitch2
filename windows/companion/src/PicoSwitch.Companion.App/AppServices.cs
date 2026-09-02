@@ -218,12 +218,42 @@ public static class AppServices
                 source.Frame += input.ApplyPhysicalFrame;
                 source.Removed += input.RemovePhysicalSource;
                 physicalGamepad = source;
+
+                // Enumerate once on creation so the page has something to show
+                // before the user touches anything. The adapter's personality
+                // keeps its own USB output out of automatic selection; it is
+                // null until an adapter connects, which is the honest answer
+                // at this point.
+                _ = source.RefreshAsync(AdapterPersonality());
                 return source;
             }
         }
     }
 
-    /// <summary>Production Controller Link over the hidden same-package host.</summary>
+    /// <summary>
+    /// What the connected adapter is emulating, or null when none is connected.
+    /// Used only to keep the adapter's own USB echo out of automatic controller
+    /// selection — never to hide it, since a genuine controller of the same
+    /// model carries the same identity.
+    /// </summary>
+    private static string? AdapterPersonality()
+    {
+        try
+        {
+            // The wire name is what the catalog keys on, so the two ends agree
+            // on "pro2"/"gc" rather than on a display string.
+            var current = adapters?.Snapshot.Value.Personality.Current;
+            return current is null
+                ? null
+                : global::PicoSwitch.Management.Personalities.WireName(current.Value);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Production Controller Link over the trusted management link.</summary>
     public static ControllerLinkService ControllerLink
     {
         get
