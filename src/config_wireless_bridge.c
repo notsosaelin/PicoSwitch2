@@ -242,6 +242,22 @@ bool config_wireless_command_allowed(const char *command)
            // holder of an authorised session can do is make the adapter
            // discoverable for its bounded, firmware-owned window.
            strncmp(command, "pairing ", 8) == 0 ||
+           // Windows Controller Link (Path C) control plane. Mutating
+           // (start/stop) and read (status).
+           //
+           // Included deliberately, and it is the narrowest of the mutating
+           // forms here: it arms a data plane on the SAME connection that
+           // issued the command, for the session that issued it. It opens no
+           // radio surface, admits no new peer, and grants no bonding
+           // authority -- the worst a holder of an authorised session can do is
+           // make the adapter accept controller state from the companion it is
+           // already talking to.
+           //
+           // Without this the command is refused as "command unavailable over
+           // Bluetooth" and Controller Link cannot start at all over the very
+           // transport it is designed for.
+           strcmp(command, "clink") == 0 ||
+           strncmp(command, "clink ", 6) == 0 ||
            strcmp(command, "save") == 0 ||
            strcmp(command, "save status") == 0 ||
            strncmp(command, "amiibo ", 7) == 0 ||

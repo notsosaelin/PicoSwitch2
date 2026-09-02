@@ -92,6 +92,15 @@ static void test_wireless_command_policy(void)
     assert(config_wireless_command_allowed("personality"));
     assert(config_wireless_command_allowed("personality gc"));
     assert(config_wireless_command_allowed("wake"));
+    // Windows Controller Link control plane. Without these the companion cannot
+    // start Controller Link over the very transport it is designed for: the
+    // command is refused as "command unavailable over Bluetooth" before it ever
+    // reaches the dispatcher, which is indistinguishable from firmware that has
+    // no data plane at all.
+    assert(config_wireless_command_allowed("clink"));
+    assert(config_wireless_command_allowed("clink status"));
+    assert(config_wireless_command_allowed("clink start"));
+    assert(config_wireless_command_allowed("clink stop"));
     assert(config_wireless_command_allowed("mgmt"));
     assert(config_wireless_command_allowed("mgmt status"));
     assert(config_wireless_command_allowed("mgmt off"));
