@@ -63,6 +63,7 @@ public sealed partial class MainWindow : Window
         {
             AppServices.Adapters.Connection.Changed -= OnConnectionChanged;
             AppServices.Adapters.Relationship.Changed -= OnConnectionChanged;
+            AppServices.ShutdownAsync().GetAwaiter().GetResult();
         };
 
         Navigate("adapter");

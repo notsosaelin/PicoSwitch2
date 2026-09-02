@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -48,12 +49,8 @@ namespace PicoSwitch.Companion.App.Touch;
 /// is a <see cref="TouchEditorView"/> property, and the toolbar's position comes from
 /// <see cref="TouchToolbarLayout"/>.
 ///
-/// ## Why there is no gameplay here
-///
-/// Routing contacts to a console is Phase 6b and is gated on Controller Link, which this
-/// build does not have. §15.8 says the surface must still open, stay fully editable, and
-/// SAY what is missing — so the pointer handlers below are the editor's, the status pill
-/// is permanent, and no contact reaches <c>TouchGamepad</c>.
+/// In play mode native pointer events are reduced to complete, stable-ID contact batches
+/// and passed to the shared TouchGamepad engine. The view knows nothing about HOGP.
 /// </summary>
 public sealed partial class TouchGamepadView : UserControl
 {
@@ -82,6 +79,8 @@ public sealed partial class TouchGamepadView : UserControl
 
     private readonly TouchGamepadService gamepad = AppServices.TouchGamepad;
     private readonly TouchControlRenderer renderer;
+    private readonly DispatcherTimer gameplayTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
+    private readonly Dictionary<uint, TouchContact> gameplayContacts = [];
 
     private TouchSurfaceMode mode = TouchSurfaceMode.Play;
     private bool menuOpen;
@@ -114,6 +113,7 @@ public sealed partial class TouchGamepadView : UserControl
             : TouchToolbarPlacement.Default;
 
         gamepad.SetAlignment(ReadAlignment());
+        gameplayTimer.Tick += (_, _) => gamepad.TickGameplay(MonotonicNanos());
 
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
@@ -124,6 +124,7 @@ public sealed partial class TouchGamepadView : UserControl
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         gamepad.State.Changed += OnStateChanged;
+        AppServices.ControllerLink.View.Changed += OnStateChanged;
         AppServices.Adapters.Snapshot.Changed += OnSnapshotChanged;
         AppServices.Adapters.Registry.Changed += OnSnapshotChanged;
 
@@ -131,6 +132,8 @@ public sealed partial class TouchGamepadView : UserControl
         BuildAddMenu();
         Measure();
         Render();
+        gamepad.ActivateGameplay();
+        gameplayTimer.Start();
 
         // Focus the canvas, not a button: a user who opened the controller wants to act on
         // the layout, and §26.5 runs the editor by keyboard before anything else.
@@ -140,8 +143,12 @@ public sealed partial class TouchGamepadView : UserControl
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         gamepad.State.Changed -= OnStateChanged;
+        AppServices.ControllerLink.View.Changed -= OnStateChanged;
         AppServices.Adapters.Snapshot.Changed -= OnSnapshotChanged;
         AppServices.Adapters.Registry.Changed -= OnSnapshotChanged;
+        gameplayTimer.Stop();
+        ReleaseGameplay(TouchReleaseReason.Disposed);
+        gamepad.DeactivateGameplay();
         renderer.Clear();
     }
 
@@ -217,7 +224,11 @@ public sealed partial class TouchGamepadView : UserControl
     private void Render()
     {
         var state = gamepad.State.Value;
-        var view = TouchEditorView.Of(state, controllerLinkAvailable: false, mode);
+        var view = TouchEditorView.Of(
+            state,
+            controllerLinkAvailable: AppServices.ControllerLink.View.Value.Phase ==
+                ControllerLinkPhase.Connected,
+            mode);
 
         var editing = view.ShowEditorChrome;
 
@@ -338,6 +349,14 @@ public sealed partial class TouchGamepadView : UserControl
 
     private void OnSurfacePressed(object sender, PointerRoutedEventArgs e)
     {
+        if (mode == TouchSurfaceMode.Play && !menuOpen)
+        {
+            DispatchGameplay(e, TouchPhase.Down, removeAfterDispatch: false);
+            Surface.CapturePointer(e.Pointer);
+            e.Handled = true;
+            return;
+        }
+
         if (mode != TouchSurfaceMode.Edit || !gamepad.State.Value.Editable || menuOpen)
         {
             return;
@@ -400,6 +419,13 @@ public sealed partial class TouchGamepadView : UserControl
     /// </summary>
     private void OnSurfaceMoved(object sender, PointerRoutedEventArgs e)
     {
+        if (mode == TouchSurfaceMode.Play && gameplayContacts.ContainsKey(e.Pointer.PointerId))
+        {
+            DispatchGameplay(e, TouchPhase.Move, removeAfterDispatch: false);
+            e.Handled = true;
+            return;
+        }
+
         if (dragPointer != e.Pointer.PointerId || dragPrimary is null)
         {
             return;
@@ -429,6 +455,14 @@ public sealed partial class TouchGamepadView : UserControl
 
     private void OnSurfaceReleased(object sender, PointerRoutedEventArgs e)
     {
+        if (mode == TouchSurfaceMode.Play && gameplayContacts.ContainsKey(e.Pointer.PointerId))
+        {
+            DispatchGameplay(e, TouchPhase.Up, removeAfterDispatch: true);
+            Surface.ReleasePointerCapture(e.Pointer);
+            e.Handled = true;
+            return;
+        }
+
         if (dragPointer != e.Pointer.PointerId)
         {
             return;
@@ -446,8 +480,51 @@ public sealed partial class TouchGamepadView : UserControl
     /// and throwing it away would lose a move the user watched happen. What must not
     /// happen is a half-drag left outside the undo history, which is the case this closes.
     /// </summary>
-    private void OnSurfaceCaptureLost(object sender, PointerRoutedEventArgs e) =>
+    private void OnSurfaceCaptureLost(object sender, PointerRoutedEventArgs e)
+    {
+        if (mode == TouchSurfaceMode.Play)
+        {
+            ReleaseGameplay(TouchReleaseReason.HostInactive);
+            return;
+        }
+
         EndDrag(commit: true);
+    }
+
+    private void DispatchGameplay(
+        PointerRoutedEventArgs e,
+        TouchPhase phase,
+        bool removeAfterDispatch)
+    {
+        var point = e.GetCurrentPoint(Surface).Position;
+        var contact = new TouchContact(
+            e.Pointer.PointerId,
+            phase,
+            (float)point.X,
+            (float)point.Y,
+            MonotonicNanos());
+        gameplayContacts[e.Pointer.PointerId] = contact;
+        gamepad.DispatchGameplayContacts(gameplayContacts.Values.ToArray());
+        gamepad.TickGameplay(contact.TimeNanos);
+
+        if (removeAfterDispatch)
+        {
+            gameplayContacts.Remove(e.Pointer.PointerId);
+        }
+        else
+        {
+            gameplayContacts[e.Pointer.PointerId] = contact with { Phase = TouchPhase.Move };
+        }
+    }
+
+    private void ReleaseGameplay(TouchReleaseReason reason)
+    {
+        gameplayContacts.Clear();
+        gamepad.ReleaseGameplay(reason);
+    }
+
+    private static long MonotonicNanos() =>
+        (long)(Stopwatch.GetTimestamp() * (1_000_000_000d / Stopwatch.Frequency));
 
     private void OnSurfaceRightTapped(object sender, RightTappedRoutedEventArgs e)
     {
@@ -693,6 +770,10 @@ public sealed partial class TouchGamepadView : UserControl
         }
 
         menuOpen = open;
+        if (open && mode == TouchSurfaceMode.Play)
+        {
+            ReleaseGameplay(TouchReleaseReason.HostInactive);
+        }
         Render();
         if (!open)
         {
@@ -715,6 +796,9 @@ public sealed partial class TouchGamepadView : UserControl
 
     private void OnEnterEditing(object sender, RoutedEventArgs e)
     {
+        gameplayTimer.Stop();
+        ReleaseGameplay(TouchReleaseReason.EditorEntered);
+        gamepad.DeactivateGameplay();
         mode = TouchSurfaceMode.Edit;
         menuOpen = false;
         gamepad.SetSelection(new HashSet<string>(StringComparer.Ordinal));
@@ -771,6 +855,8 @@ public sealed partial class TouchGamepadView : UserControl
 
         mode = TouchSurfaceMode.Play;
         gamepad.SetSelection(new HashSet<string>(StringComparer.Ordinal));
+        gamepad.ActivateGameplay();
+        gameplayTimer.Start();
         Render();
         Surface.Focus(FocusState.Programmatic);
     }

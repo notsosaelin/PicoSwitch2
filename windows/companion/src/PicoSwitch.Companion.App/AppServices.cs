@@ -3,6 +3,7 @@ using PicoSwitch.Companion.Services;
 using PicoSwitch.Companion.Services.Presentation;
 using PicoSwitch.Companion.Windows.Storage;
 using PicoSwitch.Companion.Services.Diagnostics;
+using PicoSwitch.Companion.Windows.Input;
 
 namespace PicoSwitch.Companion.App;
 
@@ -28,6 +29,9 @@ public static class AppServices
     private static DispatcherQueue? dispatcher;
     private static WindowsDocumentStore? documents;
     private static TouchGamepadService? touchGamepad;
+    private static ControllerInputSession? controllerInput;
+    private static WindowsGamepadInputSource? physicalGamepad;
+    private static ControllerLinkManagement? controllerLinkManagement;
 
     public static DiagnosticLog Diagnostics
     {
@@ -187,20 +191,51 @@ public static class AppServices
         }
     }
 
-    /// <summary>
-    /// Controller Link, in its gate-failed shape.
-    ///
-    /// Independent of <see cref="Adapters"/> on purpose: what this PC's radio can
-    /// do is a property of the PC, not of any adapter, and the question is worth
-    /// answering with nothing paired.
-    /// </summary>
+    private static ControllerInputSession ControllerInput
+    {
+        get
+        {
+            lock (Gate)
+            {
+                return controllerInput ??= new ControllerInputSession();
+            }
+        }
+    }
+
+    private static WindowsGamepadInputSource PhysicalGamepad
+    {
+        get
+        {
+            lock (Gate)
+            {
+                if (physicalGamepad is { } existing)
+                {
+                    return existing;
+                }
+
+                var input = controllerInput ??= new ControllerInputSession();
+                var source = new WindowsGamepadInputSource();
+                source.Frame += input.ApplyPhysicalFrame;
+                source.Removed += input.RemovePhysicalSource;
+                physicalGamepad = source;
+                return source;
+            }
+        }
+    }
+
+    /// <summary>Production Controller Link over the hidden same-package host.</summary>
     public static ControllerLinkService ControllerLink
     {
         get
         {
             lock (Gate)
             {
+                var management = controllerLinkManagement ??=
+                    new ControllerLinkManagement(Adapters).Subscribe();
                 return controllerLink ??= new ControllerLinkService(
+                    management,
+                    ControllerInput,
+                    PhysicalGamepad,
                     diagnostics ??= new DiagnosticLog());
             }
         }
@@ -228,8 +263,46 @@ public static class AppServices
                 return touchGamepad ??= new TouchGamepadService(
                     new WindowsTouchProfileStore(Documents),
                     new WindowsTouchOverrideStore(Documents),
-                    diagnostics ??= new DiagnosticLog());
+                    diagnostics ??= new DiagnosticLog(),
+                    controllerInput: ControllerInput);
             }
+        }
+    }
+
+    /// <summary>Best-effort bounded teardown for the main window close path.</summary>
+    public static async Task ShutdownAsync()
+    {
+        ControllerLinkService? link;
+        WindowsGamepadInputSource? gamepad;
+        lock (Gate)
+        {
+            link = controllerLink;
+            gamepad = physicalGamepad;
+        }
+
+        if (link is not null)
+        {
+            await link.DisposeAsync().ConfigureAwait(false);
+        }
+
+        if (gamepad is not null)
+        {
+            await gamepad.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    public static string? ControllerLinkHostLog()
+    {
+        try
+        {
+            var path = Path.Combine(
+                global::Windows.Storage.ApplicationData.Current.LocalFolder.Path,
+                "controller-link-host.log");
+            return File.Exists(path) ? File.ReadAllText(path) : null;
+        }
+        catch (IOException)
+        {
+            return null;
         }
     }
 

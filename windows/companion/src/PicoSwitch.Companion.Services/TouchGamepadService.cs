@@ -84,11 +84,10 @@ public sealed record TouchGamepadState
 /// <see cref="TouchLayoutEditor"/> and <see cref="TouchProfileLibraryEditor"/>, in the
 /// portable core, where it is shared with the Android companion and tested without a UI.
 ///
-/// It deliberately does NOT own gameplay. Routing contacts to the console is Phase 6b
-/// and is gated on Controller Link, which this build does not have
-/// (docs/experiments/windows-hogp-bridge-feasibility-2026-08-31.md). The surface built
-/// on this service opens, draws, and is fully editable with no adapter attached — which
-/// is exactly what WINDOWS_PASS.md §31 Phase 6a asks for and why it is not gated.
+/// Gameplay contacts enter the shared <see cref="ControllerInputSession"/> here,
+/// after the WinUI surface has reduced pointer events to platform-neutral contacts.
+/// The surface still opens and edits with no adapter attached; only activating its
+/// gameplay state affects Controller Link input.
 ///
 /// ## Personality
 ///
@@ -102,6 +101,7 @@ public sealed class TouchGamepadService
     private readonly ITouchLayoutOverrideStore legacy;
     private readonly DiagnosticLog diagnostics;
     private readonly Func<long> nowEpochMs;
+    private readonly ControllerInputSession? controllerInput;
     private readonly StateValue<TouchGamepadState> state = new(new TouchGamepadState());
 
     private TouchEditorHistory? history;
@@ -112,16 +112,38 @@ public sealed class TouchGamepadService
         ITouchProfileLibraryStore profiles,
         ITouchLayoutOverrideStore legacy,
         DiagnosticLog diagnostics,
-        Func<long>? nowEpochMs = null)
+        Func<long>? nowEpochMs = null,
+        ControllerInputSession? controllerInput = null)
     {
         this.profiles = profiles;
         this.legacy = legacy;
         this.diagnostics = diagnostics;
+        this.controllerInput = controllerInput;
         this.nowEpochMs = nowEpochMs ??
             (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
     }
 
     public IReadOnlyStateValue<TouchGamepadState> State => state;
+
+    public void ActivateGameplay()
+    {
+        controllerInput?.SetTouchLayout(state.Value.Resolved);
+        controllerInput?.ActivateTouch();
+        diagnostics.Info("touch", "gameplay input activated");
+    }
+
+    public void DeactivateGameplay()
+    {
+        controllerInput?.DeactivateTouch();
+        diagnostics.Info("touch", "gameplay input deactivated");
+    }
+
+    public void DispatchGameplayContacts(IReadOnlyList<TouchContact> contacts) =>
+        controllerInput?.DispatchTouchContacts(contacts);
+
+    public void TickGameplay(long nowNanos) => controllerInput?.TickTouch(nowNanos);
+
+    public void ReleaseGameplay(TouchReleaseReason reason) => controllerInput?.ReleaseTouch(reason);
 
     /// <summary>
     /// The personality the adapter confirmed. Idempotent.
@@ -152,6 +174,7 @@ public sealed class TouchGamepadService
             // A personality with no touch layout — or none confirmed yet. Say nothing
             // rather than drawing the last controller's arrangement.
             history = null;
+            controllerInput?.ReleaseTouch(TouchReleaseReason.PersonalityChanged);
             state.Set(new TouchGamepadState());
             return;
         }
@@ -458,5 +481,6 @@ public sealed class TouchGamepadService
             // first blocking audit finding. Only one sentence fits.
             Warning = storageWarning ?? composed.Warning ?? resolved.Problem,
         });
+        controllerInput?.SetTouchLayout(resolved);
     }
 }

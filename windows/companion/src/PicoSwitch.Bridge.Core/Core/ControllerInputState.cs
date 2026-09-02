@@ -188,6 +188,26 @@ public sealed class ControllerInputState
     }
 
     /// <summary>
+    /// Replace the complete physical-controller contribution in one publish.
+    /// Host polling APIs return one coherent snapshot;
+    /// splitting that snapshot into a button call per flag plus an analog call
+    /// would expose transient half-frames to the 125 Hz report scheduler.
+    /// </summary>
+    public void ApplyPhysicalFrame(ControllerButtonSet reportedButtons, AnalogFrame frame)
+    {
+        if (Authority != InputAuthority.Physical)
+        {
+            return;
+        }
+
+        heldPhysicalButtons = reportedButtons;
+        keyDpad = DpadState.None;
+        hatDpad = frame.Dpad ?? DpadState.None;
+        physicalAnalog = frame;
+        Publish();
+    }
+
+    /// <summary>
     /// One complete on-screen controller event: both sticks, both triggers, the
     /// D-pad and every held button.
     ///

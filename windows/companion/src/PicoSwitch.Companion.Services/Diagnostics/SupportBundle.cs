@@ -43,7 +43,8 @@ public static class SupportBundle
         AdapterRegistry registry,
         AdapterRelationshipStatus relationship,
         BluetoothRadioCapabilities radio,
-        ConnectionState connection)
+        ConnectionState connection,
+        string? controllerLinkHostLog = null)
     {
         var text = new StringBuilder();
 
@@ -66,6 +67,12 @@ public static class SupportBundle
 
         text.AppendLine("── Diagnostic log ─────────────────────────────────────────");
         text.Append(log.Render());
+        if (!string.IsNullOrWhiteSpace(controllerLinkHostLog))
+        {
+            text.AppendLine();
+            text.AppendLine("── Controller Link host ───────────────────────────────────");
+            text.Append(controllerLinkHostLog.TrimEnd()).AppendLine();
+        }
         return text.ToString();
     }
 

@@ -24,6 +24,25 @@ public readonly record struct RumbleRequest(int Left = 0, int Right = 0)
 }
 
 /// <summary>
+/// The platform-owned actuator boundary. Shared code supplies already-decoded,
+/// already-shaped motor amplitudes; a backend only translates those values into
+/// the host controller API it owns.
+/// </summary>
+public interface IControllerOutputBackend
+{
+    void Apply(RumbleRequest request);
+
+    public sealed class None : IControllerOutputBackend
+    {
+        public static readonly None Instance = new();
+
+        public void Apply(RumbleRequest request)
+        {
+        }
+    }
+}
+
+/// <summary>
 /// Everything the adapter asks of the host, decoded from one output report.
 ///
 /// Three genuinely different requests share one report because the wire contract

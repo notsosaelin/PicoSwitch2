@@ -145,6 +145,34 @@ public sealed class LayeringGuardTests
     }
 
     [Fact]
+    public void ControllerLinkHostIsOneHiddenAppContainerAppService()
+    {
+        var manifest = System.Xml.Linq.XDocument.Load(
+            Path.Combine(CompanionRoot, "src", "PicoSwitch.Companion.App", "Package.appxmanifest"));
+        var applications = manifest.Descendants()
+            .Where(element => element.Name.LocalName == "Application")
+            .ToList();
+        Assert.Single(applications);
+
+        var service = manifest.Descendants()
+            .Single(element =>
+                element.Name.LocalName == "AppService" &&
+                element.Attribute("Name")?.Value == "PicoSwitch.ControllerLink.Host");
+        var extension = service.Parent!;
+        Assert.Equal("windows.appService", extension.Attribute("Category")?.Value);
+        Assert.Equal("windowsApp", extension.Attributes()
+            .Single(attribute => attribute.Name.LocalName == "RuntimeBehavior").Value);
+        Assert.Equal("appContainer", extension.Attributes()
+            .Single(attribute => attribute.Name.LocalName == "TrustLevel").Value);
+
+        // No second Application, visual elements, alias, or executable means there
+        // is no separate shell entry and nothing for the user to launch manually.
+        Assert.DoesNotContain(
+            extension.Descendants(),
+            element => element.Name.LocalName is "VisualElements" or "AppExecutionAlias");
+    }
+
+    [Fact]
     public void SingleInstanceActivationIsWiredBeforeTheXamlRuntimeStarts()
     {
         // A second PROCESS is the Windows form of the stacked-Activity defect: two
