@@ -50,6 +50,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+// The normalized state structure is shared on purpose: Path C produces the same
+// input_event_t every other source does, and differs only in how the bytes
+// arrived.
+#include "core/input_event.h"
+
 // ============================================================================
 // WIRE CONTRACT
 // ============================================================================
@@ -153,6 +158,32 @@ uint16_t ns2_companion_link_encode_output(uint8_t report_id,
 static inline bool ns2_companion_link_mtu_sufficient(uint16_t att_mtu) {
     return att_mtu >= NS2_COMPANION_LINK_MIN_ATT_MTU;
 }
+
+// ============================================================================
+// CANONICAL REPORT DECODE
+// ============================================================================
+
+// Decode the v1 half of a canonical payload -- sticks, triggers, hat and
+// buttons -- into an already-initialised event.
+//
+// The button map is a PARAMETER, not a table of our own. The runtime passes
+// gamepad_quirks_android_bridge()->button_map, the same usage-number table the
+// Classic bridge path uses, so usage-to-destination mapping exists once. This
+// function owns only the fixed canonical byte layout, which the descriptor
+// parser derives dynamically on the Classic path and which is constant here
+// because Path C negotiates no descriptor.
+//
+// Hat and button semantics mirror bthid_gamepad.c exactly: hat 8 = released
+// with 0 = North clockwise, usage number = bit index + 1.
+//
+// Motion, battery, flags and the timestamp are deliberately NOT decoded here.
+// Those offsets belong to the vendor extension and are already owned by
+// android_bridge_extract(); the runtime calls it with the canonical ext so
+// there is one extractor, not two.
+void ns2_companion_link_decode_base(const uint8_t *payload,
+                                    const uint32_t *button_map,
+                                    uint8_t button_map_size,
+                                    input_event_t *event);
 
 // ============================================================================
 // STALE-INPUT WATCHDOG

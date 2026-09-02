@@ -10,6 +10,38 @@
 #include <string.h>
 
 #include "ns2_companion_link.h"
+#include "bt/bthid/bthid.h"
+#include "bt/bthid/devices/generic/bthid_gamepad_quirks.h"
+#include "core/buttons.h"
+#include "core/services/players/feedback.h"
+
+// The decoder test links the real gamepad-quirks translation unit so it uses
+// the SAME usage-number table the Classic bridge path does -- building a local
+// copy would only prove this test agrees with itself. That unit references the
+// wider driver surface, so stub it, exactly as test_bthid_android_bridge.c does.
+const gamepad_quirk_t QUIRK_BITDO_ULTIMATE_MG = {0};
+const gamepad_quirk_t QUIRK_BITDO_M30 = {0};
+const gamepad_quirk_t QUIRK_BITDO_PADDLE = {0};
+const gamepad_quirk_t QUIRK_XBOX_ELITE2 = {0};
+const gamepad_quirk_t QUIRK_XBOX = {0};
+
+static feedback_state_t stub_feedback;
+
+void router_submit_input(const input_event_t *event) { (void)event; }
+void router_device_disconnected(uint8_t a, int8_t i) { (void)a; (void)i; }
+void router_device_disconnected_with_generation(uint8_t a, int8_t i, uint32_t g)
+{ (void)a; (void)i; (void)g; }
+void remove_players_by_address(int a, int i) { (void)a; (void)i; }
+int find_player_index(int dev_addr, int instance)
+{ (void)dev_addr; (void)instance; return -1; }
+feedback_state_t *feedback_get_state(uint8_t player_index)
+{ (void)player_index; return &stub_feedback; }
+void feedback_clear_dirty(uint8_t player_index) { (void)player_index; }
+void bthid_register_driver(const bthid_driver_t *driver) { (void)driver; }
+bthid_device_t *bthid_get_device(uint8_t conn_index) { (void)conn_index; return NULL; }
+bool bthid_send_output_report(uint8_t conn_index, uint8_t report_id,
+                              const uint8_t *data, uint16_t len)
+{ (void)conn_index; (void)report_id; (void)data; (void)len; return true; }
 
 static void build_frame(uint8_t *out, uint16_t sequence, uint8_t first_payload)
 {
@@ -293,11 +325,99 @@ static void test_canonical_offsets(void)
     assert(p[9] == 0x08u);
 }
 
+// Decode, against the SAME usage-number table the Classic bridge path uses.
+// Passing the map in is the point: if this test built its own table it would
+// prove only that the test agrees with itself.
+static void test_decode_base(void)
+{
+    const gamepad_quirk_t *quirk = gamepad_quirks_android_bridge();
+    assert(quirk && quirk->button_map && quirk->button_map_size > 0);
+
+    uint8_t payload[NS2_COMPANION_LINK_PAYLOAD_BYTES];
+    input_event_t event;
+
+    // Neutral: centred sticks, released triggers, hat 8, no buttons.
+    memset(payload, 0, sizeof(payload));
+    payload[0] = payload[1] = payload[2] = payload[3] = 0x80u;
+    payload[9] = 0x08u;
+    init_input_event(&event);
+    ns2_companion_link_decode_base(payload, quirk->button_map,
+                                   quirk->button_map_size, &event);
+    assert(event.analog[ANALOG_LX] == 128 && event.analog[ANALOG_LY] == 128);
+    assert(event.analog[ANALOG_RX] == 128 && event.analog[ANALOG_RY] == 128);
+    assert(event.analog[ANALOG_L2] == 0 && event.analog[ANALOG_R2] == 0);
+    assert(event.buttons == 0u);
+
+    // Axis order is X, Y, Z, Rz, Rx, Ry -> LX, LY, RX, RY, L2, R2. Getting this
+    // wrong swaps the right stick with the triggers and is invisible until a
+    // human plays the thing.
+    payload[0] = 0x00u; payload[1] = 0xFFu;
+    payload[2] = 0x11u; payload[3] = 0x22u;
+    payload[4] = 0x33u; payload[5] = 0x44u;
+    init_input_event(&event);
+    ns2_companion_link_decode_base(payload, quirk->button_map,
+                                   quirk->button_map_size, &event);
+    assert(event.analog[ANALOG_LX] == 0x00u);
+    assert(event.analog[ANALOG_LY] == 0xFFu);
+    assert(event.analog[ANALOG_RX] == 0x11u);
+    assert(event.analog[ANALOG_RY] == 0x22u);
+    assert(event.analog[ANALOG_L2] == 0x33u);
+    assert(event.analog[ANALOG_R2] == 0x44u);
+
+    // Every hat direction, including the diagonals and the released value.
+    static const struct { uint8_t hat; uint32_t expect; } hats[] = {
+        { 0u, JP_BUTTON_DU },
+        { 1u, JP_BUTTON_DU | JP_BUTTON_DR },
+        { 2u, JP_BUTTON_DR },
+        { 3u, JP_BUTTON_DR | JP_BUTTON_DD },
+        { 4u, JP_BUTTON_DD },
+        { 5u, JP_BUTTON_DD | JP_BUTTON_DL },
+        { 6u, JP_BUTTON_DL },
+        { 7u, JP_BUTTON_DU | JP_BUTTON_DL },
+        { 8u, 0u },
+    };
+    for (unsigned i = 0; i < sizeof(hats) / sizeof(hats[0]); i++) {
+        memset(payload, 0, sizeof(payload));
+        payload[9] = hats[i].hat;
+        init_input_event(&event);
+        ns2_companion_link_decode_base(payload, quirk->button_map,
+                                       quirk->button_map_size, &event);
+        assert(event.buttons == hats[i].expect);
+    }
+
+    // Buttons live in three bytes since contract 4, usage = bit index + 1, and
+    // usage 17 (GR) is in the third byte -- the byte that only exists because
+    // contract 3 ran out of pad bits.
+    for (uint8_t usage = 1u; usage <= 17u; usage++) {
+        memset(payload, 0, sizeof(payload));
+        payload[9] = 0x08u;  // hat released, so only the button contributes
+        uint8_t bit = (uint8_t)(usage - 1u);
+        payload[6u + (bit / 8u)] = (uint8_t)(1u << (bit % 8u));
+        init_input_event(&event);
+        ns2_companion_link_decode_base(payload, quirk->button_map,
+                                       quirk->button_map_size, &event);
+        uint32_t expected = (usage < quirk->button_map_size)
+                                ? quirk->button_map[usage] : 0u;
+        assert(event.buttons == expected);
+    }
+
+    // A bit beyond the declared 17 must contribute nothing rather than index
+    // past the map.
+    memset(payload, 0, sizeof(payload));
+    payload[9] = 0x08u;
+    payload[8] = 0xFEu;  // usages 18..24
+    init_input_event(&event);
+    ns2_companion_link_decode_base(payload, quirk->button_map,
+                                   quirk->button_map_size, &event);
+    assert(event.buttons == 0u);
+}
+
 int main(void)
 {
     test_frame_geometry();
     test_canonical_offsets();
     test_goldens_match_the_path_c_payload();
+    test_decode_base();
     test_accepts_a_well_formed_frame();
     test_rejects_malformed_frames();
     test_latest_state_wins();

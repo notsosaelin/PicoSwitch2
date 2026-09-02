@@ -10,6 +10,13 @@
 #include "mgmt_peers.h"
 #include "mgmt_pairing.h"
 #include "ns2_bt_lifecycle.h"
+#include "ns2_companion_link.h"
+#include "ns2_active_input.h"
+#include "fixtures/android_controller_hid.h"
+#include "bt/bthid/devices/generic/bthid_android_bridge.h"
+#include "bt/bthid/devices/generic/bthid_gamepad_quirks.h"
+#include "core/router/router.h"
+#include "core/services/players/feedback.h"
 #include "ns2_ble_reconnect.h"
 #include "ns2_owner_led.h"
 #include "ns2_bt_health.h"
@@ -1346,6 +1353,12 @@ static uint16_t host_att_read_callback(hci_con_handle_t con_handle, uint16_t att
     return 0; // static values are served from the DB directly
 }
 
+// Controller Link data plane. Defined with the rest of the companion-source
+// runtime further down; declared here because the ATT callback is the entry
+// point and lives at the top of the file with its siblings.
+static void clink_on_frame(const uint8_t *data, uint16_t len);
+static void clink_set_subscribed(bool subscribed);
+
 static int host_att_write_callback(hci_con_handle_t con_handle, uint16_t att_handle,
                                    uint16_t transaction_mode, uint16_t offset,
                                    uint8_t *buffer, uint16_t buffer_size) {
@@ -1374,15 +1387,35 @@ static int host_att_write_callback(hci_con_handle_t con_handle, uint16_t att_han
         return ATT_ERROR_SUCCESS;
     }
 
-    // Controller Link data plane. The characteristics are declared so the GATT
-    // layout is stable for a companion that discovers the service, but the
-    // runtime that consumes frames is not wired up yet. Refuse explicitly
-    // rather than accepting writes into nothing: a companion must be able to
-    // tell "this firmware has no data plane" from "it took my frames and
-    // silently dropped them".
-    if (att_handle == config_ble.cl_in_value_handle ||
-        att_handle == config_ble.cl_out_ccc_handle) {
-        return ATT_ERROR_WRITE_NOT_PERMITTED;
+    // Controller Link data plane -- gameplay frames.
+    //
+    // Same trust gate as the command channel, then straight into the frame
+    // handler. No response is written and no error is returned for a malformed
+    // frame: this is WRITE_WITHOUT_RESPONSE and at 125 Hz an error round trip
+    // would be both useless and expensive. Rejections are counted and visible
+    // through `clink` diagnostics instead.
+    if (att_handle == config_ble.cl_in_value_handle) {
+        if (transaction_mode != ATT_TRANSACTION_MODE_NONE)
+            return ATT_ERROR_WRITE_REQUEST_REJECTED;
+        if (con_handle != config_ble.handle || offset != 0)
+            return ATT_ERROR_WRITE_NOT_PERMITTED;
+        if (!config_ble_link_trusted(con_handle))
+            return ATT_ERROR_INSUFFICIENT_AUTHENTICATION;
+        if (!btstack_host_companion_link_active())
+            return ATT_ERROR_WRITE_NOT_PERMITTED;
+        clink_on_frame(buffer, buffer_size);
+        return ATT_ERROR_SUCCESS;
+    }
+
+    if (att_handle == config_ble.cl_out_ccc_handle) {
+        if (transaction_mode != ATT_TRANSACTION_MODE_NONE)
+            return ATT_ERROR_WRITE_REQUEST_REJECTED;
+        if (con_handle != config_ble.handle || offset != 0 || buffer_size != 2)
+            return ATT_ERROR_WRITE_NOT_PERMITTED;
+        if (!config_ble_link_trusted(con_handle))
+            return ATT_ERROR_INSUFFICIENT_AUTHENTICATION;
+        clink_set_subscribed(little_endian_read_16(buffer, 0) != 0u);
+        return ATT_ERROR_SUCCESS;
     }
 
     if (att_handle == config_ble.tx_ccc_handle) {
@@ -3749,6 +3782,333 @@ void btstack_host_clear_pairing_lockout(void)
 #endif
 }
 
+// ===========================================================================
+// WINDOWS CONTROLLER LINK (Path C) -- companion input source runtime
+// ===========================================================================
+//
+// A first-class companion source, NOT a Bluetooth HID device. It registers with
+// the input arbiter under its own transport identity, decodes the canonical v2
+// report the companion sends, and publishes the same normalized input_event_t
+// every other source publishes.
+//
+// What is reused: the canonical report format and its extension offsets, the
+// shared usage-number button map, android_bridge_extract() for motion/battery,
+// android_bridge_encode_feedback() for rumble/LED, the arbiter and the router.
+// What is not faked: any bthid slot, HID handle, Classic lifecycle or pairing
+// state. See ns2_companion_link.h.
+
+// Stable synthetic connection identity. Above every real transport's index
+// space so an arbiter key can never collide with a paired peer's.
+#define CL_SOURCE_ADDR 0xFEu
+#define CL_SOURCE_INSTANCE 0
+
+static struct {
+    bool active;
+    bool subscribed;         // companion enabled output notifications
+    bool neutralized;        // watchdog already published neutral
+    bool ext_valid;          // canonical extension offsets resolved
+    uint16_t last_sequence;
+    bool have_sequence;
+    uint32_t generation;
+    uint32_t last_frame_ms;
+    hci_con_handle_t handle;
+    uint16_t att_mtu;
+    android_bridge_ext_t ext;
+    android_bridge_state_t motion_state;
+    // Cached feedback so a change is sent once, mirroring the Classic path.
+    bool feedback_valid;
+    uint8_t rumble_left;
+    uint8_t rumble_right;
+    uint8_t player_led;
+    bool motion_wanted;
+    // Diagnostics: every one answers a question that was expensive to ask from
+    // outside during the HOGP work.
+    uint32_t frames_received;
+    uint32_t frames_applied;
+    uint32_t frames_stale;
+    uint32_t frames_short;
+    uint32_t frames_version;
+    uint32_t frames_opcode;
+    uint32_t frames_rejected_state;
+    uint32_t outputs_sent;
+    uint32_t outputs_failed;
+    uint32_t neutralizations;
+    uint32_t max_gap_ms;
+} clink;
+
+// Resolve the canonical extension offsets ONCE from the canonical descriptor,
+// using the same identify the Classic path uses. This is why motion, battery
+// and the timestamp are read from the contract's offsets rather than any
+// restated here.
+static bool clink_resolve_ext(void)
+{
+    if (clink.ext_valid) return true;
+    clink.ext_valid = android_bridge_identify(
+        ANDROID_CONTROLLER_V2_HID_DESCRIPTOR,
+        (uint16_t)sizeof(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR), &clink.ext);
+    if (!clink.ext_valid)
+        printf("[CLINK] canonical descriptor did not self-identify\n");
+    return clink.ext_valid;
+}
+
+static void clink_publish(const uint8_t *payload)
+{
+    const gamepad_quirk_t *quirk = gamepad_quirks_android_bridge();
+
+    input_event_t event;
+    init_input_event(&event);
+    event.dev_addr = CL_SOURCE_ADDR;
+    event.instance = CL_SOURCE_INSTANCE;
+    event.transport = INPUT_TRANSPORT_COMPANION;
+    event.type = INPUT_TYPE_GAMEPAD;
+    event.connection_generation = clink.generation;
+
+    ns2_companion_link_decode_base(payload, quirk->button_map,
+                                   quirk->button_map_size, &event);
+
+    // Motion, battery, flags and timestamp come from the shared extractor,
+    // which wants wire offsets that include the report ID.
+    uint8_t report[NS2_COMPANION_LINK_REPORT_BYTES];
+    report[0] = NS2_COMPANION_LINK_REPORT_ID;
+    memcpy(&report[1], payload, NS2_COMPANION_LINK_PAYLOAD_BYTES);
+    android_bridge_extract(&clink.ext, &clink.motion_state,
+                           report, (uint16_t)sizeof(report), &event);
+
+    ns2_input_route_decision_t decision;
+    if (!ns2_active_input_submit(&event, &decision)) {
+        clink.frames_rejected_state++;
+        return;
+    }
+    if (!decision.accepted) {
+        // Another source owns the console. Accounted, not an error.
+        return;
+    }
+    router_submit_input(&event);
+}
+
+// Neutral is an all-zero canonical payload with the hat released: sticks
+// centred, triggers released, nothing held -- exactly what a released
+// controller sends, published through the same path so the console cannot tell
+// it from one.
+static void clink_publish_neutral(void)
+{
+    uint8_t neutral[NS2_COMPANION_LINK_PAYLOAD_BYTES];
+    memset(neutral, 0, sizeof(neutral));
+    neutral[0] = neutral[1] = neutral[2] = neutral[3] = 0x80u;  // sticks centred
+    neutral[9] = 0x08u;                                          // hat released
+    clink_publish(neutral);
+}
+
+bool btstack_host_companion_link_active(void) { return clink.active; }
+
+static void clink_set_subscribed(bool subscribed)
+{
+    if (clink.subscribed == subscribed) return;
+    clink.subscribed = subscribed;
+    // Re-send current feedback on resubscribe: a companion that resubscribes
+    // has no idea what the last rumble state was, and the change detector would
+    // otherwise stay quiet until something moved.
+    if (subscribed) clink.feedback_valid = false;
+}
+
+uint16_t btstack_host_companion_link_mtu(void) { return clink.att_mtu; }
+
+bool btstack_host_companion_link_start(void)
+{
+    if (clink.active) return true;
+    if (config_ble.handle == HCI_CON_HANDLE_INVALID) return false;
+    // The data plane is only as trusted as the link it rides. Same gate as the
+    // command channel; no second security or pairing system.
+    if (!config_ble_link_trusted(config_ble.handle)) return false;
+    if (!clink_resolve_ext()) return false;
+
+    // Measure, do not assume. Below the minimum every gameplay frame would
+    // fragment onto the very command path this carrier exists to stay off, so
+    // refuse rather than silently degrade.
+    clink.att_mtu = att_server_get_mtu(config_ble.handle);
+    if (!ns2_companion_link_mtu_sufficient(clink.att_mtu)) {
+        printf("[CLINK] refused: ATT MTU %u < %u\n",
+               clink.att_mtu, (unsigned)NS2_COMPANION_LINK_MIN_ATT_MTU);
+        return false;
+    }
+
+    clink.active = true;
+    clink.neutralized = false;
+    clink.have_sequence = false;
+    clink.last_sequence = 0u;
+    clink.handle = config_ble.handle;
+    clink.generation++;
+    if (clink.generation == 0u) clink.generation = 1u;
+    clink.last_frame_ms = btstack_run_loop_get_time_ms();
+    clink.feedback_valid = false;
+    memset(&clink.motion_state, 0, sizeof(clink.motion_state));
+    clink.frames_received = 0u;
+    clink.frames_applied = 0u;
+    clink.frames_stale = 0u;
+    clink.frames_short = 0u;
+    clink.frames_version = 0u;
+    clink.frames_opcode = 0u;
+    clink.frames_rejected_state = 0u;
+    clink.outputs_sent = 0u;
+    clink.outputs_failed = 0u;
+    clink.neutralizations = 0u;
+    clink.max_gap_ms = 0u;
+
+    printf("[CLINK] started gen=%lu mtu=%u\n",
+           (unsigned long)clink.generation, clink.att_mtu);
+    return true;
+}
+
+void btstack_host_companion_link_stop(void)
+{
+    if (!clink.active) return;
+
+    // Neutral BEFORE releasing the source: dropping ownership first would leave
+    // the console holding the last frame until something else claimed it.
+    clink_publish_neutral();
+    ns2_active_input_disconnected_generation(CL_SOURCE_ADDR, CL_SOURCE_INSTANCE,
+                                             clink.generation);
+    clink.active = false;
+    clink.subscribed = false;
+    clink.have_sequence = false;
+    clink.handle = HCI_CON_HANDLE_INVALID;
+    printf("[CLINK] stopped\n");
+}
+
+// One inbound gameplay frame, from the ATT write on the BTstack thread.
+static void clink_on_frame(const uint8_t *data, uint16_t len)
+{
+    clink.frames_received++;
+
+    const uint8_t *payload = NULL;
+    switch (ns2_companion_link_parse(data, len, &clink.last_sequence,
+                                     &clink.have_sequence, &payload)) {
+        case NS2_COMPANION_FRAME_SHORT:   clink.frames_short++;   return;
+        case NS2_COMPANION_FRAME_VERSION: clink.frames_version++; return;
+        case NS2_COMPANION_FRAME_OPCODE:  clink.frames_opcode++;  return;
+        case NS2_COMPANION_FRAME_STALE:   clink.frames_stale++;   return;
+        case NS2_COMPANION_FRAME_OK:      break;
+    }
+
+    uint32_t now = btstack_run_loop_get_time_ms();
+    if (clink.frames_applied != 0u) {
+        uint32_t gap = now - clink.last_frame_ms;
+        if (gap > clink.max_gap_ms) clink.max_gap_ms = gap;
+    }
+    clink.last_frame_ms = now;
+    clink.neutralized = false;
+    clink.frames_applied++;
+
+    clink_publish(payload);
+}
+
+// Lowest set bit of the player-LED pattern, one-based. Same rule the Classic
+// bridge path applies; its own copy is a file-static in bthid_gamepad.c, and
+// exporting it purely for this caller would widen that driver's surface for no
+// other benefit.
+// Declared here rather than in a header: the generic driver defines it weak so
+// the vendored code stays free of project policy, and it has no public
+// declaration anywhere.
+bool bthid_host_wants_motion(void);
+
+static uint8_t clink_player_from_pattern(uint8_t pattern)
+{
+    for (uint8_t i = 0; i < 8u; i++) {
+        if (pattern & (uint8_t)(1u << i)) return (uint8_t)(i + 1u);
+    }
+    return 0u;
+}
+
+// Outbound feedback, mirroring the Classic path's change detection so a stable
+// rumble state is sent once rather than every tick.
+static void clink_service_feedback(void)
+{
+    if (!clink.active || !clink.subscribed || !clink.ext.has_output) return;
+
+    int player_index = find_player_index(CL_SOURCE_ADDR, CL_SOURCE_INSTANCE);
+    if (player_index < 0) return;
+    feedback_state_t *fb = feedback_get_state((uint8_t)player_index);
+    if (!fb) return;
+
+    const uint8_t left = fb->rumble.left;
+    const uint8_t right = fb->rumble.right;
+    const uint8_t player = clink_player_from_pattern(fb->led.pattern);
+    const bool motion_wanted = bthid_host_wants_motion();
+    const bool changed = !clink.feedback_valid ||
+                         left != clink.rumble_left ||
+                         right != clink.rumble_right ||
+                         player != clink.player_led ||
+                         motion_wanted != clink.motion_wanted;
+    if (!changed) return;
+
+    uint8_t payload[ANDROID_BRIDGE_FEEDBACK_MAX_LEN];
+    uint8_t n = android_bridge_encode_feedback(&clink.ext, left, right, player,
+                                               motion_wanted, payload,
+                                               (uint8_t)sizeof(payload));
+    if (n == 0u) return;
+
+    uint8_t frame[NS2_COMPANION_LINK_OUT_FRAME_BYTES];
+    uint16_t total = ns2_companion_link_encode_output(
+        clink.ext.output_report_id, payload, n, frame, (uint16_t)sizeof(frame));
+    if (total == 0u) { clink.outputs_failed++; return; }
+
+    if (att_server_notify(clink.handle, config_ble.cl_out_value_handle,
+                          frame, total) != ERROR_CODE_SUCCESS) {
+        // Keep the cache dirty so the next tick retries, exactly as the Classic
+        // path does on a failed send.
+        clink.outputs_failed++;
+        return;
+    }
+
+    clink.outputs_sent++;
+    clink.feedback_valid = true;
+    clink.rumble_left = left;
+    clink.rumble_right = right;
+    clink.player_led = player;
+    clink.motion_wanted = motion_wanted;
+    feedback_clear_dirty((uint8_t)player_index);
+}
+
+// Periodic service: stale-input watchdog plus feedback delivery.
+static void clink_service(uint32_t now_ms)
+{
+    if (ns2_companion_link_input_stale(clink.active, clink.neutralized,
+                                       clink.last_frame_ms, now_ms,
+                                       NS2_COMPANION_LINK_STALE_MS)) {
+        clink.neutralized = true;
+        clink.neutralizations++;
+        clink_publish_neutral();
+        printf("[CLINK] input stale after %ums; published neutral\n",
+               (unsigned)NS2_COMPANION_LINK_STALE_MS);
+    }
+    clink_service_feedback();
+}
+
+void btstack_host_companion_link_diag(btstack_host_companion_link_diag_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->active = clink.active;
+    out->subscribed = clink.subscribed;
+    out->neutralized = clink.neutralized;
+    out->version = (uint8_t)NS2_COMPANION_LINK_VERSION;
+    out->att_mtu = clink.att_mtu;
+    out->min_att_mtu = (uint16_t)NS2_COMPANION_LINK_MIN_ATT_MTU;
+    out->frame_bytes = (uint8_t)NS2_COMPANION_LINK_FRAME_BYTES;
+    out->generation = clink.generation;
+    out->frames_received = clink.frames_received;
+    out->frames_applied = clink.frames_applied;
+    out->frames_stale = clink.frames_stale;
+    out->frames_short = clink.frames_short;
+    out->frames_version = clink.frames_version;
+    out->frames_opcode = clink.frames_opcode;
+    out->frames_rejected_state = clink.frames_rejected_state;
+    out->outputs_sent = clink.outputs_sent;
+    out->outputs_failed = clink.outputs_failed;
+    out->neutralizations = clink.neutralizations;
+    out->max_gap_ms = clink.max_gap_ms;
+}
+
 void btstack_host_close_pairing_window(void)
 {
     if (hid_state.state == BLE_STATE_CONNECTING) {
@@ -4172,6 +4532,9 @@ void btstack_host_process(void)
             PAIRING_CLOSE_DEFER_BOUND_MS)) {
         resolve_deferred_pairing_close();
     }
+
+    // Controller Link stale-input watchdog and feedback delivery.
+    clink_service(btstack_run_loop_get_time_ms());
 
     // Deferred Classic inquiry restart. The gap between rounds is what leaves
     // the controller room to answer an incoming page; see

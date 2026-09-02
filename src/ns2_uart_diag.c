@@ -2492,6 +2492,40 @@ static void handle_command(void) {
                  (unsigned long)d.live_frames_sent,
                  (unsigned long)d.live_underruns);
         queue_text(trace_format_response);
+    } else if (strcmp(rx_line, "clink") == 0 ||
+               strcmp(rx_line, "clink status") == 0) {
+        // Windows Controller Link (Path C) data plane. Every counter here
+        // answers a question that was expensive to ask from outside during the
+        // HOGP work: did frames arrive, were they well formed, were they
+        // superseded, did the arbiter accept the source, did feedback go out.
+        btstack_host_companion_link_diag_t d;
+        btstack_host_companion_link_diag(&d);
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"clink\":\"status\",\"active\":%s,\"subscribed\":%s,"
+                 "\"neutralized\":%s,\"version\":%u,\"frame_bytes\":%u,"
+                 "\"att_mtu\":%u,\"min_att_mtu\":%u,\"generation\":%lu,"
+                 "\"frames\":{\"received\":%lu,\"applied\":%lu,\"stale\":%lu,"
+                 "\"short\":%lu,\"version\":%lu,\"opcode\":%lu,"
+                 "\"rejected_state\":%lu},"
+                 "\"outputs\":{\"sent\":%lu,\"failed\":%lu},"
+                 "\"neutralizations\":%lu,\"max_gap_ms\":%lu}",
+                 d.active ? "true" : "false",
+                 d.subscribed ? "true" : "false",
+                 d.neutralized ? "true" : "false",
+                 d.version, d.frame_bytes, d.att_mtu, d.min_att_mtu,
+                 (unsigned long)d.generation,
+                 (unsigned long)d.frames_received,
+                 (unsigned long)d.frames_applied,
+                 (unsigned long)d.frames_stale,
+                 (unsigned long)d.frames_short,
+                 (unsigned long)d.frames_version,
+                 (unsigned long)d.frames_opcode,
+                 (unsigned long)d.frames_rejected_state,
+                 (unsigned long)d.outputs_sent,
+                 (unsigned long)d.outputs_failed,
+                 (unsigned long)d.neutralizations,
+                 (unsigned long)d.max_gap_ms);
+        queue_text(trace_format_response);
     } else if (strcmp(rx_line, "btreconnect") == 0) {
         btstack_host_reconnect_diag_t d;
         btstack_host_get_reconnect_diag(&d);
