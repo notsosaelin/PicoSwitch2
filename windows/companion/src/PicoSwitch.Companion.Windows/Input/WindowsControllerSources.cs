@@ -3,6 +3,35 @@ using PicoSwitch.Bridge.Core;
 namespace PicoSwitch.Companion.Windows.Input;
 
 /// <summary>
+/// How the controller reaches this PC.
+///
+/// Matters because of a measured failure, not for display. When the controller
+/// is on Bluetooth, the input makes TWO radio hops on the same adapter:
+///
+///     controller --BT--> PC --BT--> PicoSwitch --USB--> console
+///
+/// Those links compete for the same radio. Under sustained analog motion the
+/// controller's own link loses airtime, Windows starts handing the app stale
+/// readings, and the app forwards them faithfully — which the player sees as
+/// stick movement replaying after they have stopped. Every counter on the
+/// Controller Link side stays clean throughout, because nothing is wrong there.
+///
+/// Confirmed on this bench 2026-09-03: the symptom is present with the
+/// controller on Bluetooth and absent with the same controller on USB.
+/// </summary>
+public enum ControllerConnection
+{
+    /// <summary>Wired. One radio hop total, and the one to prefer.</summary>
+    Usb,
+
+    /// <summary>Bluetooth, sharing the radio with the adapter link.</summary>
+    Bluetooth,
+
+    /// <summary>Windows did not say. Treated as wired: never warn on a guess.</summary>
+    Unknown,
+}
+
+/// <summary>
 /// Where a controller physically is, as Windows reports it.
 /// </summary>
 public enum ControllerAttachment
@@ -65,7 +94,8 @@ public sealed record WindowsControllerSource(
     ControllerCandidate Candidate,
     ControllerAttachment Attachment,
     bool IsGamepadClass,
-    bool MayBeThisAdapter = false)
+    bool MayBeThisAdapter = false,
+    ControllerConnection Connection = ControllerConnection.Unknown)
 {
     public string Id => Candidate.Descriptor;
 
@@ -97,6 +127,22 @@ public sealed record WindowsControllerSource(
         : null;
 
     public bool CanDrive => UnreadableReason is null;
+
+    /// <summary>
+    /// Advice worth showing about HOW this controller is connected, or null.
+    ///
+    /// Not a fault and not a refusal: the controller works over Bluetooth. It is
+    /// the one thing a player cannot deduce from anything on screen, and it
+    /// produces a symptom — movement replaying after they stop — that looks
+    /// exactly like a bug in this app. Saying it costs a sentence; not saying it
+    /// costs an afternoon, which is what it cost here.
+    /// </summary>
+    public string? ConnectionAdvice => Connection == ControllerConnection.Bluetooth
+        ? "This controller is on Bluetooth, so its input and the adapter share " +
+          "one radio. Under fast stick movement that can make input arrive late " +
+          "and appear to keep moving after you stop. Connecting it by USB cable " +
+          "removes the problem."
+        : null;
 }
 
 /// <summary>

@@ -113,6 +113,12 @@ public sealed partial class ControllerPage : Page
 
         SourceHeadline.Text = view.Headline;
         SourceDetail.Text = view.Detail;
+
+        // Informational, not a warning: a Bluetooth controller works, it just
+        // shares the radio with the adapter and that is the one thing a player
+        // cannot deduce from anything else on screen.
+        SourceAdvice.Message = view.Advice ?? string.Empty;
+        SourceAdvice.IsOpen = view.Advice is not null;
         SourceChooser.Visibility = view.CanChoose ? Visibility.Visible : Visibility.Collapsed;
 
         // Replaced wholesale: the list is small and changes rarely, and tracking
