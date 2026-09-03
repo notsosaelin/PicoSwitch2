@@ -12,6 +12,8 @@ public sealed partial class ControllerPage : Page
     private readonly ControllerLinkService controllerLink = AppServices.ControllerLink;
     private readonly WindowsGamepadInputSource gamepad = AppServices.PhysicalGamepad;
     private bool faceLayoutReady;
+    private DispatcherTimer? adviceTimer;
+    private string? shownAdvice;
 
     public ControllerPage()
     {
@@ -38,6 +40,10 @@ public sealed partial class ControllerPage : Page
     {
         controllerLink.View.Changed -= OnViewChanged;
         gamepad.SourcesChanged -= OnSourcesChanged;
+
+        // A DispatcherTimer holds a strong reference through its Tick handler,
+        // so leaving it running keeps this page alive after navigation.
+        adviceTimer?.Stop();
     }
 
     private void OnViewChanged() => AppServices.OnUiThread(Render);
@@ -66,6 +72,56 @@ public sealed partial class ControllerPage : Page
 
         AppServices.SetFaceLayout(layout);
         RenderFaceLayout();
+    }
+
+    /// <summary>
+    /// Show the connection advice, and take it away again.
+    ///
+    /// It describes a BETTER setup, not a problem the player currently has, so it
+    /// should not sit on screen forever like an unresolved fault. Thirty seconds
+    /// is long enough to read and act on, short enough that it stops being
+    /// furniture.
+    /// </summary>
+    /// <remarks>
+    /// The timer is restarted rather than stacked: RenderSources runs on every
+    /// enumeration change, and a fresh timer per call would leave several racing
+    /// to close the same bar. Re-showing the SAME advice does not restart the
+    /// countdown either — plugging a second controller in should not put an
+    /// already-expired message back on screen.
+    /// </remarks>
+    private void ShowAdvice(string? advice)
+    {
+        if (advice is null)
+        {
+            adviceTimer?.Stop();
+            shownAdvice = null;
+            SourceAdvice.IsOpen = false;
+            return;
+        }
+
+        if (advice == shownAdvice)
+        {
+            return;
+        }
+
+        shownAdvice = advice;
+        SourceAdvice.Message = advice;
+        SourceAdvice.IsOpen = true;
+
+        adviceTimer ??= CreateAdviceTimer();
+        adviceTimer.Stop();
+        adviceTimer.Start();
+    }
+
+    private DispatcherTimer CreateAdviceTimer()
+    {
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            SourceAdvice.IsOpen = false;
+        };
+        return timer;
     }
 
     /// <summary>
@@ -114,11 +170,7 @@ public sealed partial class ControllerPage : Page
         SourceHeadline.Text = view.Headline;
         SourceDetail.Text = view.Detail;
 
-        // Informational, not a warning: a Bluetooth controller works, it just
-        // shares the radio with the adapter and that is the one thing a player
-        // cannot deduce from anything else on screen.
-        SourceAdvice.Message = view.Advice ?? string.Empty;
-        SourceAdvice.IsOpen = view.Advice is not null;
+        ShowAdvice(view.Advice);
         SourceChooser.Visibility = view.CanChoose ? Visibility.Visible : Visibility.Collapsed;
 
         // Replaced wholesale: the list is small and changes rarely, and tracking

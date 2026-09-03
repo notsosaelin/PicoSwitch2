@@ -131,17 +131,19 @@ public sealed record WindowsControllerSource(
     /// <summary>
     /// Advice worth showing about HOW this controller is connected, or null.
     ///
-    /// Not a fault and not a refusal: the controller works over Bluetooth. It is
-    /// the one thing a player cannot deduce from anything on screen, and it
-    /// produces a symptom — movement replaying after they stop — that looks
-    /// exactly like a bug in this app. Saying it costs a sentence; not saying it
-    /// costs an afternoon, which is what it cost here.
+    /// Not a fault and not a refusal: a Bluetooth controller works, and after the
+    /// send-rate work it works well. It is kept because the player cannot deduce
+    /// from anything else on screen that their controller and the adapter share a
+    /// radio, and if that contention ever bites, the symptom looks exactly like a
+    /// bug in this app.
+    ///
+    /// Worded as a preference rather than a warning, and dismissed by the UI
+    /// after a short while, because it describes a better setup — not a problem
+    /// the player currently has.
     /// </summary>
     public string? ConnectionAdvice => Connection == ControllerConnection.Bluetooth
-        ? "This controller is on Bluetooth, so its input and the adapter share " +
-          "one radio. Under fast stick movement that can make input arrive late " +
-          "and appear to keep moving after you stop. Connecting it by USB cable " +
-          "removes the problem."
+        ? "This controller is currently connected via Bluetooth. For the best " +
+          "possible connection please use a wired controller."
         : null;
 }
 

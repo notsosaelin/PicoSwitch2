@@ -42,8 +42,8 @@ public sealed class ControllerConnectionTests
         var advice = Source(ControllerConnection.Bluetooth).ConnectionAdvice;
 
         Assert.NotNull(advice);
-        Assert.Contains("share", advice);
-        Assert.Contains("USB", advice);
+        Assert.Contains("Bluetooth", advice);
+        Assert.Contains("wired", advice);
     }
 
     [Fact]
