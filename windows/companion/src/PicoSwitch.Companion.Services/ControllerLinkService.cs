@@ -44,14 +44,31 @@ public sealed class ControllerLinkService : IAsyncDisposable
     private static readonly TimeSpan SampleInterval = TimeSpan.FromMilliseconds(2);
 
     /// <summary>
-    /// Floor between two sends — a rate ceiling, not a period.
+    /// Rate ceiling for a frame whose ONLY change is analog.
     ///
-    /// Mirrors the Android Classic sender, whose 8 ms interval is likewise a
-    /// ceiling applied after sending rather than a clock to wait for. Only binds
-    /// during continuous analog motion, where consecutive samples genuinely
-    /// differ; button and D-pad edges are far rarer than this and never wait.
+    /// A stick differs on nearly every sample, so without a ceiling it alone
+    /// decides the send rate. That matters because nothing below this app can
+    /// collapse a frame once it is handed over: our mailbox coalesces only what
+    /// has not been submitted yet, and anything the radio cannot drain queues
+    /// inside the Windows stack and is replayed IN ORDER. Observed on hardware as
+    /// stick motion continuing to play out after the stick stopped, with button
+    /// presses stuck behind it.
+    ///
+    /// 125 Hz is the Android Classic sender's ceiling, which is the behaviour
+    /// this path is measured against, and it is far above what an analog stick
+    /// needs to feel continuous.
     /// </summary>
-    private static readonly TimeSpan MinimumSendInterval = TimeSpan.FromMilliseconds(4);
+    private static readonly TimeSpan AnalogSendInterval = TimeSpan.FromMilliseconds(8);
+
+    /// <summary>
+    /// Floor between sends when a DIGITAL control changed.
+    ///
+    /// Deliberately shorter than the analog ceiling and checked independently: a
+    /// button or D-pad edge is a discrete, rare event that a player feels
+    /// immediately, and it must never wait behind a stick that is saturating the
+    /// link. This is the whole reason the two are separate numbers.
+    /// </summary>
+    private static readonly TimeSpan DigitalSendInterval = TimeSpan.FromMilliseconds(2);
 
     /// <summary>
     /// How often an UNCHANGED state is resent anyway.
@@ -209,7 +226,8 @@ public sealed class ControllerLinkService : IAsyncDisposable
             diagnostics.Info(
                 "controller-link",
                 $"streaming: sample {SampleInterval.TotalMilliseconds:F0}ms, " +
-                $"send ceiling {1000.0 / MinimumSendInterval.TotalMilliseconds:F0} Hz, " +
+                $"digital {1000.0 / DigitalSendInterval.TotalMilliseconds:F0} Hz, " +
+                $"analog {1000.0 / AnalogSendInterval.TotalMilliseconds:F0} Hz, " +
                 $"keepalive {KeepaliveInterval.TotalMilliseconds:F0}ms, mtu={plane.AttMtu}");
         }
         catch (Exception error) when (error is not OperationCanceledException)
@@ -269,7 +287,8 @@ public sealed class ControllerLinkService : IAsyncDisposable
         long lastSentTicks = 0;
         ControllerState? lastSent = null;
         var frame = new byte[ControllerLinkDataPlane.FrameBytes];
-        var minSendTicks = (long)(MinimumSendInterval.TotalSeconds * Stopwatch.Frequency);
+        var analogTicks = (long)(AnalogSendInterval.TotalSeconds * Stopwatch.Frequency);
+        var digitalTicks = (long)(DigitalSendInterval.TotalSeconds * Stopwatch.Frequency);
         var keepaliveTicks = (long)(KeepaliveInterval.TotalSeconds * Stopwatch.Frequency);
         try
         {
@@ -290,11 +309,23 @@ public sealed class ControllerLinkService : IAsyncDisposable
                 // event and treats its interval as a rate ceiling rather than a
                 // period.
                 var changed = lastSent is null || !state.Equals(lastSent);
-                var sinceSent = now - lastSentTicks;
 
-                // The rate ceiling. Bounds radio load during continuous analog
-                // motion, where every sample differs.
-                if (changed && lastSentTicks != 0 && sinceSent < minSendTicks)
+                // A digital edge is a discrete event the player feels; analog
+                // motion is a continuous stream that would otherwise set the send
+                // rate on its own. Separating them is what stops a button press
+                // queueing behind a stick.
+                var digitalChanged =
+                    lastSent is null ||
+                    !state.Buttons.Equals(lastSent.Buttons) ||
+                    state.DpadUp != lastSent.DpadUp ||
+                    state.DpadRight != lastSent.DpadRight ||
+                    state.DpadDown != lastSent.DpadDown ||
+                    state.DpadLeft != lastSent.DpadLeft;
+
+                var sinceSent = now - lastSentTicks;
+                var ceiling = digitalChanged ? digitalTicks : analogTicks;
+
+                if (changed && lastSentTicks != 0 && sinceSent < ceiling)
                 {
                     continue;
                 }

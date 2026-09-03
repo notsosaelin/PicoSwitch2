@@ -1,4 +1,5 @@
 using Microsoft.UI.Dispatching;
+using PicoSwitch.Bridge.Core;
 using PicoSwitch.Companion.Services;
 using PicoSwitch.Companion.Services.Presentation;
 using PicoSwitch.Companion.Windows.Storage;
@@ -197,7 +198,15 @@ public static class AppServices
         {
             lock (Gate)
             {
-                return controllerInput ??= new ControllerInputSession();
+                if (controllerInput is { } existing)
+                {
+                    return existing;
+                }
+
+                var input = new ControllerInputSession();
+                RestoreFaceLayout(input);
+                controllerInput = input;
+                return input;
             }
         }
     }
@@ -221,7 +230,11 @@ public static class AppServices
                     return existing;
                 }
 
-                var input = controllerInput ??= new ControllerInputSession();
+                // Through the property, never `??= new` again: a second
+                // construction site would skip RestoreFaceLayout, and whichever
+                // of the two was touched first would decide whether the user's
+                // stored choice survived the launch.
+                var input = ControllerInput;
                 var source = new WindowsGamepadInputSource();
                 source.Frame += input.ApplyPhysicalFrame;
                 source.Removed += input.RemovePhysicalSource;
@@ -281,6 +294,43 @@ public static class AppServices
     /// <summary>Remember an explicit controller choice; null returns to automatic.</summary>
     public static Task SelectControllerSourceAsync(string? sourceId) =>
         PhysicalGamepad.SelectAsync(sourceId, AdapterPersonality());
+
+    /// <summary>Which printed legend the selected controller carries.</summary>
+    public static ControllerFaceLayout FaceLayout => ControllerInput.FaceLayout;
+
+    public static ControllerFaceLayout ResolvedFaceLayout => ControllerInput.ResolvedFaceLayout;
+
+    public static string FaceLayoutReason => ControllerInput.FaceLayoutReason;
+
+    /// <summary>
+    /// Choose the legend, and remember it.
+    ///
+    /// Persisted because it describes the user's HARDWARE, not this session: a
+    /// controller does not change which letters are printed on it between
+    /// launches, and re-picking every time is the kind of friction that makes a
+    /// setting feel broken.
+    /// </summary>
+    public static void SetFaceLayout(ControllerFaceLayout layout)
+    {
+        ControllerInput.SetFaceLayout(layout);
+        _ = Documents.Write("face-layout", layout.Key());
+    }
+
+    private static void RestoreFaceLayout(ControllerInputSession input)
+    {
+        var stored = Documents.Read("face-layout");
+        var layout = stored switch
+        {
+            "nintendo" => ControllerFaceLayout.Nintendo,
+            "xbox" => ControllerFaceLayout.Xbox,
+            _ => ControllerFaceLayout.Auto,
+        };
+
+        if (layout != ControllerFaceLayout.Auto)
+        {
+            input.SetFaceLayout(layout);
+        }
+    }
 
     /// <summary>Production Controller Link over the trusted management link.</summary>
     public static ControllerLinkService ControllerLink
