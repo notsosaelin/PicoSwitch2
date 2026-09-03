@@ -7,6 +7,33 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Windows Controller Link is live on hardware 2026-09-03 over Path C, and the HOGP runtime is
+  retired.** Controller state rides the trusted management BLE session on a dedicated binary GATT
+  characteristic pair beside the newline-JSON command channel — one ACL, one Windows-owned radio, no
+  HOGP, no Classic HID Device role, no second adapter. Qualified against firmware `9cc2511f` with
+  the adapter's USB on a Switch 2: ATT MTU 527, `received == applied` in every run,
+  stale/short/version/opcode and arbiter-rejected all zero, `MaximumInFlight` 1. Management is not
+  degraded while streaming — median 117 ms against 241 ms idle, because the link is already active
+  on a short connection interval. The stale-input watchdog publishes neutral exactly once with
+  management alive and resumes without a re-pair; Stop, app-kill and restart all leave the console
+  neutral. Full record in
+  [`docs/experiments/windows-controller-link-qualification-2026-09-03.md`](docs/experiments/windows-controller-link-qualification-2026-09-03.md).
+
+  **The reported analog "backlog" was never in Controller Link.** Stick movement replaying after the
+  player stopped was traced to the controller being on Bluetooth: input took two radio hops on one
+  AX210, the controller's own link lost airtime, and Windows returned stale readings that the app
+  forwarded faithfully. Every Controller Link counter stayed perfect throughout, which is why three
+  attempted fixes missed. Reducing the app's own traffic — an axis must move 2/255 before it is worth
+  a frame — and using a wired controller are two independent cures. The app now says so when the
+  selected controller is on Bluetooth. Root cause and the four disproven theories are in
+  [`docs/experiments/windows-controller-link-analog-backlog-2026-09-03.md`](docs/experiments/windows-controller-link-analog-backlog-2026-09-03.md).
+
+  **Two things are NOT done.** The on-screen controller's face buttons transmit the opposite letter
+  to the one drawn while the face-layout setting is Nintendo (physical controllers are unaffected);
+  it is documented with the one trace that would settle it rather than patched on a model that does
+  not predict the measurements. And no Android device was attached, so the performance comparison
+  against the Classic Controller Link baseline has not been run.
+
 - **Windows Touch Gamepad presentation corrected 2026-09-01: it is a dedicated screen, not an
   overlay.** The first Phase 6a build rendered the controller as a translucent layer over a live
   Gamepad page — the navigation rail, both cards, the connection banner and the desktop were all
