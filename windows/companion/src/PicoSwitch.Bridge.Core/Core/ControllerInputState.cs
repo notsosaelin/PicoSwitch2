@@ -61,6 +61,7 @@ public sealed class ControllerInputState
     private DpadState hatDpad = DpadState.None;
     private AnalogFrame physicalAnalog = AnalogFrame.Neutral;
     private TouchContribution touch = TouchContribution.Neutral;
+    private ControllerBattery battery = ControllerBattery.Unknown;
 
     public IReadOnlyStateValue<ControllerState> State => state;
 
@@ -95,6 +96,9 @@ public sealed class ControllerInputState
     {
         Source = identity;
         ResolvedLayout = ControllerLayoutResolver.Resolve(RequestedLayout, identity);
+        // A different controller's charge is not this one's, and a stale level
+        // outlives the device it described.
+        battery = ControllerBattery.Unknown;
         Neutralize();
     }
 
@@ -164,6 +168,24 @@ public sealed class ControllerInputState
             Right: right ?? keyDpad.Right,
             Down: down ?? keyDpad.Down,
             Left: left ?? keyDpad.Left);
+        Publish();
+    }
+
+    /// <summary>
+    /// The selected controller's battery, forwarded so the console shows a real
+    /// controller battery rather than a blank pip.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately NOT cleared by <see cref="Neutralize"/>. Neutralize exists to
+    /// stop the console acting on input nobody is giving it; a battery level is
+    /// not input, and blanking it on every source switch or watchdog fire would
+    /// make the console's indicator flicker for reasons the player cannot see.
+    /// It is cleared by <see cref="SetSource"/>, because a different controller's
+    /// charge is simply not this one's.
+    /// </remarks>
+    public void ApplyBattery(ControllerBattery reading)
+    {
+        battery = reading;
         Publish();
     }
 
@@ -243,7 +265,16 @@ public sealed class ControllerInputState
         hatDpad = DpadState.None;
         physicalAnalog = AnalogFrame.Neutral;
         touch = TouchContribution.Neutral;
-        state.Set(ControllerState.Neutral);
+
+        // Set wholesale rather than Publish(): this must produce a guaranteed
+        // neutral state, not one composed from origins that a future change might
+        // forget to clear. Battery is carried across because it is NOT input --
+        // neutralizing means nobody is pressing anything, not that the controller
+        // stopped having a charge, and blanking it on every watchdog fire or
+        // authority switch would flicker the console's indicator for reasons the
+        // player cannot see. SetSource clears it, because that IS a different
+        // controller.
+        state.Set(ControllerState.Neutral with { Battery = battery });
     }
 
     /// <summary>
@@ -334,6 +365,7 @@ public sealed class ControllerInputState
             DpadRight = dpad.Right,
             DpadDown = dpad.Down,
             DpadLeft = dpad.Left,
+            Battery = battery,
         });
     }
 }
