@@ -69,8 +69,8 @@ public sealed class ControllerInputStateTests
         state.ApplyAnalog(new AnalogFrame(10, 20, 30, 40, 50, 60, DpadState.FromAxes(-1f, 0f)));
         Assert.Equal(1, notifications);
 
-        // An identical event is not a change: at 125 Hz an unchanged snapshot must
-        // not wake every observer.
+        // An identical event is not a change: at the publish cadence (250 Hz) an
+        // unchanged snapshot must not wake every observer.
         state.ApplyAnalog(new AnalogFrame(10, 20, 30, 40, 50, 60, DpadState.FromAxes(-1f, 0f)));
         Assert.Equal(1, notifications);
     }

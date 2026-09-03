@@ -69,8 +69,10 @@ public sealed class ControllerLinkDataPlaneTests
     [Fact]
     public void SequenceWrapsWithoutSpecialCasing()
     {
-        // At 125 Hz a ushort wraps every ~9 minutes, so the wrap is a normal
-        // event, not an edge case. The adapter reads it as a signed delta.
+        // At the 250 Hz publish cadence a ushort wraps every ~4.4 minutes, so
+        // the wrap is routine rather than an edge case — and raising the rate
+        // makes it MORE frequent, not less. The adapter reads it as a signed
+        // delta.
         var payload = new byte[ControllerLinkDataPlane.PayloadBytes];
         var frame = new byte[ControllerLinkDataPlane.FrameBytes];
 

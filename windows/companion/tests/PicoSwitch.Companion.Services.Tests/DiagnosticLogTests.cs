@@ -30,7 +30,8 @@ public sealed class DiagnosticLogTests
     public void TheRingIsBoundedAndSaysHowMuchItDropped()
     {
         // A log that grew without limit would be a leak on a path that runs at
-        // 125 Hz, and would change the timing it exists to observe.
+        // the publish cadence (250 Hz), and would change the timing it exists
+        // to observe.
         var log = new DiagnosticLog(capacity: 4);
         for (var index = 0; index < 10; index++)
         {

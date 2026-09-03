@@ -359,8 +359,8 @@ public sealed class TouchContributionTests
     [Fact]
     public void OnlyDistinctContributionsAreEmitted()
     {
-        // The session coalesces onto a 125 Hz cadence; republishing an unchanged
-        // controller would be pure noise on that path.
+        // The session coalesces onto the publish cadence (250 Hz); republishing
+        // an unchanged controller would be pure noise on that path.
         var harness = new TouchHarness();
         var before = harness.Published.Count;
 
