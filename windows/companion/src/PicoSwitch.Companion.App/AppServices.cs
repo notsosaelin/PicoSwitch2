@@ -202,7 +202,15 @@ public static class AppServices
         }
     }
 
-    private static WindowsGamepadInputSource PhysicalGamepad
+    /// <summary>
+    /// The physical controller on this PC that feeds Controller Link.
+    ///
+    /// Public so the Gamepad page can show WHICH controller is selected and let
+    /// the user change it. The page still decides nothing: enumeration and the
+    /// selection rule live in <see cref="WindowsControllerSourceCatalog"/> and
+    /// <see cref="ControllerSourceSelection"/>.
+    /// </summary>
+    public static WindowsGamepadInputSource PhysicalGamepad
     {
         get
         {
@@ -252,6 +260,21 @@ public static class AppServices
             return null;
         }
     }
+
+    /// <summary>
+    /// Re-enumerate the controllers on this PC.
+    ///
+    /// Wrapped here rather than called directly so <see cref="AdapterPersonality"/>
+    /// stays in the composition root: every refresh must carry the connected
+    /// adapter's personality, or the adapter-echo guard silently has nothing to
+    /// match against and the loop it prevents happens anyway.
+    /// </summary>
+    public static Task RefreshControllerSourcesAsync() =>
+        PhysicalGamepad.RefreshAsync(AdapterPersonality());
+
+    /// <summary>Remember an explicit controller choice; null returns to automatic.</summary>
+    public static Task SelectControllerSourceAsync(string? sourceId) =>
+        PhysicalGamepad.SelectAsync(sourceId, AdapterPersonality());
 
     /// <summary>Production Controller Link over the trusted management link.</summary>
     public static ControllerLinkService ControllerLink

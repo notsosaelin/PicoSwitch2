@@ -60,6 +60,58 @@
                 </Border>
 
                 <!--
+                  Which controller on this PC feeds the adapter.
+
+                  Deliberately here and not on the Adapter page: that page's
+                  "Console input source" is the ADAPTER choosing among its own
+                  sources, which is a different decision about different hardware.
+
+                  Every string below comes from ControllerSourceView, which is
+                  unit tested, for the same reason as the card above.
+                -->
+                <Border
+                    Margin="0,20,0,0"
+                    Padding="20"
+                    CornerRadius="8"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1">
+                    <StackPanel Spacing="10">
+                        <TextBlock
+                            Style="{StaticResource SubtitleTextBlockStyle}"
+                            TextWrapping="Wrap"
+                            Text="Controller on this PC" />
+                        <TextBlock
+                            x:Name="SourceHeadline"
+                            Style="{StaticResource BodyStrongTextBlockStyle}"
+                            TextWrapping="Wrap" />
+                        <TextBlock
+                            x:Name="SourceDetail"
+                            Style="{StaticResource BodyTextBlockStyle}"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            TextWrapping="Wrap" />
+                        <StackPanel
+                            x:Name="SourceChooser"
+                            Orientation="Horizontal"
+                            Spacing="12"
+                            VerticalAlignment="Center">
+                            <ComboBox
+                                x:Name="SourceBox"
+                                MinWidth="320"
+                                AutomationProperties.Name="Controller on this PC" />
+                            <Button
+                                x:Name="SourceApply"
+                                Click="OnUseSource"
+                                Content="Use this controller" />
+                        </StackPanel>
+                        <Button
+                            x:Name="SourceRefresh"
+                            Click="OnRefreshSources"
+                            Content="Look again" />
+                    </StackPanel>
+                </Border>
+
+                <!--
                   Phase 6a is NOT gated on the §14.5 outcome (WINDOWS_PASS.md §31),
                   so this says so plainly rather than leaving a user to conclude the
                   whole page is dead - and it is reachable from here whatever the
