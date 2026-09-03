@@ -61,8 +61,7 @@ public sealed partial class DiagnosticsPage : Page
             adapters.Registry.Value,
             adapters.Relationship.Value,
             adapters.Radio.Value,
-            adapters.Connection.Value,
-            AppServices.ControllerLinkHostLog()),
+            adapters.Connection.Value),
         "Support bundle copied. Addresses are shortened and nicknames are excluded.");
 
     private void OnClear(object sender, RoutedEventArgs e)

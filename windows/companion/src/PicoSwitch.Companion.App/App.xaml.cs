@@ -43,11 +43,6 @@ public partial class App : Application
     {
         WinRT.ComWrappersSupport.InitializeComWrappers();
 
-        if (args.Contains("--controller-link-host-check", StringComparer.Ordinal))
-        {
-            return RunControllerLinkHostCheckAsync().GetAwaiter().GetResult();
-        }
-
         if (RedirectedToRunningInstance())
         {
             return 0;
@@ -73,30 +68,6 @@ public partial class App : Application
         });
 
         return 0;
-    }
-
-    private static async Task<int> RunControllerLinkHostCheckAsync()
-    {
-        var resultPath = Path.Combine(
-            global::Windows.Storage.ApplicationData.Current.LocalFolder.Path,
-            "controller-link-main-check.log");
-        try
-        {
-            await using var host = await ControllerLinkHostConnection.OpenAsync();
-            await host.StartAsync();
-            await host.StopAsync();
-            await File.WriteAllTextAsync(
-                resultPath,
-                "Controller Link host handshake: PASS\r\n" +
-                "Controller Link AppContainer advertising: STARTED\r\n" +
-                "Controller Link AppContainer advertising: STOPPED\r\n");
-            return 0;
-        }
-        catch (Exception error)
-        {
-            await File.WriteAllTextAsync(resultPath, $"Controller Link host check failed: {error}");
-            return 2;
-        }
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)

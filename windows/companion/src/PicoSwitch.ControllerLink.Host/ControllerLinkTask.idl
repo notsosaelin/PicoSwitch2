@@ -1,8 +1,0 @@
-namespace PicoSwitch.ControllerLink.Host
-{
-    [default_interface]
-    runtimeclass ControllerLinkTask : Windows.ApplicationModel.Background.IBackgroundTask
-    {
-        ControllerLinkTask();
-    }
-}

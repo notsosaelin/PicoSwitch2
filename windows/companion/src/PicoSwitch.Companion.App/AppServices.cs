@@ -410,21 +410,6 @@ public static class AppServices
         }
     }
 
-    public static string? ControllerLinkHostLog()
-    {
-        try
-        {
-            var path = Path.Combine(
-                global::Windows.Storage.ApplicationData.Current.LocalFolder.Path,
-                "controller-link-host.log");
-            return File.Exists(path) ? File.ReadAllText(path) : null;
-        }
-        catch (IOException)
-        {
-            return null;
-        }
-    }
-
     /// <summary>
     /// Remember the UI thread's dispatcher so device callbacks can hop onto it.
     ///
