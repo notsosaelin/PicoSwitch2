@@ -3923,7 +3923,26 @@ uint16_t btstack_host_companion_link_mtu(void) { return clink.att_mtu; }
 
 bool btstack_host_companion_link_start(void)
 {
-    if (clink.active) return true;
+    if (clink.active) {
+        // "Already active" does NOT mean "same companion". A companion that is
+        // killed never sends `clink stop`, and if the management link survived
+        // (or returned) the session is still standing here holding that dead
+        // client's sequence high-water mark. The replacement companion starts
+        // its own sequence at 0, so every frame it sends reads as superseded:
+        // frames_received climbs, frames_applied freezes, and BOTH ends report a
+        // perfectly healthy stream while no input reaches the console at all.
+        // The stale path also returns before last_frame_ms is refreshed, so the
+        // watchdog silently stops being fed.
+        //
+        // Re-arm the ordering rather than adopting the dead session's counter.
+        // Deliberately NOT a full restart: generation and the arbiter
+        // registration stay put, so a duplicate start from the SAME companion
+        // costs nothing beyond accepting its next frame unconditionally.
+        clink.have_sequence = false;
+        clink.last_sequence = 0u;
+        clink.last_frame_ms = btstack_run_loop_get_time_ms();
+        return true;
+    }
     if (config_ble.handle == HCI_CON_HANDLE_INVALID) return false;
     // The data plane is only as trusted as the link it rides. Same gate as the
     // command channel; no second security or pairing system.

@@ -35,13 +35,35 @@ namespace PicoSwitch.Companion.Services;
 public sealed class ControllerLinkService : IAsyncDisposable
 {
     /// <summary>
-    /// How often a complete normalized state is handed to the writer.
+    /// How often the active source is read and compared. NOT a send rate.
     ///
-    /// The adapter's pro2 USB endpoint declares bInterval 1 (1000 Hz), so this
-    /// period is the resolution limit the console actually sees: whatever it is
-    /// set to, new input cannot reach the console any sooner.
+    /// This is the resolution at which a change can be NOTICED, so it is the
+    /// dominant latency term the companion owns: a press is seen within one of
+    /// these and goes out immediately rather than waiting for a slot.
     /// </summary>
-    private static readonly TimeSpan ReportInterval = TimeSpan.FromMilliseconds(4);
+    private static readonly TimeSpan SampleInterval = TimeSpan.FromMilliseconds(2);
+
+    /// <summary>
+    /// Floor between two sends — a rate ceiling, not a period.
+    ///
+    /// Mirrors the Android Classic sender, whose 8 ms interval is likewise a
+    /// ceiling applied after sending rather than a clock to wait for. Only binds
+    /// during continuous analog motion, where consecutive samples genuinely
+    /// differ; button and D-pad edges are far rarer than this and never wait.
+    /// </summary>
+    private static readonly TimeSpan MinimumSendInterval = TimeSpan.FromMilliseconds(4);
+
+    /// <summary>
+    /// How often an UNCHANGED state is resent anyway.
+    ///
+    /// Send-on-change alone is not safe here: the adapter neutralizes a companion
+    /// source that stops sending (NS2_COMPANION_LINK_STALE_MS, 300 ms), so a long
+    /// press with nothing else moving would be released underneath the player.
+    /// Android Classic needs no equivalent because the Classic link itself is the
+    /// liveness signal. Kept well inside that timeout, and still far cheaper than
+    /// a fixed cadence: an idle controller costs 10 frames a second, not 250.
+    /// </summary>
+    private static readonly TimeSpan KeepaliveInterval = TimeSpan.FromMilliseconds(100);
 
     private readonly IControllerLinkManagement management;
     private readonly ControllerInputSession input;
@@ -186,7 +208,9 @@ public sealed class ControllerLinkService : IAsyncDisposable
             SetView(ControllerLinkPhase.Streaming);
             diagnostics.Info(
                 "controller-link",
-                $"streaming at {1000.0 / ReportInterval.TotalMilliseconds:F0} Hz, mtu={plane.AttMtu}");
+                $"streaming: sample {SampleInterval.TotalMilliseconds:F0}ms, " +
+                $"send ceiling {1000.0 / MinimumSendInterval.TotalMilliseconds:F0} Hz, " +
+                $"keepalive {KeepaliveInterval.TotalMilliseconds:F0}ms, mtu={plane.AttMtu}");
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
@@ -242,13 +266,48 @@ public sealed class ControllerLinkService : IAsyncDisposable
     private async Task PublishReportsAsync(CancellationToken cancellationToken)
     {
         long previous = 0;
+        long lastSentTicks = 0;
+        ControllerState? lastSent = null;
         var frame = new byte[ControllerLinkDataPlane.FrameBytes];
+        var minSendTicks = (long)(MinimumSendInterval.TotalSeconds * Stopwatch.Frequency);
+        var keepaliveTicks = (long)(KeepaliveInterval.TotalSeconds * Stopwatch.Frequency);
         try
         {
-            using var timer = new PeriodicTimer(ReportInterval);
+            using var timer = new PeriodicTimer(SampleInterval);
             while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
             {
                 var now = Stopwatch.GetTimestamp();
+
+                // SampleAndSnapshot, not Snapshot: the active source is read HERE,
+                // immediately before encoding, so no other timer's period lands on
+                // the wire as sample age.
+                var state = input.SampleAndSnapshot();
+
+                // Send on CHANGE, not on a clock. A fixed cadence makes a press
+                // that lands just after a tick wait a whole period for no reason,
+                // and spends radio repeating states the adapter already has. This
+                // matches the Android Classic sender, which reacts to the input
+                // event and treats its interval as a rate ceiling rather than a
+                // period.
+                var changed = lastSent is null || !state.Equals(lastSent);
+                var sinceSent = now - lastSentTicks;
+
+                // The rate ceiling. Bounds radio load during continuous analog
+                // motion, where every sample differs.
+                if (changed && lastSentTicks != 0 && sinceSent < minSendTicks)
+                {
+                    continue;
+                }
+
+                // Unchanged state still has to be refreshed periodically: the
+                // adapter neutralizes a companion source that goes quiet, so a
+                // HELD button with nothing else happening would be released
+                // underneath the player. Kept far below that timeout.
+                if (!changed && lastSentTicks != 0 && sinceSent < keepaliveTicks)
+                {
+                    continue;
+                }
+
                 if (previous != 0)
                 {
                     var interval = now - previous;
@@ -258,16 +317,13 @@ public sealed class ControllerLinkService : IAsyncDisposable
                 }
 
                 previous = now;
+                lastSentTicks = now;
+                lastSent = state;
 
-                // One tick, one complete normalized state, one frame handed to
-                // the bounded writer. Whether it reaches the air now or replaces
-                // a pending frame is the writer's decision, not this loop's.
-                //
-                // SampleAndSnapshot, not Snapshot: the active source is read HERE,
-                // immediately before encoding. Reading a snapshot maintained by a
-                // separate timer would put that timer's whole period of sample age
-                // on the wire before the frame had even been built.
-                var payload = ControllerReportEncoder.Encode(input.SampleAndSnapshot());
+                // One complete normalized state, one frame handed to the bounded
+                // writer. Whether it reaches the air now or replaces a pending
+                // frame is the writer's decision, not this loop's.
+                var payload = ControllerReportEncoder.Encode(state);
                 ControllerLinkDataPlane.EncodeInput(payload, unchecked(sequence++), frame);
                 dataPlane?.PublishInput(frame);
                 Interlocked.Increment(ref reportsGenerated);
