@@ -295,6 +295,16 @@ public static class AppServices
     public static Task SelectControllerSourceAsync(string? sourceId) =>
         PhysicalGamepad.SelectAsync(sourceId, AdapterPersonality());
 
+    /// <summary>
+    /// Tap a console button (Home / Capture / C) through Controller Link.
+    /// </summary>
+    public static Task TapConsoleButtonAsync(ControllerButton button) =>
+        ControllerInput.TapAsync(button);
+
+    /// <summary>Is this PC currently driving the console?</summary>
+    public static bool ControllerLinkStreaming =>
+        ControllerLink.View.Value.Phase == ControllerLinkPhase.Streaming;
+
     /// <summary>Which printed legend the selected controller carries.</summary>
     public static ControllerFaceLayout FaceLayout => ControllerInput.FaceLayout;
 

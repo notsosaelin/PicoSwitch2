@@ -216,9 +216,9 @@
                 <StackPanel Spacing="8">
                     <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Console buttons" />
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Button x:Name="HomeButton" Content="Home" IsEnabled="False" />
-                        <Button x:Name="CaptureButton" Content="Capture" IsEnabled="False" />
-                        <Button x:Name="CButton" Content="C" IsEnabled="False" />
+                        <Button x:Name="HomeButton" Content="Home" IsEnabled="False" Click="OnConsoleHome" />
+                        <Button x:Name="CaptureButton" Content="Capture" IsEnabled="False" Click="OnConsoleCapture" />
+                        <Button x:Name="CButton" Content="C" IsEnabled="False" Click="OnConsoleC" />
                     </StackPanel>
                     <TextBlock
                         x:Name="ConsoleButtonsReason"
