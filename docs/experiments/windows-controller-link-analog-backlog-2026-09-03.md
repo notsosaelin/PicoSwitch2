@@ -120,3 +120,67 @@ the first thing re-examined if the backlog is ever reported again.
 Both read the app's per-second `live:` metrics line, which is a permanent
 diagnostic: "how far behind is the link right now" is precisely the question the
 Stop-only summary could not answer.
+
+---
+
+# Addendum: on-screen controller face labels disagree with the wire
+
+Date: 2026-09-03
+Status: **Confirmed defect, unfixed.** Touch Gamepad only; the physical-controller
+path is correct.
+
+## Observation
+
+With the face-layout setting on **Nintendo**, every face button on the on-screen
+controller transmits the OPPOSITE letter to the one drawn on it. On **Xbox** they
+agree. Measured against `include/switch_pro.h`
+(`Y=0x01 X=0x02 B=0x04 A=0x08`), reading the adapter's decoded `mapped[0]`:
+
+| drawn | screen slot | Xbox setting | Nintendo setting |
+| --- | --- | --- | --- |
+| X | north | `0x02` X — agrees | `0x01` Y — **inverted** |
+| Y | west  | `0x01` Y — agrees | `0x02` X — **inverted** |
+| A | east  | `0x08` A — agrees | `0x04` B — **inverted** |
+| B | south | `0x04` B — agrees | `0x08` A — **inverted** |
+
+Reproduced twice, on two different window positions, with the drawn geometry
+confirmed each time (X north, Y west, A east, B south — the Nintendo diamond).
+
+## Why this is a design problem regardless of the mechanism
+
+The face-layout setting describes the **printed legend on the player's physical
+controller**. The on-screen controller has no printed legend to describe — its
+labels are drawn by this app, and `TouchControlNaming.FaceLayout` fixes them to
+Nintendo on the stated grounds that "every controller this surface can emulate is
+a Nintendo one".
+
+So one setting currently drives two things it should not drive together:
+
+- `MapPhysicalFaceKey` — correct, and what the setting is for;
+- `MapTouchFacePosition` in `ControllerInputState.Publish()` — applied to a
+  surface whose labels do not vary.
+
+A preference about someone's Xbox pad should not be able to change what the
+on-screen A button sends.
+
+## Not fixed here, deliberately
+
+Two candidate one-line fixes exist — have the renderer use the resolved layout,
+or have the touch branch use the same constant the renderer draws with — and
+both are provably wrong against the measurements above, which means the model
+they rest on is incomplete. `PositionalButtons` is documented as holding raw
+POSITIONS for the resolver to interpret once, but the numbers only fit if the
+drawn labels are already final letters.
+
+Changing a golden-tested subsystem on a model that does not predict the observed
+behaviour is how the earlier attempts in this investigation went wrong. The next
+person should start by dumping, for one physical slot: the stored
+`TouchControlAction.Face.Position`, the string the renderer actually draws (and
+whether it comes from `FaceLabel` or from `spec.Label`), and the
+`ControllerButton` that reaches `Publish`. That single trace settles it.
+
+## Impact
+
+Bounded. The physical-controller path uses `MapPhysicalFaceKey` and is correct
+under both settings — a player using a real controller is unaffected. Only the
+on-screen controller mislabels, and only while the setting is Nintendo.
