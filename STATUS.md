@@ -28,11 +28,19 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   selected controller is on Bluetooth. Root cause and the four disproven theories are in
   [`docs/experiments/windows-controller-link-analog-backlog-2026-09-03.md`](docs/experiments/windows-controller-link-analog-backlog-2026-09-03.md).
 
-  **Two things are NOT done.** The on-screen controller's face buttons transmit the opposite letter
-  to the one drawn while the face-layout setting is Nintendo (physical controllers are unaffected);
-  it is documented with the one trace that would settle it rather than patched on a model that does
-  not predict the measurements. And no Android device was attached, so the performance comparison
-  against the Classic Controller Link baseline has not been run.
+  **Phase 6 closed 2026-09-03**, with the full record — architecture, HOGP retirement, source
+  discovery, the latency/backlog resolution, the parity matrix and the exit criteria — in
+  [`docs/experiments/windows-phase6-closeout-2026-09-03.md`](docs/experiments/windows-phase6-closeout-2026-09-03.md).
+  The on-screen controller's face-label defect is fixed (the touch surface now maps with the
+  presentation it draws with, and the physical-controller mapping is untouched), the Touch Gamepad
+  gained Android's personality dropdown, and battery reporting — Phase 6 task (e) — is implemented.
+
+  **Two things remain outside the software.** No Android device was attached at any point
+  (`adb devices` empty), so the measured performance comparison against the Android Classic baseline
+  has NOT been run and no Android latency figure is claimed. And the adapter is still running
+  `9cc2511f`: everything built after it, including the session re-arm fix, is **not yet
+  hardware-qualified** and awaits a flash. Motion is a documented platform difference —
+  `Windows.Gaming.Input` exposes none, so it is reported absent rather than faked.
 
 - **Windows Touch Gamepad presentation corrected 2026-09-01: it is a dedicated screen, not an
   overlay.** The first Phase 6a build rendered the controller as a translucent layer over a live
@@ -116,7 +124,9 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   it (Tab selects, arrows nudge, Ctrl+Z undoes, Escape walks its ladder).
   **Phase 6b does not run** — it is gated on Phase 6, which took §14.6's gate-failed branch.
 
-- **Windows Phase 6 complete 2026-08-31 via §14.6's gate-failed branch: no Controller Link, and a
+- **SUPERSEDED 2026-09-03 — Controller Link now exists over Path C; see the top entry. Kept because
+  the reasoning behind the branch is still the record of why HOGP was abandoned.**
+  **Windows Phase 6 complete 2026-08-31 via §14.6's gate-failed branch: no Controller Link, and a
   page that says why.** The gate did not pass (below), so §31 Phase 6 "If the
   gate fails" is the branch taken: skip the transport, record the negative, and make `ControllerPage`
   name the platform limitation and the missing radio capability. **There is deliberately no
@@ -146,7 +156,9 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   **Phase 6b does not run** (gated on Phase 6). Phase 6a was the available work and is now complete
   (above).
 
-- **Windows Phase 6 gate run 2026-08-31: B1 and B2 pass, B3-B6 unmeasured. Phase 6 stays gated.** WINDOWS_PASS.md §14.5 asks whether a Windows PC
+- **SUPERSEDED 2026-09-03 — the gate was routed around by Path C rather than passed. The measurement
+  below stands and is why: it is the evidence that the HOGP peripheral path was not viable here.**
+  **Windows Phase 6 gate run 2026-08-31: B1 and B2 pass, B3-B6 unmeasured. Phase 6 stays gated.** WINDOWS_PASS.md §14.5 asks whether a Windows PC
   can present the 161-byte bridge descriptor over HOGP such that `android_bridge_identify()` matches.
   **The two questions §14.3 expected Windows to block are now retired.** `GattServiceProvider.CreateAsync(0x1812)`
   returns Success — HID is not on the reserved-service list in practice — and both `0x2908` Report
