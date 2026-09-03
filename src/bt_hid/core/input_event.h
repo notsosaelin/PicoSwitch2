@@ -316,6 +316,25 @@ typedef struct {
     input_battery_source_t battery_source;
 } input_event_t;
 
+// Whether an event's face buttons are ALREADY canonical A/B/X/Y rather than a
+// positional pad's raw slots.
+//
+// Both companion transports carry the same normalized payload: the Android
+// bridge over Classic HID, and Windows Controller Link over the Path C
+// characteristic. Only the first sets from_android_bridge -- the second has no
+// bridge descriptor to be recognised from, because it decodes the canonical
+// payload directly -- so asking that flag alone silently mis-answers for Path C.
+//
+// That mistake shipped. Controller Link frames took the positional branch of
+// ns2_resolve_button_destination() and reached the console with A<->B and X<->Y
+// swapped, on every personality. It hid for a while because the Windows side
+// swaps face keys too: a physical controller was wrong twice and looked right,
+// while the on-screen controller was wrong once and did not.
+//
+// ns2_active_input.c already drew this distinction for source ownership.
+// Expressing it once, here, is what stops the two answers drifting apart again.
+#define INPUT_EVENT_IS_CANONICAL_FACE(e)     ((e)->from_android_bridge || (e)->transport == INPUT_TRANSPORT_COMPANION)
+
 // ============================================================================
 // Helper Functions
 // ============================================================================

@@ -132,9 +132,64 @@ static void test_direct_controller_map_is_untouched(void) {
     }
 }
 
+/*
+ * A Path C companion event must resolve faces exactly like an Android bridge
+ * one, because it carries exactly the same canonical payload.
+ *
+ * Regression for a defect that reached a console. INPUT_TRANSPORT_COMPANION
+ * frames never set from_android_bridge -- there is no bridge descriptor to
+ * recognise them from, the payload is decoded directly -- so the seam took the
+ * positional branch and every face button arrived swapped: A<->B and X<->Y, on
+ * every personality, in both the on-screen and physical paths.
+ *
+ * It survived review because the two paths disagreed about how wrong they were.
+ * The Windows side swaps face keys of its own, so a physical controller was
+ * wrong twice and looked correct, while the on-screen controller was wrong once
+ * and was visibly inverted. The existing goldens could not catch it: they only
+ * ever asked the resolver with the flag true or false, and never with the
+ * transport that has neither.
+ */
+static void test_companion_transport_resolves_like_the_bridge(void) {
+    static const uint8_t canonical_face[4] = {
+        NS2_DST_A, NS2_DST_B, NS2_DST_X, NS2_DST_Y,
+    };
+
+    input_event_t event;
+    memset(&event, 0, sizeof(event));
+    event.transport = INPUT_TRANSPORT_COMPANION;
+    event.from_android_bridge = false;   // Path C never sets it.
+
+    if (!INPUT_EVENT_IS_CANONICAL_FACE(&event)) {
+        fprintf(stderr, "FAIL: companion transport not treated as canonical-face\n");
+        failures++;
+        return;
+    }
+
+    for (uint8_t source = 0; source < 4u; source++) {
+        const uint8_t destination = ns2_resolve_button_destination(
+            source, INPUT_EVENT_IS_CANONICAL_FACE(&event));
+        if (destination != canonical_face[source]) {
+            fprintf(stderr,
+                    "FAIL: companion face %u resolved to %u, expected %u "
+                    "(A<->B / X<->Y swap is back)\n",
+                    source, destination, canonical_face[source]);
+            failures++;
+        }
+    }
+
+    /* A directly paired controller must STILL be positional. */
+    memset(&event, 0, sizeof(event));
+    event.transport = INPUT_TRANSPORT_BT_CLASSIC;
+    if (INPUT_EVENT_IS_CANONICAL_FACE(&event)) {
+        fprintf(stderr, "FAIL: a directly paired controller claimed canonical faces\n");
+        failures++;
+    }
+}
+
 int main(void) {
     attach_bridge();
     test_direct_controller_map_is_untouched();
+    test_companion_transport_resolves_like_the_bridge();
 
     FILE *fixture = fopen("tools/fixtures/controller_link_face_mapping.csv", "rb");
     if (!fixture) {

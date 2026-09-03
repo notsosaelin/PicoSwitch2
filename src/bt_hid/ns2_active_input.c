@@ -78,11 +78,9 @@ bool ns2_active_input_submit_group(const input_event_t *event,
     // it differently: it declares no HID descriptor because it is not a HID
     // device, so its TRANSPORT is what states what it is. Both are companions;
     // only the carrier differs.
-    uint8_t source_class =
-        (event->from_android_bridge ||
-         event->transport == INPUT_TRANSPORT_COMPANION)
-            ? NS2_INPUT_SOURCE_CLASS_BRIDGE
-            : NS2_INPUT_SOURCE_CLASS_DIRECT;
+    uint8_t source_class = INPUT_EVENT_IS_CANONICAL_FACE(event)
+                               ? NS2_INPUT_SOURCE_CLASS_BRIDGE
+                               : NS2_INPUT_SOURCE_CLASS_DIRECT;
     const char *name = ns2_input_source_display_name(
         device ? device->name : NULL, source_class);
     bool accepted = ns2_input_arbiter_submit_group(&s_arbiter, &key, name,

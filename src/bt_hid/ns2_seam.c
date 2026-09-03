@@ -307,7 +307,7 @@ void router_submit_input(const input_event_t *e) {
     for (int src = 0; src < NS2_SRC_COUNT; src++) {
         if (b & SRC_TO_JP[src])
             ns2_apply_dst(ns2_resolve_button_destination(
-                              (uint8_t)src, e->from_android_bridge),
+                              (uint8_t)src, INPUT_EVENT_IS_CANONICAL_FACE(e)),
                           &in);
     }
 
