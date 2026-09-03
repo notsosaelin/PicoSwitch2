@@ -145,6 +145,56 @@ static void test_latest_state_wins(void)
     assert(last == 40u);
 }
 
+// A replacement companion restarts its sequence at zero, and the session it
+// joins may still hold the previous companion's high-water mark.
+//
+// Regression for a silent total failure observed on hardware 2026-09-03: a
+// companion killed without sending `clink stop` left the adapter's session
+// active; btstack_host_companion_link_start() answered "already active" without
+// re-arming, and every frame from the replacement read as superseded --
+// frames_received climbing, frames_applied frozen, and BOTH ends reporting a
+// healthy stream while nothing reached the console. Clearing have_sequence is
+// what makes the new client's first frame acceptable again, so the contract is
+// pinned here rather than living only in its caller.
+static void test_restarting_client_is_not_permanently_stale(void)
+{
+    uint8_t frame[NS2_COMPANION_LINK_FRAME_BYTES];
+    uint16_t last = 0;
+    bool have = false;
+
+    // 20000 rather than an arbitrary large value, because the signed delta makes
+    // this failure INTERMITTENT and that is worth stating: a dead session parked
+    // above ~32767 would read a restart at 0 as a big forward jump and quietly
+    // recover, while one parked below it rejects everything. Same bug, and
+    // whether it bites depends only on where the previous client stopped.
+    build_frame(frame, 20000u, 0);
+    assert(ns2_companion_link_parse(frame, sizeof(frame), &last, &have, NULL)
+           == NS2_COMPANION_FRAME_OK);
+    assert(last == 20000u);
+
+    // The replacement's first frame against the dead session: rejected, and it
+    // would stay rejected for the next twenty thousand frames.
+    build_frame(frame, 0u, 0);
+    assert(ns2_companion_link_parse(frame, sizeof(frame), &last, &have, NULL)
+           == NS2_COMPANION_FRAME_STALE);
+
+    // Re-arming accepts it, and ordering resumes from the new client's counter.
+    have = false;
+    last = 0u;
+    build_frame(frame, 0u, 0);
+    assert(ns2_companion_link_parse(frame, sizeof(frame), &last, &have, NULL)
+           == NS2_COMPANION_FRAME_OK);
+    assert(have);
+
+    build_frame(frame, 1u, 0);
+    assert(ns2_companion_link_parse(frame, sizeof(frame), &last, &have, NULL)
+           == NS2_COMPANION_FRAME_OK);
+
+    build_frame(frame, 1u, 0);
+    assert(ns2_companion_link_parse(frame, sizeof(frame), &last, &have, NULL)
+           == NS2_COMPANION_FRAME_STALE);
+}
+
 static void test_sequence_wrap_is_not_a_rewind(void)
 {
     uint8_t frame[NS2_COMPANION_LINK_FRAME_BYTES];
@@ -460,6 +510,7 @@ int main(void)
     test_accepts_a_well_formed_frame();
     test_rejects_malformed_frames();
     test_latest_state_wins();
+    test_restarting_client_is_not_permanently_stale();
     test_sequence_wrap_is_not_a_rewind();
     test_output_encoding();
     test_stale_input_watchdog();
