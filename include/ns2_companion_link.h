@@ -145,6 +145,23 @@ ns2_companion_frame_result_t ns2_companion_link_parse(const uint8_t *data,
                                                       bool *have_last,
                                                       const uint8_t **payload_out);
 
+// Arm the ordering state for a companion session that is (re)starting.
+//
+// MUST be called for every `clink start`, including one that arrives while a
+// session is already active. "Already active" does not mean "same companion": a
+// companion that is killed never sends `clink stop`, so when the management link
+// survives, the session stands here still holding the DEAD client's sequence
+// high-water mark. Its replacement starts counting from zero, every frame it
+// sends reads as superseded, and the failure is silent in the worst way --
+// frames_received climbing, frames_applied frozen, and both ends reporting a
+// perfectly healthy stream while nothing at all reaches the console. Observed on
+// hardware 2026-09-03.
+//
+// A pure function rather than two assignments at the call site, because those
+// two assignments ARE the contract and a caller that forgets one reintroduces a
+// bug nothing else can see. Host-tested; the caller is not host-testable.
+void ns2_companion_link_arm_session(uint16_t *last_sequence, bool *have_last);
+
 // Build an outbound feedback frame. Returns the total frame length, or 0 when
 // the payload does not fit -- refusing rather than truncating, so the companion
 // can never decode a short frame as a complete but wrong feedback report.
