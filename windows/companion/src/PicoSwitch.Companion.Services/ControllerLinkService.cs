@@ -29,12 +29,19 @@ namespace PicoSwitch.Companion.Services;
 ///
 /// Everything above the transport is the code the HOGP carrier used:
 /// ControllerInputSession owns normalized state, ControllerReportEncoder owns
-/// the wire layout, the 125 Hz scheduler is latest-state-wins, BridgeOutputCodec
+/// the wire layout, the fixed-cadence scheduler is latest-state-wins, BridgeOutputCodec
 /// and RumbleShaping own feedback. Only the boundary moved.
 /// </summary>
 public sealed class ControllerLinkService : IAsyncDisposable
 {
-    private static readonly TimeSpan ReportInterval = TimeSpan.FromMilliseconds(8);
+    /// <summary>
+    /// How often a complete normalized state is handed to the writer.
+    ///
+    /// The adapter's pro2 USB endpoint declares bInterval 1 (1000 Hz), so this
+    /// period is the resolution limit the console actually sees: whatever it is
+    /// set to, new input cannot reach the console any sooner.
+    /// </summary>
+    private static readonly TimeSpan ReportInterval = TimeSpan.FromMilliseconds(4);
 
     private readonly IControllerLinkManagement management;
     private readonly ControllerInputSession input;

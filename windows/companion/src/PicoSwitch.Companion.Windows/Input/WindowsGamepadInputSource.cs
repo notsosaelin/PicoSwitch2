@@ -29,7 +29,24 @@ public sealed class WindowsGamepadInputSource : IControllerOutputBackend, IAsync
 {
     private static readonly AxisRange StickRange = new(-1f, 1f);
     private static readonly AxisRange TriggerRange = new(0f, 1f);
-    private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(8);
+    /// <summary>
+    /// How often the selected controller is sampled.
+    ///
+    /// Deliberately SHORTER than the Controller Link publish interval (8 ms).
+    /// The two loops are independent timers over the same snapshot, so whatever
+    /// this period is lands on top of the publish period as pure staleness: at
+    /// a matched 8 ms the newest sample could be up to 8 ms old before the
+    /// publisher even looked at it, averaging 4 ms of latency that bought
+    /// nothing. Sampling faster than the publisher bounds that to this period
+    /// instead.
+    ///
+    /// Measured on the bench 2026-09-03: the adapter's pro2 USB endpoint
+    /// declares bInterval 1 (1000 Hz) while this pipeline runs at 125 Hz, so
+    /// every millisecond removed here is one the console sees.
+    /// GetCurrentReading is a cheap local read; the cost is a poll that
+    /// sometimes returns an unchanged reading.
+    /// </summary>
+    private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(2);
 
     private readonly Lock gate = new();
     private readonly CancellationTokenSource lifetime = new();
