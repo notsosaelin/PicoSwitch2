@@ -1,3 +1,5 @@
+using PicoSwitch.Bridge.Touch;
+
 namespace PicoSwitch.Bridge.Core;
 
 /// <summary>
@@ -287,8 +289,25 @@ public sealed class ControllerInputState
                 logical = logical.Union(touch.LogicalButtons);
                 foreach (var button in touch.PositionalButtons.Values)
                 {
+                    // The on-screen pad's own presentation, NOT ResolvedLayout.
+                    //
+                    // ResolvedLayout describes the printed legend on somebody's
+                    // PHYSICAL controller, so that a positional pad reporting "A"
+                    // for its bottom button lands on the console's bottom button.
+                    // This surface has no printed legend to describe: the app
+                    // draws its letters, from TouchControlNaming.FaceLayout, and
+                    // FaceLabel is derived from this very call. Passing anything
+                    // else here makes the drawn letter and the transmitted button
+                    // disagree — observed as pressing A and getting B — and the
+                    // player has no way to tell which one is lying.
+                    //
+                    // It matters more now than when this was written: with a
+                    // freeform layout editor a control's LABEL is its binding,
+                    // because the user put it wherever they liked and there is no
+                    // meaningful "position" left to reinterpret.
                     logical = logical.With(
-                        ControllerLayoutResolver.MapTouchFacePosition(button, ResolvedLayout.Layout));
+                        ControllerLayoutResolver.MapTouchFacePosition(
+                            button, TouchControlNaming.FaceLayout));
                 }
 
                 analog = new AnalogFrame(

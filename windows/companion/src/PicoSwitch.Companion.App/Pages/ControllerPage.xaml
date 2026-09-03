@@ -123,7 +123,7 @@
                             Style="{StaticResource BodyTextBlockStyle}"
                             Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                             TextWrapping="Wrap"
-                            Text="Nintendo matches the printed letters, so the button marked A sends A. Xbox matches positions, so the bottom button stays the bottom button." />
+                            Text="How the letters printed on the controller above are read. Nintendo matches the printed letters, so the button marked A sends A. Xbox matches positions, so the bottom button stays the bottom button. This does not affect the on-screen controller, which always sends the letter it is drawn with." />
                         <ComboBox
                             x:Name="FaceLayoutBox"
                             MinWidth="320"
