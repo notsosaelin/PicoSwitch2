@@ -181,6 +181,15 @@ public sealed class ControllerInputSession
         }
     }
 
+    /// <summary>The selected controller's battery, forwarded to the console.</summary>
+    public void ApplyBattery(ControllerBattery reading)
+    {
+        lock (gate)
+        {
+            input.ApplyBattery(reading);
+        }
+    }
+
     public void RemovePhysicalSource(ControllerSourceIdentity source)
     {
         lock (gate)

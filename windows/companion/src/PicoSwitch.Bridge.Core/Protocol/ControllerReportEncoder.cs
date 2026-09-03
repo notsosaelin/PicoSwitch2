@@ -33,8 +33,16 @@ public static class ControllerReportEncoder
     // transport sends, so these are the C contract offsets minus one.
     private const int OffGyro = 10;
     private const int OffAccel = 16;
-    private const int OffBattery = 22;
-    private const int OffFlags = 23;
+    /// <summary>
+    /// Battery level and the flags byte beside it.
+    ///
+    /// Public so a test can assert what actually lands on the wire rather than
+    /// re-deriving the offsets, which is how a golden and its subject drift
+    /// apart.
+    /// </summary>
+    public const int OffBattery = 22;
+
+    public const int OffFlags = 23;
     private const int OffTimestamp = 24;
 
     public const int FlagCharging = 0x01;

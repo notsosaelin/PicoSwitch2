@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using PicoSwitch.Bridge.Core;
+using Windows.Devices.Power;
 using Windows.Gaming.Input;
 
 namespace PicoSwitch.Companion.Windows.Input;
@@ -41,6 +42,11 @@ public sealed class WindowsGamepadInputSource
     /// </summary>
     private static readonly TimeSpan IdlePollInterval = TimeSpan.FromMilliseconds(16);
 
+    /// <summary>
+    /// How often the battery is read. Minutes-scale data, polled accordingly.
+    /// </summary>
+    private const double BatteryPollMs = 30_000;
+
     private readonly Lock gate = new();
     private readonly CancellationTokenSource lifetime = new();
     private readonly WindowsControllerSourceCatalog catalog = new();
@@ -54,6 +60,8 @@ public sealed class WindowsGamepadInputSource
     private long framesPublished;
     private long pollFailures;
     private long lastSampleTicks;
+    private long lastBatteryTicks;
+    private ControllerBattery lastBattery = ControllerBattery.Unknown;
     private bool disposed;
 
     public WindowsGamepadInputSource()
@@ -173,6 +181,16 @@ public sealed class WindowsGamepadInputSource
             return;
         }
     }
+
+    /// <summary>
+    /// The selected controller's battery, when Windows will tell us.
+    ///
+    /// Separate from <see cref="Frame"/> and raised far more rarely: a charge
+    /// level changes on the scale of minutes, and folding it into the gameplay
+    /// frame would put a WinRT battery query on the realtime path for a value
+    /// that almost never differs.
+    /// </summary>
+    public event Action<ControllerBattery>? BatteryChanged;
 
     public event Action<ControllerSourceIdentity, ControllerButtonSet, AnalogFrame>? Frame;
 
@@ -305,6 +323,76 @@ public sealed class WindowsGamepadInputSource
             }
 
             Sample();
+            SampleBattery();
+        }
+    }
+
+    /// <summary>
+    /// Poll the selected controller's battery, and report only real changes.
+    /// </summary>
+    /// <remarks>
+    /// Windows reports capacity in milliwatt-hours, not percent, and reports
+    /// NOTHING at all for plenty of real controllers -- a wired pad has no
+    /// battery, and several wireless ones decline to say. That is why the reading
+    /// carries a Valid flag rather than defaulting to zero: a console showing a
+    /// confident 0% for a controller that never reported is worse than one
+    /// showing nothing, and the encoder only sets FlagBatteryValid when we
+    /// genuinely know.
+    /// </remarks>
+    private void SampleBattery()
+    {
+        var now = Stopwatch.GetTimestamp();
+        if ((now - lastBatteryTicks) * 1000.0 / Stopwatch.Frequency < BatteryPollMs)
+        {
+            return;
+        }
+
+        lastBatteryTicks = now;
+
+        Gamepad? gamepad;
+        lock (gate)
+        {
+            gamepad = selected;
+        }
+
+        var reading = ReadBattery(gamepad);
+        if (reading == lastBattery)
+        {
+            return;
+        }
+
+        lastBattery = reading;
+        BatteryChanged?.Invoke(reading);
+    }
+
+    private static ControllerBattery ReadBattery(Gamepad? gamepad)
+    {
+        if (gamepad is null)
+        {
+            return ControllerBattery.Unknown;
+        }
+
+        try
+        {
+            var report = gamepad.TryGetBatteryReport();
+            if (report?.RemainingCapacityInMilliwattHours is not { } remaining ||
+                report.FullChargeCapacityInMilliwattHours is not { } full ||
+                full <= 0)
+            {
+                return ControllerBattery.Unknown;
+            }
+
+            var percent = (int)Math.Round(100.0 * remaining / full);
+            return new ControllerBattery(
+                Math.Clamp(percent, 0, 100),
+                Charging: report.Status == global::Windows.System.Power.BatteryStatus.Charging,
+                Valid: true);
+        }
+        catch (Exception)
+        {
+            // A controller that vanished mid-query must not take the poll loop
+            // with it; the next tick reports Unknown through the ordinary path.
+            return ControllerBattery.Unknown;
         }
     }
 

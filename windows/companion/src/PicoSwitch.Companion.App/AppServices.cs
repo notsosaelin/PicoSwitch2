@@ -238,6 +238,7 @@ public static class AppServices
                 var source = new WindowsGamepadInputSource();
                 source.Frame += input.ApplyPhysicalFrame;
                 source.Removed += input.RemovePhysicalSource;
+                source.BatteryChanged += input.ApplyBattery;
 
                 // The realtime path reads the controller at encode time rather
                 // than trusting whatever a background timer last left in the
