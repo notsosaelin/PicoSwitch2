@@ -454,6 +454,7 @@ public sealed class BleGattManagementTransport : IManagementTransport, IControll
         gattSession.MaintainConnection = true;
 
         var owner = new OwnedGatt(this, device, gattSession, attemptGeneration, text, displayName, paired);
+        owner.RequestLowLatencyLink(message => Log("link", message));
         try
         {
             // Uncached on the first resolution of every session. A reflashed
@@ -933,6 +934,55 @@ public sealed class BleGattManagementTransport : IManagementTransport, IControll
 
         public GattCharacteristic? Tx { get; set; }
 
+        /// <summary>
+        /// Held for the life of the link: releasing it returns Windows to its
+        /// default interval.
+        /// </summary>
+        private BluetoothLEPreferredConnectionParametersRequest? connectionParameters;
+
+        /// <summary>
+        /// Ask Windows for the shortest connection interval it will grant.
+        ///
+        /// This is the largest latency term on the gameplay path and the one that
+        /// is invisible in every counter we already had. A GATT write completes
+        /// locally in well under a millisecond because the stack has ACCEPTED the
+        /// buffer — the radio cannot actually transmit until the next connection
+        /// event. Windows defaults an LE link to a power-optimised interval
+        /// measured in tens of milliseconds, which adds most of one interval to
+        /// every input and caps how many frames per second the link can carry at
+        /// all.
+        ///
+        /// That cap is also why analog sticks felt worse than buttons, and why
+        /// buttons stayed late for a while AFTERWARDS: a stick changes on nearly
+        /// every sample and so sustains the send ceiling, and anything the radio
+        /// cannot drain backs up in the stack below us, where our bounded writer
+        /// cannot see it. Buttons then queue behind that backlog until it clears.
+        ///
+        /// ThroughputOptimized rather than Balanced because this link carries
+        /// controller input. The power cost is irrelevant here: the host is a PC
+        /// and the adapter is powered by the console it is plugged into.
+        ///
+        /// Best effort by design — the peripheral and the radio may refuse or
+        /// negotiate something longer, so the granted status is logged rather than
+        /// assumed, and a refusal costs latency instead of breaking the link.
+        /// </summary>
+        public void RequestLowLatencyLink(Action<string> log)
+        {
+            try
+            {
+                connectionParameters = device.RequestPreferredConnectionParameters(
+                    BluetoothLEPreferredConnectionParameters.ThroughputOptimized);
+                log($"requested throughput-optimized connection parameters: " +
+                    $"{connectionParameters.Status}");
+            }
+            catch (Exception error)
+            {
+                // Not available on every Windows build. Losing it costs latency,
+                // never correctness, so it must never fail a connection.
+                log($"connection-parameter request unavailable ({error.GetType().Name})");
+            }
+        }
+
         public void OnNotification(GattCharacteristic sender, GattValueChangedEventArgs args)
         {
             var payload = new byte[args.CharacteristicValue.Length];
@@ -961,6 +1011,21 @@ public sealed class BleGattManagementTransport : IManagementTransport, IControll
             }
 
             Service?.Dispose();
+
+            // Give the interval back. A request left outstanding keeps the radio
+            // on a fast cadence for a link this app no longer holds.
+            try
+            {
+                connectionParameters?.Dispose();
+            }
+            catch (Exception)
+            {
+                // Already released by the stack when the link went.
+            }
+            finally
+            {
+                connectionParameters = null;
+            }
 
             // MaintainConnection is cleared before disposal so Windows stops trying
             // to re-establish the link the moment the session goes.
