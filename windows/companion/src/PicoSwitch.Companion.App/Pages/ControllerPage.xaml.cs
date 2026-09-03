@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using PicoSwitch.Bridge.Core;
 using PicoSwitch.Companion.Services;
 using PicoSwitch.Companion.Windows.Input;
 
@@ -10,6 +11,7 @@ public sealed partial class ControllerPage : Page
 {
     private readonly ControllerLinkService controllerLink = AppServices.ControllerLink;
     private readonly WindowsGamepadInputSource gamepad = AppServices.PhysicalGamepad;
+    private bool faceLayoutReady;
 
     public ControllerPage()
     {
@@ -24,6 +26,7 @@ public sealed partial class ControllerPage : Page
         gamepad.SourcesChanged += OnSourcesChanged;
         Render();
         RenderSources();
+        RenderFaceLayout();
 
         // A controller plugged in while this page was closed is the ordinary
         // case, so look again on arrival rather than trusting the last
@@ -50,6 +53,50 @@ public sealed partial class ControllerPage : Page
         {
             await AppServices.SelectControllerSourceAsync(row.Id);
         }
+    }
+
+    private void OnFaceLayoutChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // Guard the initial population: assigning ItemsSource raises this, and
+        // acting on it would overwrite the stored choice with the first row.
+        if (!faceLayoutReady || FaceLayoutBox.SelectedItem is not ControllerFaceLayout layout)
+        {
+            return;
+        }
+
+        AppServices.SetFaceLayout(layout);
+        RenderFaceLayout();
+    }
+
+    /// <summary>
+    /// Paint the printed-legend choice.
+    ///
+    /// Separate from <see cref="RenderSources"/> because the two change on
+    /// different events: the source list moves when hardware comes and goes, this
+    /// only when the user picks, and rebuilding the combo on every enumeration
+    /// would fight whatever they had open.
+    /// </summary>
+    private void RenderFaceLayout()
+    {
+        faceLayoutReady = false;
+        try
+        {
+            FaceLayoutBox.ItemsSource ??= new[]
+            {
+                ControllerFaceLayout.Auto,
+                ControllerFaceLayout.Nintendo,
+                ControllerFaceLayout.Xbox,
+            };
+            FaceLayoutBox.SelectedItem = AppServices.FaceLayout;
+        }
+        finally
+        {
+            faceLayoutReady = true;
+        }
+
+        FaceLayoutReason.Text = AppServices.FaceLayout == ControllerFaceLayout.Auto
+            ? $"Auto chose {AppServices.ResolvedFaceLayout}: {AppServices.FaceLayoutReason}."
+            : $"{AppServices.FaceLayout} labels, chosen manually.";
     }
 
     /// <summary>

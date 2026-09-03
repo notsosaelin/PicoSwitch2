@@ -32,6 +32,39 @@ public sealed class ControllerInputSession
         }
     }
 
+    /// <summary>
+    /// Which printed legend the selected controller carries.
+    ///
+    /// Auto resolves from the device identity: a Nintendo-labelled handheld
+    /// reports its printed letters and passes through, everything else reports
+    /// POSITIONALLY and is swapped so the bottom button stays the bottom button.
+    /// That is the right default and the wrong answer for anyone who reads the
+    /// on-screen prompt instead of the position — pressing the button marked A on
+    /// an Xbox pad then produces B — so the choice is the user's to make.
+    /// </summary>
+    public ControllerFaceLayout FaceLayout
+    {
+        get { lock (gate) { return input.RequestedLayout; } }
+    }
+
+    public string FaceLayoutReason
+    {
+        get { lock (gate) { return input.ResolvedLayout.Reason; } }
+    }
+
+    public ControllerFaceLayout ResolvedFaceLayout
+    {
+        get { lock (gate) { return input.ResolvedLayout.Layout; } }
+    }
+
+    public void SetFaceLayout(ControllerFaceLayout layout)
+    {
+        lock (gate)
+        {
+            input.SetRequestedLayout(layout);
+        }
+    }
+
     /// <summary>Attach a source that can be read on demand. Null detaches.</summary>
     public void AttachSampler(IControllerInputSampler? source)
     {

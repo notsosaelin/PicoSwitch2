@@ -108,6 +108,27 @@
                             x:Name="SourceRefresh"
                             Click="OnRefreshSources"
                             Content="Look again" />
+
+                        <TextBlock
+                            Margin="0,10,0,0"
+                            Style="{StaticResource BodyStrongTextBlockStyle}"
+                            TextWrapping="Wrap"
+                            Text="Button labels" />
+                        <TextBlock
+                            Style="{StaticResource BodyTextBlockStyle}"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            TextWrapping="Wrap"
+                            Text="Nintendo matches the printed letters, so the button marked A sends A. Xbox matches positions, so the bottom button stays the bottom button." />
+                        <ComboBox
+                            x:Name="FaceLayoutBox"
+                            MinWidth="320"
+                            AutomationProperties.Name="Button labels"
+                            SelectionChanged="OnFaceLayoutChanged" />
+                        <TextBlock
+                            x:Name="FaceLayoutReason"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            TextWrapping="Wrap" />
                     </StackPanel>
                 </Border>
 
