@@ -90,6 +90,11 @@
                             Style="{StaticResource BodyTextBlockStyle}"
                             Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                             TextWrapping="Wrap" />
+                        <InfoBar
+                            x:Name="SourceAdvice"
+                            IsOpen="False"
+                            IsClosable="False"
+                            Severity="Informational" />
                         <StackPanel
                             x:Name="SourceChooser"
                             Orientation="Horizontal"

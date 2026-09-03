@@ -73,6 +73,33 @@ public sealed class ControllerLinkWriter(Func<byte[], Task<bool>> writeAsync)
     /// </summary>
     public int MaximumInFlight => Volatile.Read(ref maximumInFlight);
 
+    /// <summary>
+    /// A write is outstanding, or one is already waiting to go out.
+    ///
+    /// The publisher reads this to stop ADDING analog frames while the transport
+    /// is behind. It is normally false — the driver accepts a write in well under
+    /// a millisecond — so it costs nothing in the healthy case. It becomes true
+    /// exactly when the driver starts making us wait, which is the only moment we
+    /// can observe from here that the link is saturated, and the one moment it
+    /// matters not to pile more on. A safety net beneath the send interval, not a
+    /// replacement for it.
+    /// </summary>
+    public bool Busy
+    {
+        get
+        {
+            if (Volatile.Read(ref inFlight) > 0)
+            {
+                return true;
+            }
+
+            lock (gate)
+            {
+                return pending is not null;
+            }
+        }
+    }
+
     public TimeSpan AverageWriteLatency
     {
         get

@@ -102,6 +102,13 @@ public sealed class ControllerLinkTests
 
         public int MaximumInFlight => 1;
 
+        /// <summary>
+        /// Never behind. A fake that reported saturation would silently suppress
+        /// the analog frames these tests count, and the failure would look like a
+        /// publisher bug rather than a fixture one.
+        /// </summary>
+        public bool Busy => false;
+
         public TimeSpan AverageWriteLatency => TimeSpan.FromMilliseconds(1);
 
         public TimeSpan MaximumWriteLatency => TimeSpan.FromMilliseconds(2);

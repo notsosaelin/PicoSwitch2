@@ -30,7 +30,8 @@ public sealed record ControllerSourceView(
     string? SelectedId,
     string Headline,
     string Detail,
-    bool CanChoose)
+    bool CanChoose,
+    string? Advice = null)
 {
     public static ControllerSourceView Of(
         IReadOnlyList<WindowsControllerSource> sources,
@@ -73,6 +74,9 @@ public sealed record ControllerSourceView(
                 : $"{selected.AttachmentLabel} and ready.";
 
         return new ControllerSourceView(
-            rows, selected.Id, selected.Name, detail, canChoose);
+            rows, selected.Id, selected.Name, detail, canChoose,
+            // Only for the source actually in use: advice about a controller
+            // nobody is playing on is noise.
+            selected.ConnectionAdvice);
     }
 }

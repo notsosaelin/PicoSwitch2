@@ -75,6 +75,8 @@ public sealed class GattControllerLinkDataPlane : IControllerLinkDataPlane
 
     public int MaximumInFlight => writer.MaximumInFlight;
 
+    public bool Busy => writer.Busy;
+
     public TimeSpan AverageWriteLatency => writer.AverageWriteLatency;
 
     public TimeSpan MaximumWriteLatency => writer.MaximumWriteLatency;

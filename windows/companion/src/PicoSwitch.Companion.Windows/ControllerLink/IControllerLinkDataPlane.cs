@@ -88,6 +88,12 @@ public interface IControllerLinkDataPlane : IAsyncDisposable
     /// </summary>
     int MaximumInFlight { get; }
 
+    /// <summary>
+    /// The transport is behind: a write is outstanding or already queued here.
+    /// Read by the publisher to stop adding analog frames while saturated.
+    /// </summary>
+    bool Busy { get; }
+
     /// <summary>Local <c>WriteValueWithResultAsync</c> completion latency.</summary>
     TimeSpan AverageWriteLatency { get; }
 

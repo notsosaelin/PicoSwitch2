@@ -46,17 +46,39 @@ public sealed class ControllerLinkService : IAsyncDisposable
     /// <summary>
     /// Rate ceiling for a frame whose ONLY change is analog.
     ///
-    /// A stick differs on nearly every sample, so without a ceiling it alone
-    /// decides the send rate. That matters because nothing below this app can
-    /// collapse a frame once it is handed over: our mailbox coalesces only what
-    /// has not been submitted yet, and anything the radio cannot drain queues
-    /// inside the Windows stack and is replayed IN ORDER. Observed on hardware as
-    /// stick motion continuing to play out after the stick stopped, with button
-    /// presses stuck behind it.
+    /// ## Why this is not a tuning knob
     ///
-    /// 125 Hz is the Android Classic sender's ceiling, which is the behaviour
-    /// this path is measured against, and it is far above what an analog stick
-    /// needs to feel continuous.
+    /// This number exists to make a backlog STRUCTURALLY impossible, not to feel
+    /// fast. Nothing below this app can collapse a frame once handed over: the
+    /// bounded writer coalesces only what it has not yet submitted, and
+    /// WriteValueWithResultAsync completes when the Windows driver ACCEPTS the
+    /// buffer, not when the radio transmits it. Every frame beyond what the link
+    /// drains therefore sits in the driver and is replayed IN ORDER — which is
+    /// why over-sending presents as a stick that keeps moving after the player
+    /// stopped, rather than as latency.
+    ///
+    /// Write-with-response would be self-clocking and solve this outright, but
+    /// the adapter declares CL-IN as WRITE_WITHOUT_RESPONSE only
+    /// (ATT_PROPERTY_WRITE_WITHOUT_RESPONSE, no ATT_PROPERTY_WRITE), so an
+    /// acknowledged write is refused and there is no delivery signal to pace on.
+    ///
+    /// So the pacing is derived instead: at most ONE frame per BLE connection
+    /// event. The transport requests ThroughputOptimized parameters, whose
+    /// interval is at most 15 ms, so a 15 ms floor cannot put two frames into one
+    /// event however fast the stick moves — leaving the driver nothing to
+    /// accumulate. Picking a higher rate means guessing at a capacity that
+    /// changes with radio conditions, and the controller itself shares this
+    /// radio.
+    ///
+    /// ~66 Hz of genuine movement, on top of a stick that only reports when it
+    /// has actually moved (<see cref="ControllerLinkSendPolicy.AnalogEpsilon"/>).
+    ///
+    /// NOTE: currently 8 ms, NOT the 15 ms the reasoning above argues for. The
+    /// one-frame-per-connection-event claim rests on the interval Windows was
+    /// ASKED for, and a requested range is not the negotiated value. Until the
+    /// live interval is measured and the queue's location is proven, this stays
+    /// at the rate that reproduces the fault rather than a number chosen to hide
+    /// it.
     /// </summary>
     private static readonly TimeSpan AnalogSendInterval = TimeSpan.FromMilliseconds(8);
 
@@ -92,6 +114,7 @@ public sealed class ControllerLinkService : IAsyncDisposable
     private IControllerLinkDataPlane? dataPlane;
     private CancellationTokenSource? sessionCancellation;
     private Task? publisherTask;
+    private Task? heartbeatTask;
     private int stopping;
     private ushort sequence;
     private int shapedLeft;
@@ -222,6 +245,7 @@ public sealed class ControllerLinkService : IAsyncDisposable
 
             sessionCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             publisherTask = PublishReportsAsync(sessionCancellation.Token);
+            heartbeatTask = LogMetricsAsync(sessionCancellation.Token);
             SetView(ControllerLinkPhase.Streaming);
             diagnostics.Info(
                 "controller-link",
@@ -281,6 +305,36 @@ public sealed class ControllerLinkService : IAsyncDisposable
         lifecycle.Dispose();
     }
 
+    /// <summary>
+    /// Publish the transport counters once a second while streaming.
+    ///
+    /// Until now these existed only in the line written on Stop, which is useless
+    /// for the question that matters most: how far behind the transport is RIGHT
+    /// NOW. Comparing the writes this app has issued against the frames the
+    /// adapter reports receiving, at the same moment, measures the depth of any
+    /// queue sitting between them — the one place a backlog can hide, because it
+    /// is below the WinRT completion boundary where none of our own counters can
+    /// see it.
+    ///
+    /// One line a second, off the realtime path, and it is a permanent diagnostic
+    /// rather than scaffolding: "is the link keeping up" is exactly what a support
+    /// bundle should be able to answer.
+    /// </summary>
+    private async Task LogMetricsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            {
+                diagnostics.Debug("controller-link", $"live: {Metrics.Summary()}");
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
     private async Task PublishReportsAsync(CancellationToken cancellationToken)
     {
         long previous = 0;
@@ -328,6 +382,15 @@ public sealed class ControllerLinkService : IAsyncDisposable
                 {
                     continue;
                 }
+
+                // NOTE: no backpressure check here yet. ControllerLinkWriter.Busy
+                // only observes our own WinRT operation, which completes when the
+                // driver ACCEPTS the buffer — so it reads false while the stack
+                // below may still hold frames, and gating on it would look like a
+                // fix while proving nothing. Exempting digital from such a gate
+                // would be worse: it would put a press behind exactly the analog
+                // history it is supposed to jump ahead of. Left out until the
+                // queue's location is measured.
 
                 // Unchanged state still has to be refreshed periodically: the
                 // adapter neutralizes a companion source that goes quiet, so a
@@ -516,6 +579,19 @@ public sealed class ControllerLinkService : IAsyncDisposable
             try
             {
                 await currentPublisher.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        var currentHeartbeat = heartbeatTask;
+        heartbeatTask = null;
+        if (currentHeartbeat is not null)
+        {
+            try
+            {
+                await currentHeartbeat.ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {

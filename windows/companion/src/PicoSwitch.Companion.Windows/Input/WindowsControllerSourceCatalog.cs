@@ -120,7 +120,8 @@ public sealed class WindowsControllerSourceCatalog
                 candidate,
                 Attachment(hid?.ContainerId),
                 isGamepadClass,
-                MayBeThisAdapter(vendor, product, adapterPersonality)));
+                MayBeThisAdapter(vendor, product, adapterPersonality),
+                hid?.Connection ?? ControllerConnection.Unknown));
         }
 
         return sources;
@@ -220,7 +221,52 @@ public sealed class WindowsControllerSourceCatalog
                expected == product;
     }
 
-    private sealed record HidInfo(string? Name, Guid? ContainerId);
+    /// <summary>
+    /// Bluetooth HID over GATT. Present in the instance id of every BLE
+    /// controller: <c>HID\{00001812-...}&amp;Dev&amp;VID_045e&amp;PID_0b22...</c>
+    /// </summary>
+    private const string HidOverGattService = "{00001812-0000-1000-8000-00805f9b34fb}";
+
+    /// <summary>
+    /// Bluetooth Classic HID profile, the BR/EDR equivalent:
+    /// <c>HID\{00001124-...}_VID&amp;0002054C_PID&amp;05C4...</c>
+    /// </summary>
+    private const string HidClassicService = "{00001124-0000-1000-8000-00805f9b34fb}";
+
+    /// <summary>
+    /// How the controller reaches this PC, from its device instance id.
+    ///
+    /// Read off real strings captured on this bench rather than guessed. A wired
+    /// pad carries a bare <c>VID_xxxx&amp;PID_xxxx</c>; a Bluetooth one is
+    /// enumerated under one of the two HID profile service UUIDs, or directly
+    /// under a BTH enumerator.
+    ///
+    /// Unknown is deliberately treated as wired by callers: warning about a
+    /// radio hop that may not exist is worse than staying quiet.
+    /// </summary>
+    private static ControllerConnection ConnectionOf(string? instanceId)
+    {
+        if (string.IsNullOrWhiteSpace(instanceId))
+        {
+            return ControllerConnection.Unknown;
+        }
+
+        if (instanceId.Contains(HidOverGattService, StringComparison.OrdinalIgnoreCase) ||
+            instanceId.Contains(HidClassicService, StringComparison.OrdinalIgnoreCase) ||
+            instanceId.StartsWith("BTHLEDEVICE", StringComparison.OrdinalIgnoreCase) ||
+            instanceId.StartsWith("BTHENUM", StringComparison.OrdinalIgnoreCase) ||
+            instanceId.StartsWith("BTHLE", StringComparison.OrdinalIgnoreCase))
+        {
+            return ControllerConnection.Bluetooth;
+        }
+
+        // A bare USB-style identity under HID\ or USB\.
+        return instanceId.Contains("VID_", StringComparison.OrdinalIgnoreCase)
+            ? ControllerConnection.Usb
+            : ControllerConnection.Unknown;
+    }
+
+    private sealed record HidInfo(string? Name, Guid? ContainerId, ControllerConnection Connection);
 
     /// <summary>
     /// HID gamepads and joysticks, keyed by USB identity.
@@ -271,7 +317,7 @@ public sealed class WindowsControllerSourceCatalog
 
                 // First writer wins: a device with several HID collections
                 // enumerates more than once and the entries agree on identity.
-                map.TryAdd(identity, new HidInfo(device.Name, container));
+                map.TryAdd(identity, new HidInfo(device.Name, container, ConnectionOf(instance)));
             }
         }
 
