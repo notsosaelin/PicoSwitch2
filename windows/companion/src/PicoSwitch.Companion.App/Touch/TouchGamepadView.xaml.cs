@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Input;
 using PicoSwitch.Bridge.Touch;
 using PicoSwitch.Companion.Services;
 using PicoSwitch.Companion.Services.Presentation;
+using PicoSwitch.Management;
 using Windows.Devices.Input;
 using Windows.Foundation;
 using Windows.Storage;
@@ -84,6 +85,8 @@ public sealed partial class TouchGamepadView : UserControl
 
     private TouchSurfaceMode mode = TouchSurfaceMode.Play;
     private bool menuOpen;
+    private bool personalityReady;
+    private IReadOnlyList<PersonalityRow>? personalityRows;
     private bool fullScreen;
     private bool editGroup = true;
 
@@ -286,6 +289,69 @@ public sealed partial class TouchGamepadView : UserControl
         MenuProfiles.Content = view.ProfileName is { Length: > 0 } name ? name : "Layouts";
         MenuUseDefault.IsEnabled = view.CanResetToDefault;
         MenuFullScreen.Content = fullScreen ? "Leave full screen (F11)" : "Full screen (F11)";
+        RenderPersonalityChoice();
+    }
+
+    /// <summary>
+    /// Which controller the adapter is emulating, chosen from inside the surface.
+    /// </summary>
+    /// <remarks>
+    /// Only the personalities that HAVE an on-screen layout are offered, taken
+    /// from <see cref="TouchProfileSelector.GameplayPersonalities"/> rather than
+    /// from the full enum: offering Config here would let someone pick a mode this
+    /// surface cannot draw and then have to explain itself.
+    ///
+    /// Disabled without a connected adapter, because switching is a real adapter
+    /// operation and not a local preference.
+    /// </remarks>
+    private void RenderPersonalityChoice()
+    {
+        var current = AppServices.Adapters.Snapshot.Value.Personality.Current;
+        var connected = AppServices.Adapters.Connection.Value.Connected;
+
+        personalityReady = false;
+        try
+        {
+            personalityRows ??= [.. TouchProfileSelector.GameplayPersonalities
+                .Select(p => new PersonalityRow(p, ControllerModeSection.Label(p)))];
+            MenuPersonality.ItemsSource ??= personalityRows;
+            MenuPersonality.DisplayMemberPath = nameof(PersonalityRow.Label);
+            MenuPersonality.SelectedItem =
+                personalityRows.FirstOrDefault(row => row.Value == current);
+        }
+        finally
+        {
+            personalityReady = true;
+        }
+
+        MenuPersonality.IsEnabled = connected;
+        MenuPersonalityNote.Text = connected
+            ? "Switching re-enumerates USB and loads that controller's own layout."
+            : "Connect an adapter to change this.";
+    }
+
+    private async void OnMenuPersonalityChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // Guard the initial population: assigning ItemsSource raises this, and
+        // acting on it would switch the adapter's personality on merely opening
+        // the menu.
+        if (!personalityReady || MenuPersonality.SelectedItem is not PersonalityRow row)
+        {
+            return;
+        }
+
+        var chosen = row.Value;
+        if (AppServices.Adapters.Snapshot.Value.Personality.Current == chosen)
+        {
+            return;
+        }
+
+        // Release and neutralize BEFORE the switch, exactly as the Android path
+        // does. The personality change re-enumerates USB and replaces the layout
+        // underneath any contact still down, and a held control that outlived its
+        // own layout is a stuck button on the console.
+        ReleaseGameplay(TouchReleaseReason.PersonalityChanged);
+        await AppServices.Adapters.SetPersonalityAsync(chosen);
     }
 
     /// <summary>
@@ -1389,3 +1455,11 @@ public sealed partial class TouchGamepadView : UserControl
             : null;
     }
 }
+
+/// <summary>One row in the Touch Gamepad's controller chooser.</summary>
+/// <remarks>
+/// A ComboBox cannot DisplayMemberPath an enum, and the label belongs to the
+/// presentation layer that already owns every other personality name
+/// (<see cref="ControllerModeSection.Label"/>) rather than to a second table here.
+/// </remarks>
+internal sealed record PersonalityRow(Personality Value, string Label);

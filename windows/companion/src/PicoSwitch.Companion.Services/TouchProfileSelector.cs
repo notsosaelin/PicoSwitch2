@@ -31,6 +31,18 @@ namespace PicoSwitch.Companion.Services;
 /// </summary>
 public static class TouchProfileSelector
 {
+    /// <summary>
+    /// The personalities the on-screen controller can actually play.
+    /// </summary>
+    /// <remarks>
+    /// Derived from <see cref="Select"/> rather than listed twice: a personality
+    /// that maps to no touch profile has no layout to draw, and the two answers
+    /// must never be able to disagree. Ports the Android
+    /// <c>TouchProfileSelector.gameplayPersonalities</c> set.
+    /// </remarks>
+    public static IReadOnlyList<Personality> GameplayPersonalities { get; } =
+        [.. Enum.GetValues<Personality>().Where(p => Select(p) is not null)];
+
     public static TouchProfileId? Select(Personality personality) => personality switch
     {
         Personality.Pro2 => TouchProfileId.Pro2,

@@ -298,6 +298,31 @@
                                 HorizontalAlignment="Stretch"
                                 Content="Use the default" />
 
+                        <!--
+                          The emulated controller itself, changed through the real
+                          adapter lifecycle. Ports the Android Touch Gamepad menu,
+                          where this replaced a Nintendo/Xbox face-layout toggle:
+                          once the surface can present four genuine controllers the
+                          letters follow the controller, and asking separately made
+                          it possible to label a Joy-Con with an Xbox diamond.
+                        -->
+                        <TextBlock Text="Controller"
+                                   Margin="0,8,0,0"
+                                   Style="{StaticResource BodyStrongTextBlockStyle}" />
+                        <ComboBox x:Name="MenuPersonality"
+                                  HorizontalAlignment="Stretch"
+                                  AutomationProperties.Name="Controller"
+                                  SelectionChanged="OnMenuPersonalityChanged" />
+                        <!--
+                          A consequence the dropdown cannot show, and one the user
+                          would otherwise meet as a surprise.
+                        -->
+                        <TextBlock x:Name="MenuPersonalityNote"
+                                   Text="Switching re-enumerates USB and loads that controller's own layout."
+                                   TextWrapping="Wrap"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
                         <TextBlock Text="Display"
                                    Margin="0,8,0,0"
                                    Style="{StaticResource BodyStrongTextBlockStyle}" />
