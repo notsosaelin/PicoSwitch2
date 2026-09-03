@@ -98,7 +98,7 @@ public sealed class WindowsControllerSourceCatalog
             var product = raw.HardwareProductId;
             var isGamepadClass = Gamepad.FromGameController(raw) is not null;
 
-            names.TryGetValue((vendor, product), out var hid);
+            var hid = MatchHid(names, vendor, product);
 
             var candidate = new ControllerCandidate(
                 Id: index++,
@@ -178,6 +178,42 @@ public sealed class WindowsControllerSourceCatalog
         // Still empty is a legitimate answer: HID exposes devices that
         // Windows.Gaming.Input does not project at all.
         return [.. controllers];
+    }
+
+    /// <summary>
+    /// Join a <c>RawGameController</c> to its HID record.
+    ///
+    /// Exact identity first. But an XInput device does NOT report the same
+    /// product id on both surfaces — measured on this bench 2026-09-03, one wired
+    /// Xbox pad:
+    ///
+    /// <code>
+    /// RawGameController : 045E:0B00
+    /// HID instance      : HID\VID_045E&amp;PID_02FF&amp;IG_00\...
+    /// </code>
+    ///
+    /// so the exact match silently misses, and with it goes the real product
+    /// name, the ContainerId that distinguishes a handheld's built-in controls,
+    /// and how the controller is connected. Nothing looks broken; the fields are
+    /// just quietly absent.
+    ///
+    /// The fallback is deliberately narrow: same vendor, and only when exactly
+    /// ONE HID record for that vendor exists. Two pads from one vendor is
+    /// genuinely ambiguous and takes the miss rather than risk labelling a wired
+    /// controller with a wireless one's details — the wrong answer here is worse
+    /// than none, because it would advise a player to unplug a cable they are
+    /// already using.
+    /// </summary>
+    private static HidInfo? MatchHid(
+        Dictionary<(ushort, ushort), HidInfo> names, ushort vendor, ushort product)
+    {
+        if (names.TryGetValue((vendor, product), out var exact))
+        {
+            return exact;
+        }
+
+        var sameVendor = names.Where(entry => entry.Key.Item1 == vendor).ToList();
+        return sameVendor.Count == 1 ? sameVendor[0].Value : null;
     }
 
     private static string FriendlyName(
