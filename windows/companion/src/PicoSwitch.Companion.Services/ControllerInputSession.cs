@@ -17,6 +17,7 @@ public sealed class ControllerInputSession
     private readonly ControllerInputState input = new();
     private readonly TouchGamepad touch;
     private ControllerSourceIdentity? physicalSource;
+    private IControllerInputSampler? sampler;
 
     public ControllerInputSession() => touch = new TouchGamepad(input);
 
@@ -29,6 +30,43 @@ public sealed class ControllerInputSession
                 return input.State.Value;
             }
         }
+    }
+
+    /// <summary>Attach a source that can be read on demand. Null detaches.</summary>
+    public void AttachSampler(IControllerInputSampler? source)
+    {
+        lock (gate)
+        {
+            sampler = source;
+        }
+    }
+
+    /// <summary>
+    /// Take the freshest possible state: ask the active source to read itself,
+    /// then snapshot.
+    ///
+    /// This is the realtime path's single cadence boundary. Reading a snapshot
+    /// that some OTHER timer refreshes adds that timer's whole period as sample
+    /// age before the state is even encoded — see
+    /// <see cref="IControllerInputSampler"/>.
+    ///
+    /// An event-driven source needs no sampler and is unaffected: the Touch
+    /// Gamepad has already written its current state by the time this runs.
+    /// </summary>
+    public ControllerState SampleAndSnapshot()
+    {
+        IControllerInputSampler? source;
+        lock (gate)
+        {
+            source = sampler;
+        }
+
+        // Deliberately OUTSIDE the lock: Sample() publishes through
+        // ApplyPhysicalFrame, which takes this same lock. Holding it across the
+        // call would deadlock the one path that must never stall.
+        source?.Sample();
+
+        return Snapshot;
     }
 
     public InputAuthority Authority

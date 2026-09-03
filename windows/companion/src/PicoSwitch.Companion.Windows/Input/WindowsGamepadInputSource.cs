@@ -25,28 +25,21 @@ namespace PicoSwitch.Companion.Windows.Input;
 /// rather than silently producing nothing — which is what the first
 /// implementation did for every non-Xbox controller.
 /// </summary>
-public sealed class WindowsGamepadInputSource : IControllerOutputBackend, IAsyncDisposable
+public sealed class WindowsGamepadInputSource
+    : IControllerOutputBackend, IControllerInputSampler, IAsyncDisposable
 {
     private static readonly AxisRange StickRange = new(-1f, 1f);
     private static readonly AxisRange TriggerRange = new(0f, 1f);
     /// <summary>
-    /// How often the selected controller is sampled.
+    /// Fallback cadence for keeping state fresh when NOTHING is streaming.
     ///
-    /// Deliberately SHORTER than the Controller Link publish interval (8 ms).
-    /// The two loops are independent timers over the same snapshot, so whatever
-    /// this period is lands on top of the publish period as pure staleness: at
-    /// a matched 8 ms the newest sample could be up to 8 ms old before the
-    /// publisher even looked at it, averaging 4 ms of latency that bought
-    /// nothing. Sampling faster than the publisher bounds that to this period
-    /// instead.
-    ///
-    /// Measured on the bench 2026-09-03: the adapter's pro2 USB endpoint
-    /// declares bInterval 1 (1000 Hz) while this pipeline runs at 125 Hz, so
-    /// every millisecond removed here is one the console sees.
-    /// GetCurrentReading is a cheap local read; the cost is a poll that
-    /// sometimes returns an unchanged reading.
+    /// Not the realtime path. While Controller Link streams, the publisher calls
+    /// <see cref="Sample"/> immediately before it encodes, so the controller is
+    /// read at the moment its state is used and this loop stands down. It exists
+    /// so the UI can show a controller responding before Start is pressed, which
+    /// does not need a tight period.
     /// </summary>
-    private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(2);
+    private static readonly TimeSpan IdlePollInterval = TimeSpan.FromMilliseconds(16);
 
     private readonly Lock gate = new();
     private readonly CancellationTokenSource lifetime = new();
@@ -60,6 +53,7 @@ public sealed class WindowsGamepadInputSource : IControllerOutputBackend, IAsync
     private string? unresolvedReason;
     private long framesPublished;
     private long pollFailures;
+    private long lastSampleTicks;
     private bool disposed;
 
     public WindowsGamepadInputSource()
@@ -249,34 +243,68 @@ public sealed class WindowsGamepadInputSource : IControllerOutputBackend, IAsync
         lifetime.Dispose();
     }
 
+    /// <summary>
+    /// Read the selected controller NOW and publish one frame.
+    ///
+    /// Called by the Controller Link publisher immediately before it encodes, so
+    /// the state that goes on the wire is the state at encode time rather than
+    /// whatever a separate timer last left behind.
+    /// <c>GetCurrentReading</c> is a cheap local read of state the driver has
+    /// already delivered — this does not talk to the radio.
+    /// </summary>
+    public void Sample()
+    {
+        Gamepad? gamepad;
+        ControllerSourceIdentity? identity;
+        lock (gate)
+        {
+            gamepad = selected;
+            identity = selectedIdentity;
+        }
+
+        if (gamepad is null || identity is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var reading = gamepad.GetCurrentReading();
+            Frame?.Invoke(identity, Buttons(reading.Buttons), Analog(reading));
+            Interlocked.Increment(ref framesPublished);
+            Volatile.Write(ref lastSampleTicks, Stopwatch.GetTimestamp());
+        }
+        catch (Exception) when (!disposed)
+        {
+            Interlocked.Increment(ref pollFailures);
+        }
+    }
+
+    /// <summary>
+    /// Idle freshness only.
+    /// </summary>
+    /// <remarks>
+    /// While Controller Link streams, the publisher calls <see cref="Sample"/>
+    /// on every tick and this loop has nothing to add — so it stands down rather
+    /// than doing the same read twice and racing itself for the newest frame.
+    /// It exists for everything else that wants live state without a stream
+    /// running (the UI showing a controller responding before Start is pressed).
+    /// </remarks>
     private async Task PollAsync(CancellationToken cancellationToken)
     {
-        using var timer = new PeriodicTimer(PollInterval);
+        using var timer = new PeriodicTimer(IdlePollInterval);
         while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
         {
-            Gamepad? gamepad;
-            ControllerSourceIdentity? identity;
-            lock (gate)
+            var sinceMs = (Stopwatch.GetTimestamp() - Volatile.Read(ref lastSampleTicks))
+                          * 1000.0 / Stopwatch.Frequency;
+            if (sinceMs < IdlePollInterval.TotalMilliseconds)
             {
-                gamepad = selected;
-                identity = selectedIdentity;
-            }
-
-            if (gamepad is null || identity is null)
-            {
+                // A just-in-time consumer is driving; leave it alone rather than
+                // doing the same read twice and racing it for the newest frame.
                 continue;
             }
 
-            try
-            {
-                var reading = gamepad.GetCurrentReading();
-                Frame?.Invoke(identity, Buttons(reading.Buttons), Analog(reading));
-                Interlocked.Increment(ref framesPublished);
-            }
-            catch (Exception) when (!cancellationToken.IsCancellationRequested)
-            {
-                Interlocked.Increment(ref pollFailures);
-            }
+            Sample();
         }
     }
 

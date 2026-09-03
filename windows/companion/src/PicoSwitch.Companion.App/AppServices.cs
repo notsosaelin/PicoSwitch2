@@ -225,6 +225,12 @@ public static class AppServices
                 var source = new WindowsGamepadInputSource();
                 source.Frame += input.ApplyPhysicalFrame;
                 source.Removed += input.RemovePhysicalSource;
+
+                // The realtime path reads the controller at encode time rather
+                // than trusting whatever a background timer last left in the
+                // snapshot. Without this the publisher would still work, just
+                // with a full sample period of avoidable latency.
+                input.AttachSampler(source);
                 physicalGamepad = source;
 
                 // Enumerate once on creation so the page has something to show
