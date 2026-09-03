@@ -78,44 +78,4 @@
     </None>
   </ItemGroup>
 
-  <Target
-    Name="BuildControllerLinkHost"
-    BeforeTargets="Build"
-    Condition="'$(SkipControllerLinkHostBuild)' != 'true'">
-    <MSBuild
-      Projects="../PicoSwitch.ControllerLink.Host/PicoSwitch.ControllerLink.Host.vcxproj"
-      Targets="Build"
-      Properties="Configuration=$(Configuration);Platform=$(Platform)" />
-  </Target>
-
-  <Target Name="StageControllerLinkHost" AfterTargets="Build" DependsOnTargets="BuildControllerLinkHost">
-    <ItemGroup>
-      <ControllerLinkHostFiles Include="../PicoSwitch.ControllerLink.Host/bin/$(Platform)/$(Configuration)/PicoSwitch.ControllerLink.Host.dll" />
-      <ControllerLinkHostFiles Include="../PicoSwitch.ControllerLink.Host/bin/$(Platform)/$(Configuration)/PicoSwitch.ControllerLink.Host.winmd" />
-      <ControllerLinkHostFiles Include="../PicoSwitch.ControllerLink.Host/bin/$(Platform)/$(Configuration)/PicoSwitch.ControllerLink.Host.pri" />
-    </ItemGroup>
-    <Copy
-      SourceFiles="@(ControllerLinkHostFiles)"
-      DestinationFiles="@(ControllerLinkHostFiles->'$(OutDir)%(Filename)%(Extension)')"
-      SkipUnchangedFiles="true" />
-  </Target>
-
-  <Target
-    Name="PackageControllerLinkHost"
-    BeforeTargets="_CalculateInputsForGenerateCurrentProjectAppxManifest;_ComputeAppxPackagePayload"
-    DependsOnTargets="BuildControllerLinkHost">
-    <ItemGroup>
-      <ControllerLinkPackageFile Include="../PicoSwitch.ControllerLink.Host/bin/$(Platform)/$(Configuration)/PicoSwitch.ControllerLink.Host.dll" />
-      <ControllerLinkPackageFile Include="../PicoSwitch.ControllerLink.Host/bin/$(Platform)/$(Configuration)/PicoSwitch.ControllerLink.Host.winmd" />
-      <ControllerLinkPackageFile Include="../PicoSwitch.ControllerLink.Host/bin/$(Platform)/$(Configuration)/PicoSwitch.ControllerLink.Host.pri" />
-      <PackagingOutputs Include="@(ControllerLinkPackageFile)">
-        <TargetPath>%(ControllerLinkPackageFile.Filename)%(ControllerLinkPackageFile.Extension)</TargetPath>
-        <OutputGroup Condition="'%(ControllerLinkPackageFile.Extension)' == '.winmd'">CopyWinmdArtifactsOutputGroup</OutputGroup>
-        <OutputGroup Condition="'%(ControllerLinkPackageFile.Extension)' != '.winmd'">ControllerLinkHost</OutputGroup>
-        <ProjectName>PicoSwitch.ControllerLink.Host</ProjectName>
-        <Implementation Condition="'%(ControllerLinkPackageFile.Extension)' == '.winmd'">PicoSwitch.ControllerLink.Host.dll</Implementation>
-      </PackagingOutputs>
-    </ItemGroup>
-  </Target>
-
 </Project>

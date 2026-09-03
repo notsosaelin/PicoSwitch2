@@ -78,18 +78,15 @@ function Find-FrameworkMsbuild {
         Select-Object -First 1 -ExpandProperty FullName
 }
 
+# Only MSIX packaging still needs .NET Framework MSBuild. The unpackaged app
+# builds with the plain .NET SDK now that the C++/WinRT Controller Link host is
+# gone -- see the HOGP retirement in docs/experiments.
 $msbuild = $null
-if ($App -or $Msix) {
+if ($Msix) {
     $msbuild = Find-FrameworkMsbuild
     if (-not $msbuild) {
-        throw 'The Controller Link host needs Visual C++ Build Tools; .NET Framework MSBuild was not found.'
+        throw 'MSIX packaging needs .NET Framework MSBuild (Visual Studio / Build Tools); it was not found.'
     }
-
-    $hostProject = 'src/PicoSwitch.ControllerLink.Host/PicoSwitch.ControllerLink.Host.vcxproj'
-    Write-Host "$msbuild $hostProject" -ForegroundColor DarkGray
-    & $msbuild $hostProject -restore -t:Build `
-        "-p:Configuration=$Configuration" "-p:Platform=$Platform" -v:m -nologo
-    if ($LASTEXITCODE -ne 0) { throw "Controller Link host build failed with exit code $LASTEXITCODE" }
 }
 
 if ($Core) {
@@ -119,7 +116,6 @@ if ($App) {
         $appProject
         '-c', $Configuration
         "-p:Platform=$Platform"
-        '-p:SkipControllerLinkHostBuild=true'
         '--nologo'
     )
 }
@@ -133,7 +129,6 @@ if ($Msix) {
     Write-Host "$msbuild $appProject (MSIX)" -ForegroundColor DarkGray
     & $msbuild $appProject -restore -t:Build `
         "-p:Configuration=$Configuration" "-p:Platform=$Platform" `
-        -p:SkipControllerLinkHostBuild=true `
         -p:WindowsPackageType=MSIX -p:GenerateAppxPackageOnBuild=true `
         -p:AppxPackageSigningEnabled=false -v:m -nologo
     if ($LASTEXITCODE -ne 0) { throw "MSIX packaging failed with exit code $LASTEXITCODE" }

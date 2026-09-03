@@ -145,31 +145,32 @@ public sealed class LayeringGuardTests
     }
 
     [Fact]
-    public void ControllerLinkHostIsOneHiddenAppContainerAppService()
+    public void NothingReintroducesTheRetiredAppContainerHost()
     {
+        // Controller Link used to run as an out-of-process AppContainer app
+        // service, because a HOGP peripheral role was thought to need one. That
+        // was disproven on hardware -- an LE controller will not hold two
+        // connections to one peer identity (0x0B ACL Connection Already Exists) --
+        // and Path C carries controller state over the management link that is
+        // already open instead.
+        //
+        // The research is preserved in docs/experiments; the runtime is not. This
+        // guards the manifest specifically because an app service is invisible
+        // from the app's own code: nothing would fail to compile if one came back,
+        // and it would quietly re-acquire an out-of-process identity, a second
+        // trust level, and a packaging surface the product no longer needs.
         var manifest = System.Xml.Linq.XDocument.Load(
             Path.Combine(CompanionRoot, "src", "PicoSwitch.Companion.App", "Package.appxmanifest"));
-        var applications = manifest.Descendants()
-            .Where(element => element.Name.LocalName == "Application")
-            .ToList();
-        Assert.Single(applications);
 
-        var service = manifest.Descendants()
-            .Single(element =>
-                element.Name.LocalName == "AppService" &&
-                element.Attribute("Name")?.Value == "PicoSwitch.ControllerLink.Host");
-        var extension = service.Parent!;
-        Assert.Equal("windows.appService", extension.Attribute("Category")?.Value);
-        Assert.Equal("windowsApp", extension.Attributes()
-            .Single(attribute => attribute.Name.LocalName == "RuntimeBehavior").Value);
-        Assert.Equal("appContainer", extension.Attributes()
-            .Single(attribute => attribute.Name.LocalName == "TrustLevel").Value);
+        Assert.Single(manifest.Descendants(), e => e.Name.LocalName == "Application");
 
-        // No second Application, visual elements, alias, or executable means there
-        // is no separate shell entry and nothing for the user to launch manually.
         Assert.DoesNotContain(
-            extension.Descendants(),
-            element => element.Name.LocalName is "VisualElements" or "AppExecutionAlias");
+            manifest.Descendants(),
+            element => element.Name.LocalName == "AppService");
+
+        Assert.DoesNotContain(
+            manifest.Descendants(),
+            element => element.Attribute("Category")?.Value == "windows.appService");
     }
 
     [Fact]
