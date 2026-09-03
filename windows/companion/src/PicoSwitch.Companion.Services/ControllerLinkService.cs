@@ -262,7 +262,12 @@ public sealed class ControllerLinkService : IAsyncDisposable
                 // One tick, one complete normalized state, one frame handed to
                 // the bounded writer. Whether it reaches the air now or replaces
                 // a pending frame is the writer's decision, not this loop's.
-                var payload = ControllerReportEncoder.Encode(input.Snapshot);
+                //
+                // SampleAndSnapshot, not Snapshot: the active source is read HERE,
+                // immediately before encoding. Reading a snapshot maintained by a
+                // separate timer would put that timer's whole period of sample age
+                // on the wire before the frame had even been built.
+                var payload = ControllerReportEncoder.Encode(input.SampleAndSnapshot());
                 ControllerLinkDataPlane.EncodeInput(payload, unchecked(sequence++), frame);
                 dataPlane?.PublishInput(frame);
                 Interlocked.Increment(ref reportsGenerated);

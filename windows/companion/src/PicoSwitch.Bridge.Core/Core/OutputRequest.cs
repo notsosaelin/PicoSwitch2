@@ -24,6 +24,32 @@ public readonly record struct RumbleRequest(int Left = 0, int Right = 0)
 }
 
 /// <summary>
+/// An input source that can produce its freshest reading ON DEMAND.
+///
+/// Exists so the realtime path has ONE cadence boundary rather than two. A
+/// source driven by its own timer and then read by a separate publisher timer
+/// adds the publisher's whole period as pure sample age: the newest reading sits
+/// unread until the publisher next happens to look. That is latency bought for
+/// nothing, and sampling faster only shrinks it — it does not remove the phase
+/// error. A source that implements this is read immediately before its state is
+/// encoded, leaving the publisher's own period as the only remaining term.
+///
+/// Not every source needs it. An event-driven source — the Touch Gamepad — holds
+/// authoritative current state the instant a contact moves, so there is nothing
+/// to fetch and it simply does not implement this.
+/// </summary>
+public interface IControllerInputSampler
+{
+    /// <summary>
+    /// Read the active source now and publish it through the normal frame path.
+    ///
+    /// Called on the publisher's thread immediately before encoding, so it must
+    /// be cheap, synchronous, and must not throw.
+    /// </summary>
+    void Sample();
+}
+
+/// <summary>
 /// The platform-owned actuator boundary. Shared code supplies already-decoded,
 /// already-shaped motor amplitudes; a backend only translates those values into
 /// the host controller API it owns.
