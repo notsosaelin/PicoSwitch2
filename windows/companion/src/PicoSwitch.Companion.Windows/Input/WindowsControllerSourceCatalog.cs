@@ -87,10 +87,12 @@ public sealed class WindowsControllerSourceCatalog
         CancellationToken cancellationToken = default)
     {
         var names = await ReadHidDevicesAsync(cancellationToken).ConfigureAwait(false);
+        var controllers = await ReadRawControllersAsync(names.Count, cancellationToken)
+            .ConfigureAwait(false);
 
         var sources = new List<WindowsControllerSource>();
         var index = 0;
-        foreach (var raw in RawGameController.RawGameControllers)
+        foreach (var raw in controllers)
         {
             var vendor = raw.HardwareVendorId;
             var product = raw.HardwareProductId;
@@ -122,6 +124,59 @@ public sealed class WindowsControllerSourceCatalog
         }
 
         return sources;
+    }
+
+    /// <summary>
+    /// Read <c>RawGameController.RawGameControllers</c>, tolerating a cold start.
+    /// </summary>
+    /// <remarks>
+    /// MEASURED on this bench 2026-09-02, with one controller attached:
+    ///
+    /// <code>
+    /// t=  0ms  cold synchronous read   -> 0
+    /// t= 87ms  after 50ms of awaits    -> 1
+    /// </code>
+    ///
+    /// The WinRT static list is populated by machinery that needs a turn first,
+    /// so the FIRST read in a fresh process reports nothing. The catalog happened
+    /// to be safe only because <see cref="ReadHidDevicesAsync"/> is awaited
+    /// before it — incidental ordering, not a guarantee, and a refactor as
+    /// innocuous as "skip the HID work when there is nothing to name" would have
+    /// silently reintroduced the exact failure this class exists to remove: an
+    /// enumeration that finds no controllers and looks perfectly healthy doing it.
+    /// The app's very first refresh is issued during service construction, which
+    /// is precisely the cold case.
+    ///
+    /// So the wait is bounded by EVIDENCE rather than by a blind sleep: HID has
+    /// already told us how many controller-class devices exist, and disagreement
+    /// between the two surfaces is the cold-start signature. When HID also found
+    /// nothing there is nothing to wait for and this returns immediately, so the
+    /// genuinely-empty case stays fast.
+    /// </remarks>
+    private static async Task<IReadOnlyList<RawGameController>> ReadRawControllersAsync(
+        int hidControllerCount, CancellationToken cancellationToken)
+    {
+        var controllers = RawGameController.RawGameControllers;
+        if (controllers.Count > 0 || hidControllerCount == 0)
+        {
+            return [.. controllers];
+        }
+
+        // ~250 ms total: an order of magnitude over the 87 ms observed, and still
+        // far below the point a person would notice the controller list appearing.
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+            controllers = RawGameController.RawGameControllers;
+            if (controllers.Count > 0)
+            {
+                break;
+            }
+        }
+
+        // Still empty is a legitimate answer: HID exposes devices that
+        // Windows.Gaming.Input does not project at all.
+        return [.. controllers];
     }
 
     private static string FriendlyName(
