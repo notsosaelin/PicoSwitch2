@@ -123,13 +123,13 @@ public sealed record AdapterDashboardView
     public required ConsoleInputSection ConsoleInput { get; init; }
 
     /// <summary>
-    /// Home / Capture / C, held while pressed.
+    /// Home / Capture / C, tapped through Controller Link.
     ///
-    /// Always disabled in Phase 3: these are Controller Link actions and require a
-    /// live bridge session, which is Phase 6 and gated on the HOGP peripheral-role
-    /// experiment (§14.5). Rendered-but-disabled with the real reason rather than
-    /// hidden, because "this PC cannot act as a controller" is exactly the fact a
-    /// user needs to discover before filing a bug about it.
+    /// These are pressed BY this PC acting as the adapter's controller, so they
+    /// are enabled exactly when Controller Link is streaming and disabled with
+    /// that as the reason otherwise. Rendered-but-disabled rather than hidden,
+    /// because "start Controller Link first" is the fact a user needs, and a
+    /// control that vanishes teaches them nothing.
     /// </summary>
     public required SectionAvailability ConsoleButtons { get; init; }
 }
@@ -154,7 +154,8 @@ public static class AdapterDashboard
         AdapterSnapshot snapshot,
         AdapterRelationshipStatus relationship,
         ConnectionState connection,
-        AdapterRecord? selected)
+        AdapterRecord? selected,
+        bool controllerLinkStreaming = false)
     {
         var connected = connection.Connected;
         var firmware = snapshot.Firmware;
@@ -195,9 +196,15 @@ public static class AdapterDashboard
                     .ToArray(),
                 snapshot.Input.ActiveId,
                 snapshot.Input.Truncated),
-            ConsoleButtons = SectionAvailability.Disabled(
-                "Console buttons need this PC acting as a controller, which is not " +
-                "available yet."),
+            // Home / Capture / C are Controller Link actions: they are pressed BY
+            // this PC as the adapter's controller, so they need a live stream and
+            // nothing else. Gated on that rather than on the management
+            // connection, because being connected to an adapter says nothing
+            // about whether anything is currently driving the console.
+            ConsoleButtons = controllerLinkStreaming
+                ? SectionAvailability.Available
+                : SectionAvailability.Disabled(
+                    "Start Controller Link on the Gamepad page to press these."),
         };
     }
 

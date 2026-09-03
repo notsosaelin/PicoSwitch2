@@ -2,6 +2,7 @@ using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using PicoSwitch.Bridge.Core;
 using PicoSwitch.Companion.Services;
 using PicoSwitch.Companion.Services.Presentation;
 using PicoSwitch.Management;
@@ -48,6 +49,11 @@ public sealed partial class AdapterPage : Page
         adapters.Relationship.Changed += OnStateChanged;
         adapters.Radio.Changed += OnStateChanged;
 
+        // The console buttons are gated on Controller Link streaming, which this
+        // page does not otherwise observe — without this they would stay disabled
+        // until some unrelated adapter event happened to repaint.
+        AppServices.ControllerLink.View.Changed += OnStateChanged;
+
         Render();
         await SafeAsync(() => adapters.ProbeRadioAsync());
     }
@@ -61,6 +67,7 @@ public sealed partial class AdapterPage : Page
         adapters.Registry.Changed -= OnStateChanged;
         adapters.Relationship.Changed -= OnStateChanged;
         adapters.Radio.Changed -= OnStateChanged;
+        AppServices.ControllerLink.View.Changed -= OnStateChanged;
     }
 
     // Every observable this page watches is written from a WinRT pool thread.
@@ -224,7 +231,8 @@ public sealed partial class AdapterPage : Page
             adapters.Snapshot.Value,
             adapters.Relationship.Value,
             adapters.Connection.Value,
-            selected);
+            selected,
+            AppServices.ControllerLinkStreaming);
 
         var radio = adapters.Radio.Value;
         RadioBar.IsOpen = radio.ManagementBlockedReason is not null;
@@ -253,7 +261,22 @@ public sealed partial class AdapterPage : Page
         RenderInput(view.ConsoleInput);
 
         ConsoleButtonsReason.Text = view.ConsoleButtons.DisabledReason ?? string.Empty;
+        HomeButton.IsEnabled = view.ConsoleButtons.Enabled;
+        CaptureButton.IsEnabled = view.ConsoleButtons.Enabled;
+        CButton.IsEnabled = view.ConsoleButtons.Enabled;
     }
+
+    // Home / Capture / C are pressed BY this PC through Controller Link, so they
+    // go through the same input session everything else does rather than a
+    // side-channel to the adapter: one thing decides what the console sees.
+    private async void OnConsoleHome(object sender, RoutedEventArgs e) =>
+        await AppServices.TapConsoleButtonAsync(ControllerButton.Home);
+
+    private async void OnConsoleCapture(object sender, RoutedEventArgs e) =>
+        await AppServices.TapConsoleButtonAsync(ControllerButton.Capture);
+
+    private async void OnConsoleC(object sender, RoutedEventArgs e) =>
+        await AppServices.TapConsoleButtonAsync(ControllerButton.C);
 
     private void RenderPersonality(ControllerModeSection section)
     {

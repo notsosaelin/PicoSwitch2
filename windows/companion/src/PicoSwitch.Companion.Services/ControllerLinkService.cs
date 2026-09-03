@@ -308,19 +308,18 @@ public sealed class ControllerLinkService : IAsyncDisposable
                 // matches the Android Classic sender, which reacts to the input
                 // event and treats its interval as a rate ceiling rather than a
                 // period.
-                var changed = lastSent is null || !state.Equals(lastSent);
-
-                // A digital edge is a discrete event the player feels; analog
-                // motion is a continuous stream that would otherwise set the send
-                // rate on its own. Separating them is what stops a button press
-                // queueing behind a stick.
+                // A digital edge is a discrete event the player feels the instant
+                // it happens; analog motion is a continuous stream that would
+                // otherwise set the send rate on its own. Separating them is what
+                // stops a button press queueing behind a moving stick.
                 var digitalChanged =
                     lastSent is null ||
-                    !state.Buttons.Equals(lastSent.Buttons) ||
-                    state.DpadUp != lastSent.DpadUp ||
-                    state.DpadRight != lastSent.DpadRight ||
-                    state.DpadDown != lastSent.DpadDown ||
-                    state.DpadLeft != lastSent.DpadLeft;
+                    ControllerLinkSendPolicy.DigitalChanged(state, lastSent);
+
+                var analogChanged =
+                    lastSent is null ||
+                    ControllerLinkSendPolicy.AnalogMoved(state, lastSent);
+                var changed = digitalChanged || analogChanged;
 
                 var sinceSent = now - lastSentTicks;
                 var ceiling = digitalChanged ? digitalTicks : analogTicks;

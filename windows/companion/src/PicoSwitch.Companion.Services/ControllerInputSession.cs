@@ -65,6 +65,52 @@ public sealed class ControllerInputSession
         }
     }
 
+    /// <summary>
+    /// Press and release a console button, as if the player had tapped it.
+    ///
+    /// Injected as a VIRTUAL button, which merges with whatever the live source
+    /// is doing rather than replacing it: pressing Home from the app must not
+    /// disturb a stick the player is holding, and must not require the app to
+    /// own input authority.
+    /// </summary>
+    /// <remarks>
+    /// The hold is real time, not one frame. A console samples this over its own
+    /// polling interval and treats a press that appears and vanishes between two
+    /// polls as no press at all — the classic "the button does nothing sometimes"
+    /// bug. Long enough to be seen, short enough not to read as a hold (Home is
+    /// held to open the power menu).
+    ///
+    /// Released in a finally so a cancelled or faulted wait can never leave a
+    /// console button stuck down.
+    /// </remarks>
+    public async Task TapAsync(ControllerButton button, CancellationToken cancellationToken = default)
+    {
+        lock (gate)
+        {
+            input.SetVirtualButton(button, true);
+        }
+
+        try
+        {
+            await Task.Delay(ConsoleButtonHold, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (gate)
+            {
+                input.SetVirtualButton(button, false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// How long an app-injected console button is held.
+    ///
+    /// 120 ms comfortably exceeds one poll of any console this targets while
+    /// staying well under the ~1 s that turns Home into a power-menu hold.
+    /// </summary>
+    private static readonly TimeSpan ConsoleButtonHold = TimeSpan.FromMilliseconds(120);
+
     /// <summary>Attach a source that can be read on demand. Null detaches.</summary>
     public void AttachSampler(IControllerInputSampler? source)
     {
