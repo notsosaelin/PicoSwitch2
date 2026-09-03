@@ -3938,8 +3938,7 @@ bool btstack_host_companion_link_start(void)
         // Deliberately NOT a full restart: generation and the arbiter
         // registration stay put, so a duplicate start from the SAME companion
         // costs nothing beyond accepting its next frame unconditionally.
-        clink.have_sequence = false;
-        clink.last_sequence = 0u;
+        ns2_companion_link_arm_session(&clink.last_sequence, &clink.have_sequence);
         clink.last_frame_ms = btstack_run_loop_get_time_ms();
         return true;
     }
@@ -3961,8 +3960,7 @@ bool btstack_host_companion_link_start(void)
 
     clink.active = true;
     clink.neutralized = false;
-    clink.have_sequence = false;
-    clink.last_sequence = 0u;
+    ns2_companion_link_arm_session(&clink.last_sequence, &clink.have_sequence);
     clink.handle = config_ble.handle;
     clink.generation++;
     if (clink.generation == 0u) clink.generation = 1u;

@@ -195,6 +195,62 @@ static void test_restarting_client_is_not_permanently_stale(void)
            == NS2_COMPANION_FRAME_STALE);
 }
 
+// The full companion-session lifecycle, in the order it happens on hardware.
+//
+//   session A starts  -> its frames are accepted
+//   session A vanishes without ever sending `clink stop`
+//   session B starts  -> ordering is re-armed
+//   session B's very first frame is accepted, counting from zero
+//
+// This is the shape of the 2026-09-03 hardware failure. The middle step is the
+// one that matters: nothing tells the adapter that A died, so the ONLY thing
+// standing between B and a permanently rejected stream is that `clink start`
+// re-arms. ns2_companion_link_arm_session exists so that contract is testable at
+// all -- its caller lives in btstack_host.c, which no host test can reach.
+static void test_session_handover_accepts_the_new_client_immediately(void)
+{
+    uint8_t frame[NS2_COMPANION_LINK_FRAME_BYTES];
+    uint16_t last = 0;
+    bool have = false;
+
+    // Session A: a normal run, ending somewhere below the signed-delta midpoint.
+    ns2_companion_link_arm_session(&last, &have);
+    for (uint16_t seq = 0; seq < 2000u; seq++) {
+        build_frame(frame, seq, 0);
+        assert(ns2_companion_link_parse(frame, sizeof(frame), &last, &have, NULL)
+               == NS2_COMPANION_FRAME_OK);
+    }
+    assert(have);
+    assert(last == 1999u);
+
+    // Session A dies. No stop arrives, so the adapter still holds its counter.
+    // Session B starts and re-arms.
+    ns2_companion_link_arm_session(&last, &have);
+    assert(!have);
+    assert(last == 0u);
+
+    // B's first frame is accepted immediately, not after catching up to 1999.
+    build_frame(frame, 0u, 0);
+    assert(ns2_companion_link_parse(frame, sizeof(frame), &last, &have, NULL)
+           == NS2_COMPANION_FRAME_OK);
+
+    // ...and ordering still protects B from its own stale frames afterwards.
+    build_frame(frame, 1u, 0);
+    assert(ns2_companion_link_parse(frame, sizeof(frame), &last, &have, NULL)
+           == NS2_COMPANION_FRAME_OK);
+    build_frame(frame, 0u, 0);
+    assert(ns2_companion_link_parse(frame, sizeof(frame), &last, &have, NULL)
+           == NS2_COMPANION_FRAME_STALE);
+
+    // Arming an ALREADY-ARMED session is harmless: a duplicate start from the
+    // same companion costs nothing beyond accepting its next frame.
+    ns2_companion_link_arm_session(&last, &have);
+    ns2_companion_link_arm_session(&last, &have);
+    build_frame(frame, 40000u, 0);
+    assert(ns2_companion_link_parse(frame, sizeof(frame), &last, &have, NULL)
+           == NS2_COMPANION_FRAME_OK);
+}
+
 static void test_sequence_wrap_is_not_a_rewind(void)
 {
     uint8_t frame[NS2_COMPANION_LINK_FRAME_BYTES];
@@ -511,6 +567,7 @@ int main(void)
     test_rejects_malformed_frames();
     test_latest_state_wins();
     test_restarting_client_is_not_permanently_stale();
+    test_session_handover_accepts_the_new_client_immediately();
     test_sequence_wrap_is_not_a_rewind();
     test_output_encoding();
     test_stale_input_watchdog();

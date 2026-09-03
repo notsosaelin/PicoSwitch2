@@ -35,6 +35,16 @@ _Static_assert(NS2_COMPANION_LINK_OUT_HEADER_BYTES + NS2_COMPANION_LINK_OUT_MAX_
                    == NS2_COMPANION_LINK_OUT_FRAME_BYTES,
                "Path C feedback frame size must match its parts");
 
+void ns2_companion_link_arm_session(uint16_t *last_sequence, bool *have_last)
+{
+    // have_last is the load-bearing half: it makes the next frame acceptable
+    // whatever its sequence, which is exactly what a replacement companion
+    // counting from zero needs. last_sequence is cleared with it so a subsequent
+    // read cannot see a stale high-water mark paired with "nothing seen yet".
+    if (last_sequence != NULL) *last_sequence = 0u;
+    if (have_last != NULL) *have_last = false;
+}
+
 ns2_companion_frame_result_t ns2_companion_link_parse(const uint8_t *data,
                                                       uint16_t len,
                                                       uint16_t *last_sequence,
