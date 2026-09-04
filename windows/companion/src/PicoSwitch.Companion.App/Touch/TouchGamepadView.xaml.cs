@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -87,6 +88,7 @@ public sealed partial class TouchGamepadView : UserControl
     private bool menuOpen;
     private bool personalityReady;
     private IReadOnlyList<PersonalityRow>? personalityRows;
+    private string lastGameplaySignature = string.Empty;
     private bool fullScreen;
     private bool editGroup = true;
 
@@ -116,7 +118,11 @@ public sealed partial class TouchGamepadView : UserControl
             : TouchToolbarPlacement.Default;
 
         gamepad.SetAlignment(ReadAlignment());
-        gameplayTimer.Tick += (_, _) => gamepad.TickGameplay(MonotonicNanos());
+        gameplayTimer.Tick += (_, _) =>
+        {
+            gamepad.TickGameplay(MonotonicNanos());
+            RepaintGameplay();
+        };
 
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
@@ -257,7 +263,7 @@ public sealed partial class TouchGamepadView : UserControl
             RenderToolbar(state, view);
         }
 
-        renderer.Draw(state.Resolved, new TouchRenderOptions
+        renderer.Draw(state.Resolved, WithGameplay(new TouchRenderOptions
         {
             Selection = state.Selection,
             Invalid = state.Resolved.InvalidControlIds,
@@ -270,9 +276,163 @@ public sealed partial class TouchGamepadView : UserControl
                     state.Resolved, state.Selection, state.Selection.FirstOrDefault(),
                     state.Alignment)
                 : [],
-        });
+        }, state.Resolved, editing));
 
         PlaceChrome(state);
+    }
+
+    // ------------------------------------------------------------- gameplay visuals
+
+    /// <summary>
+    /// Add what the engine is doing right now to a set of render options.
+    /// </summary>
+    /// <remarks>
+    /// The editor draws the layout; this draws the CONTROLLER. Glass gives a thumb
+    /// no travel and no click, so a control that does not change under the finger
+    /// leaves the player unable to tell a missed button from an ignored one, and
+    /// both read as a broken adapter.
+    ///
+    /// Every value is asked of the engine rather than derived from the pointer
+    /// events this view happens to have seen. The engine owns contact ownership,
+    /// the stick clamp, the latch state machine and trigger travel; a second
+    /// derivation here would agree with it almost always, and the moments it did
+    /// not are exactly the moments a player needs the picture to be honest.
+    ///
+    /// Nothing is painted while editing: the editor's own selection and audit
+    /// colours have to stay readable, and a control cannot be held by a finger
+    /// that is dragging it.
+    /// </remarks>
+    private TouchRenderOptions WithGameplay(
+        TouchRenderOptions options, ResolvedTouchLayout resolved, bool editing)
+    {
+        if (editing)
+        {
+            return options;
+        }
+
+        var diagnostics = gamepad.Diagnostics();
+
+        var pressed = new HashSet<string>(StringComparer.Ordinal);
+        var offsets = new Dictionary<string, (double X, double Y)>(StringComparer.Ordinal);
+
+        foreach (var control in resolved.Controls)
+        {
+            if (diagnostics.HeldControls.Contains(control.Id))
+            {
+                pressed.Add(control.Id);
+            }
+
+            if (diagnostics.StickVectors.TryGetValue(control.Id, out var vector))
+            {
+                // Passed through as the engine reports it, -1..1 in screen axes.
+                // How far that moves a knob depends on the knob's own size, which
+                // only the renderer knows.
+                offsets[control.Id] = (vector.X, vector.Y);
+            }
+        }
+
+        return options with
+        {
+            Pressed = pressed,
+            Latched = diagnostics.LatchedControls,
+            Armed = diagnostics.ArmedControls,
+            AnalogTriggers = diagnostics.AnalogTriggers,
+            AnalogTriggerFills = diagnostics.AnalogTriggerFills,
+            StickOffsets = offsets,
+            Dpad = diagnostics.Dpad,
+        };
+    }
+
+    /// <summary>
+    /// Repaint the controls alone, leaving menu, pill and toolbar untouched.
+    /// </summary>
+    /// <remarks>
+    /// Called on every gameplay contact and on the gameplay tick, so this runs far
+    /// more often than <see cref="Render"/> does. It skips the view model, the
+    /// editor alignment and the chrome entirely, none of which a thumb can change,
+    /// and the renderer updates its visuals in place, so a repaint allocates
+    /// nothing while the layout is stable.
+    ///
+    /// It also returns early when nothing visible moved. The tick fires at 60 Hz
+    /// whether or not anyone is touching the glass, and an idle controller should
+    /// cost no drawing at all.
+    /// </remarks>
+    private void RepaintGameplay()
+    {
+        if (mode != TouchSurfaceMode.Play || menuOpen)
+        {
+            return;
+        }
+
+        var state = gamepad.State.Value;
+        if (state.Personality is null || state.Resolved.RegionTooSmall)
+        {
+            return;
+        }
+
+        var options = WithGameplay(
+            new TouchRenderOptions { Invalid = state.Resolved.InvalidControlIds },
+            state.Resolved,
+            editing: false);
+
+        var signature = GameplaySignature(options);
+        if (signature == lastGameplaySignature)
+        {
+            return;
+        }
+
+        lastGameplaySignature = signature;
+        renderer.Draw(state.Resolved, options);
+    }
+
+    /// <summary>What the last repaint drew, so an unchanged frame can be skipped.</summary>
+    private static string GameplaySignature(TouchRenderOptions options)
+    {
+        var builder = new StringBuilder();
+
+        foreach (var id in options.Pressed.Order(StringComparer.Ordinal))
+        {
+            builder.Append('P').Append(id).Append(';');
+        }
+
+        foreach (var id in options.Latched.Order(StringComparer.Ordinal))
+        {
+            builder.Append('L').Append(id).Append(';');
+        }
+
+        foreach (var id in options.Armed.Order(StringComparer.Ordinal))
+        {
+            builder.Append('A').Append(id).Append(';');
+        }
+
+        foreach (var (id, level) in
+                 options.AnalogTriggers.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            // Quantised to what a repaint could actually show. Trigger travel is a
+            // continuous float, so comparing it exactly would make every frame
+            // "changed" for a thumb resting on a trigger.
+            builder.Append('T').Append(id).Append('=')
+                .Append((int)Math.Round(level * 100f)).Append(';');
+        }
+
+        foreach (var (id, offset) in
+                 options.StickOffsets.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+        {
+            // Quantised to roughly a knob's-width of travel: the offsets are now
+            // normalized, so comparing them exactly would call every frame changed
+            // for a thumb resting off-centre.
+            builder.Append('S').Append(id).Append('=')
+                .Append((int)Math.Round(offset.X * 100d)).Append(',')
+                .Append((int)Math.Round(offset.Y * 100d)).Append(';');
+        }
+
+        builder.Append('D')
+            .Append(options.Dpad.Up ? '1' : '0')
+            .Append(options.Dpad.Right ? '1' : '0')
+            .Append(options.Dpad.Down ? '1' : '0')
+            .Append(options.Dpad.Left ? '1' : '0');
+
+        return builder.ToString();
     }
 
     private void RenderMenu(TouchEditorView view)
@@ -573,6 +733,11 @@ public sealed partial class TouchGamepadView : UserControl
         gamepad.DispatchGameplayContacts(gameplayContacts.Values.ToArray());
         gamepad.TickGameplay(contact.TimeNanos);
 
+        // Paint here rather than waiting for the tick: the whole point of the press
+        // visual is that it lands with the thumb, and a frame of lag is exactly the
+        // uncertainty it exists to remove.
+        RepaintGameplay();
+
         if (removeAfterDispatch)
         {
             gameplayContacts.Remove(e.Pointer.PointerId);
@@ -587,6 +752,7 @@ public sealed partial class TouchGamepadView : UserControl
     {
         gameplayContacts.Clear();
         gamepad.ReleaseGameplay(reason);
+        RepaintGameplay();
     }
 
     private static long MonotonicNanos() =>

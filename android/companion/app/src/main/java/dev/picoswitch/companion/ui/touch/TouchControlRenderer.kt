@@ -1200,7 +1200,11 @@ private fun DrawScope.drawSelectionHandles(bounds: Rect, color: Color) {
 /** Where the fill reaches the centre of the pad and starts sitting behind the legend. */
 private const val ANALOG_TRIGGER_LABEL_FLIP = 0.5f
 
-private const val OUTLINE_WIDTH = 2f
+// Visible to tests, and through them to the Windows surface, which carries these
+// same numbers literally: the two companions draw one controller, and a value that
+// only one side pins is a value that drifts. See TouchControlGeometryTest and
+// windows/companion .. TouchVisualParityTests.
+internal const val OUTLINE_WIDTH = 2f
 
 /** Sized against the control it marks, then bounded so it stays legible either way. */
 private const val LATCH_BADGE_RADIUS_FRACTION = 0.40f
@@ -1220,23 +1224,23 @@ private const val LATCH_SHACKLE_OPEN_OFFSET = 0.22f
 private const val LATCH_SHACKLE_OPEN_LIFT = 0.14f
 /** cos(45 degrees); the badge sits on the control's diagonal. */
 private const val DIAGONAL = 0.7071068f
-private const val WELL_ALPHA = 0.55f
+internal const val WELL_ALPHA = 0.55f
 /** Legends stop short of the outline; text touching the rim reads as damage. */
-private const val LABEL_WIDTH_FRACTION = 0.78f
+internal const val LABEL_WIDTH_FRACTION = 0.78f
 /** Vertical padding is slightly more generous because a tight line box looks crowded. */
-private const val LABEL_HEIGHT_FRACTION = 0.68f
-private const val CAPTURE_DISC_RADIUS_FRACTION = 0.28f
-private const val CAPTURE_DISC_FILL_ALPHA = 0.18f
-private const val CAPTURE_DISC_RIM_ALPHA = 0.82f
-private const val CAPTURE_DISC_STROKE_FRACTION = 0.045f
-private const val HOME_CIRCLE_RADIUS_FRACTION = 0.30f
-private const val HOME_CIRCLE_STROKE_FRACTION = 0.05f
-private const val HOME_HOUSE_UNIT_FRACTION = 0.18f
+internal const val LABEL_HEIGHT_FRACTION = 0.68f
+internal const val CAPTURE_DISC_RADIUS_FRACTION = 0.28f
+internal const val CAPTURE_DISC_FILL_ALPHA = 0.18f
+internal const val CAPTURE_DISC_RIM_ALPHA = 0.82f
+internal const val CAPTURE_DISC_STROKE_FRACTION = 0.045f
+internal const val HOME_CIRCLE_RADIUS_FRACTION = 0.30f
+internal const val HOME_CIRCLE_STROKE_FRACTION = 0.05f
+internal const val HOME_HOUSE_UNIT_FRACTION = 0.18f
 internal const val TOUCH_STICK_KNOB_FRACTION = 0.46f
 private const val JOYCON_TRIANGLE_RADIUS_FRACTION = 0.19f
 private const val JOYCON_TRIANGLE_STROKE_FRACTION = 0.045f
-private const val ARM_FRACTION = 0.90f
-private const val ARM_HALF_WIDTH = 0.26f
+internal const val ARM_FRACTION = 0.90f
+internal const val ARM_HALF_WIDTH = 0.26f
 
 /**
  * How far a lit wedge runs past the arm's flat end, as a fraction of the arm's
