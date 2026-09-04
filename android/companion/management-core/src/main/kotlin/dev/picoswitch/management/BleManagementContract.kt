@@ -6,6 +6,33 @@ object BleManagementContract {
     const val SERVICE_UUID = "7c5ad4ed-2731-417c-b316-058505c7c083"
     const val RX_UUID = "5252186a-817f-489f-ad75-94c3bd444769"
     const val TX_UUID = "81462706-8e64-407a-bc3d-d303529fbe1c"
+
+    /**
+     * The Controller Link data plane, on this SAME service.
+     *
+     * Declared here even though no Android code speaks it yet. The firmware added
+     * these two characteristics to the management service for the Windows
+     * companion, which means the service this app discovers is no longer the
+     * service this file described -- and a contract that is silently a subset of
+     * the peripheral's is exactly the kind of drift that turns into a field
+     * report nobody can localise.
+     *
+     * Naming them also makes the conformance test able to check them: it compares
+     * this object against `tools/fixtures/management/protocol-v1.json`, the
+     * cross-platform record of what the adapter exposes, so a future firmware
+     * change to either characteristic fails a JVM test on both companions rather
+     * than only on the one that uses them.
+     *
+     * Companion to adapter: gameplay frames, write-without-response.
+     * Firmware side is `config_ble_cl_in_uuid`.
+     */
+    const val CONTROLLER_LINK_IN_UUID = "2f9e54c1-0b7a-4d62-9c18-3e74a52166d0"
+
+    /**
+     * Adapter to companion: feedback notifications (rumble, player LED).
+     * Firmware side is `config_ble_cl_out_uuid`.
+     */
+    const val CONTROLLER_LINK_OUT_UUID = "6b33e18a-c45d-470e-b291-7f0c88ae3914"
     const val ATT_PAYLOAD_WITH_DEFAULT_MTU = 20
     const val MAX_REPLY_PAYLOAD_BYTES = 511
 

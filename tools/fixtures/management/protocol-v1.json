@@ -98,6 +98,8 @@
     "serviceUuid": "7c5ad4ed-2731-417c-b316-058505c7c083",
     "rxUuid": "5252186a-817f-489f-ad75-94c3bd444769",
     "txUuid": "81462706-8e64-407a-bc3d-d303529fbe1c",
+    "controllerLinkInUuid": "2f9e54c1-0b7a-4d62-9c18-3e74a52166d0",
+    "controllerLinkOutUuid": "6b33e18a-c45d-470e-b291-7f0c88ae3914",
     "minimumMtuPayloadBytes": 20
   },
   "builders": [
