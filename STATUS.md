@@ -7,6 +7,40 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **The two companions draw the same on-screen controller 2026-09-03; the shared BLE contract now
+  describes the whole service.** The Windows Touch Gamepad rendered the same layout as a visibly
+  different product: it resolved colours and proportions from Fluent theme resources while Android
+  drew from its own tokens, so pads were square-ish with no visible outline, and the D-pad and stick
+  knob were WHITE — the nearest Fluent brush to "the mark inside a control" is the primary TEXT
+  brush. The D-pad was additionally a `GeometryGroup` of two overlapping bars under WinUI's default
+  `EvenOdd` rule, which CANCELS them where they cross: every D-pad had a square hole through its
+  middle and read as a checkerboard. The controller's colours are now fixed design tokens (Android's
+  values), the surface paints its own near-black ground in both host themes, Capture and Home are
+  drawn geometry rather than Segoe Fluent Icons glyphs, and the surface gained the gameplay feedback
+  it never had here — presses, latches, armed controls, trigger travel, a knob that follows the
+  thumb, and lit D-pad arms whose diagonals are one continuous region. The editor's own colours still
+  come from the theme, because selection, guides and audit errors are shell semantics. **Layout
+  geometry was already at parity** and is unchanged: `TouchLayoutV1` is byte-identical across the two
+  platforms at template revision 2, so a screenshot where the D-pad and left stick trade places is a
+  saved user layout, not a different default. The numbers are pinned on both sides now
+  (`TouchVisualParityTests` reads the Windows source, since a WinUI assembly cannot be loaded by a
+  unit test; `TouchControlGeometryTest` pins the Kotlin constants), so neither surface can drift
+  alone. Verified on the running app by screenshot diff: press, release to exactly the rest image,
+  stick deflection, and a seamless up+right diagonal.
+
+  **The BLE contract was a subset of the service.** Path C added two characteristics to the
+  management service and only Windows was told; `tools/fixtures/management/protocol-v1.json` and
+  Android's `BleManagementContract` still described RX and TX alone. Android discovers by UUID so
+  nothing broke, but both companions now name the pair and both conformance tests pin it against the
+  fixture. **The reported Android pairing failure was NOT reproduced** — no device was reachable
+  (`adb devices` empty) — so what shipped is the contract gap plus the one recoverable mechanism the
+  repository can demonstrate: every firmware install erases the adapter's bonds by design (`config.c`
+  erases all six persistence sectors, BTstack's TLV bank among them), Android keeps its half and will
+  not re-pair while it holds a bond record. `GattStatusFormatter` already named HCI `0x05`/`0x06` for
+  exactly this; the user was still shown only the hex, and now leads with forgetting the adapter in
+  Bluetooth settings. Whether that is the failure the player hit is **unconfirmed**; a `logcat`
+  `gatt.state` line, or `btstate` over UART at the moment of the attempt, would settle it.
+
 - **Windows Controller Link is live on hardware 2026-09-03 over Path C, and the HOGP runtime is
   retired.** Controller state rides the trusted management BLE session on a dedicated binary GATT
   characteristic pair beside the newline-JSON command channel — one ACL, one Windows-owned radio, no

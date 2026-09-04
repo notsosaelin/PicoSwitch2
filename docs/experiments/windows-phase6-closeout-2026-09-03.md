@@ -118,6 +118,11 @@ file no test can reach.
 
 ## Face-button ownership
 
+**Two separate defects, in two different layers.** They are recorded together
+because the second was mistaken for the first, twice.
+
+### The app layer (fixed first, real, but not the console-side swap)
+
 The on-screen controller transmitted the opposite letter to the one drawn
 whenever the face-layout preference was not Nintendo. The preference describes
 the printed legend on a **physical** controller; the on-screen pad has none, and
@@ -128,6 +133,56 @@ sent by construction. `MapPhysicalFaceKey` is untouched.
 The Touch Gamepad also gained the **personality dropdown** from Android, which
 replaced that toggle there for the same reason: once the surface can present four
 genuine controllers, the letters follow the controller.
+
+### The firmware layer (the swap the player actually saw)
+
+Pressing A on the console produced B, and X produced Y, on **every** personality
+including the GameCube. That was not the app.
+
+`ns2_resolve_button_destination(source_index, from_android_bridge)` chooses
+between two maps: the positional `NS2_BASE_BUTTON_MAP` (`{B,A,Y,X}`, correct for
+a physical controller reporting slots) and the canonical bridge map
+(`{A,B,X,Y}`, correct for a source that has already normalized). Path C sends
+canonical bytes — its whole contract is the normalized `ControllerState` — but
+`from_android_bridge` is set by the Classic bridge's descriptor identify, which
+Path C has no descriptor for. Every Controller Link frame therefore took the
+positional map.
+
+Fixed at the predicate, which is the layer that was wrong:
+
+```c
+#define INPUT_EVENT_IS_CANONICAL_FACE(e) \
+    ((e)->from_android_bridge || (e)->transport == INPUT_TRANSPORT_COMPANION)
+```
+
+`ns2_seam.c` and `ns2_active_input.c` now ask the same question through the same
+macro, so the two answers cannot drift apart again.
+
+**Why it took three attempts.** The physical path looked correct throughout,
+because Windows was swapping too and the two errors cancelled. And the first
+regression test written for it was tautological: it compared the engine against
+`MapTouchFacePosition(...)`, the same function the fix called. The golden suites
+that do catch it are `test_touch_layout_face_goldens` (20 cases) and
+`test_controller_link_face_goldens` (8 cases), which drive parser -> seam ->
+encoder and assert the wire bit, not the app's own arithmetic.
+
+### The trace, verified end to end
+
+For the on-screen button drawn **B** (south slot), on 2026-09-03:
+
+| Layer | Value |
+| --- | --- |
+| drawn label | `FaceLabel(South, Nintendo)` = `SwapFaces(A)` = **B** |
+| `TouchControlAction.Face(South)` | engine publishes `PositionalButtons[South] = A` |
+| `ControllerInputSession` | `MapTouchFacePosition(A, Nintendo)` = **B** |
+| `ControllerState.Buttons` | bit 1 |
+| `ControllerReportEncoder` | canonical payload, bit 1 |
+| firmware `clink_publish` | `transport = INPUT_TRANSPORT_COMPANION`, bridge quirk map -> source index 1 |
+| `ns2_resolve_button_destination(1, canonical)` | `NS2_DST_B` |
+| console | **B** |
+
+Both golden suites pass. **Not hardware-confirmed:** the adapter is still
+running `9cc2511f`, which predates the predicate fix.
 
 ## Feature parity with Android Classic
 
