@@ -14,6 +14,21 @@ public sealed record TouchDiagnosticsSnapshot
 {
     public int OwnedControls { get; init; }
 
+    /// <summary>
+    /// The controls a CONTACT is holding right now, by id.
+    /// </summary>
+    /// <remarks>
+    /// The ids behind <see cref="OwnedControls"/>. A surface drawing presses needs
+    /// to know which control a finger is on, and asking the engine control by
+    /// control would sample a moving state several times per frame -- a press
+    /// could appear and vanish inside one repaint. One snapshot is one instant.
+    ///
+    /// Distinct from <see cref="LatchedControls"/> on purpose: a latch holds a
+    /// control with no contact on it, and the two must be drawn differently.
+    /// </remarks>
+    public IReadOnlySet<string> HeldControls { get; init; } =
+        new HashSet<string>(StringComparer.Ordinal);
+
     public int ActiveContacts { get; init; }
 
     public long ContactsClaimed { get; init; }
@@ -76,6 +91,24 @@ public sealed record TouchDiagnosticsSnapshot
     /// </summary>
     public IReadOnlyDictionary<string, TouchFillDirection> AnalogTriggerFills { get; init; } =
         new Dictionary<string, TouchFillDirection>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Where each stick instance is pushed, <c>-1..1</c> in SCREEN axes, by control id.
+    /// </summary>
+    /// <remarks>
+    /// Per control rather than per side, and separate from
+    /// <see cref="LeftStick"/>/<see cref="RightStick"/>, because those report what
+    /// the CONSOLE is being sent -- one vector per side, from whichever instance
+    /// won ownership. A layout may carry several instances of the same side, and a
+    /// surface drawing from the published side vector would move the wrong stick
+    /// under the thumb.
+    ///
+    /// Screen axes (y grows downward), matching the deltas the engine resolved,
+    /// so a surface can add this to a control centre without re-deriving a
+    /// convention the two ends could disagree about.
+    /// </remarks>
+    public IReadOnlyDictionary<string, TouchVector> StickVectors { get; init; } =
+        new Dictionary<string, TouchVector>(StringComparer.Ordinal);
 
     public long LastContactTimeNanos { get; init; }
 
@@ -1068,6 +1101,7 @@ public sealed class TouchControlEngine : ITouchContactSink
     public TouchDiagnosticsSnapshot Diagnostics() => new()
     {
         OwnedControls = controlToContact.Count,
+        HeldControls = controlToContact.Keys.ToHashSet(StringComparer.Ordinal),
         ActiveContacts = contactToControl.Count,
         ContactsClaimed = contactsClaimed,
         ContactsUnclaimed = contactsUnclaimed,
@@ -1087,6 +1121,7 @@ public sealed class TouchControlEngine : ITouchContactSink
         TriggerPulses = triggerPulses,
         AnalogTriggers = AnalogTriggerLevels(),
         AnalogTriggerFills = AnalogTriggerFills(),
+        StickVectors = new Dictionary<string, TouchVector>(stickVectors, StringComparer.Ordinal),
         LastContactTimeNanos = lastContactTimeNanos,
         LeftStick = PublishedStick(ControlSide.Left),
         RightStick = PublishedStick(ControlSide.Right),
