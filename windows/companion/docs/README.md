@@ -609,10 +609,34 @@ the window.
 ```
 
 produces `PicoSwitch2-Companion-<version>-x64.zip` — the artifact to attach to a
-GitHub release. **65.9 MB**, extracting to a single folder named
-`PicoSwitch2 Companion` containing 280 files in 4 directories. It carries the
-.NET runtime and the Windows App SDK, so a user extracts it and runs the exe
-with nothing preinstalled and no administrator rights.
+GitHub release. **31.7 MB**, extracting to a single folder named
+`PicoSwitch2 Companion` containing 96 files in 4 directories. No administrator
+rights, no installer.
+
+### What is bundled, and what is a prerequisite
+
+The two runtimes are separately switchable, and the asymmetry is deliberate.
+
+| | Files | Dirs | Extracted | Zip | User must install |
+|---|---|---|---|---|---|
+| `-Zip` *(default)* | 96 | 4 | 92.4 MB | **31.7 MB** | .NET 9 Desktop Runtime |
+| `-Zip -SelfContained` | 280 | 4 | 166.6 MB | 65.9 MB | nothing |
+| *(not offered)* | 42 | 0 | 38.7 MB | 10.8 MB | .NET **and** Windows App SDK |
+
+Measured 2026-09-04, all three pruned identically.
+
+The **.NET 9 Desktop Runtime** is one well-known Microsoft download that many
+machines already have, and when it is missing the apphost says so and links to
+it. Requiring it halves the download, so it is the default.
+
+The **Windows App SDK runtime** stays bundled in both offered flavours. Dropping
+it as well reaches 10.8 MB and no subdirectories at all, which is tempting — but
+users do not have it by default, and its absence is not self-explanatory the way
+a missing .NET runtime is. That third row was measured on a machine that *has*
+the runtime installed, so its size is trustworthy while its "it runs" says
+nothing about a clean machine.
+
+### Pruning
 
 `dotnet publish` alone yields 492 files across **89** directories, 85 of which
 are WinUI's own localized strings — two `.mui` files each, for languages this app

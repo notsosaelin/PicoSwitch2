@@ -20,9 +20,24 @@
 
       -Zip               the distributable archive: the unpackaged app, zipped.
                          THIS IS THE ONE TO PUT ON GITHUB. It needs no
-                         certificate, and the user needs no .NET runtime, no
-                         Windows App SDK and no administrator rights -- they
-                         extract it and run the exe.
+                         certificate and no administrator rights -- the user
+                         extracts it and runs the exe.
+
+                         Requires the .NET 9 Desktop Runtime on the user's
+                         machine, which halves the download. Measured
+                         2026-09-04, both pruned identically:
+
+                           bundling it     280 files, 4 dirs, 65.9 MB zipped
+                           requiring it     96 files, 4 dirs, 31.7 MB zipped
+
+                         The Windows App SDK runtime is always BUNDLED. Dropping
+                         that too would reach 42 files and 10.8 MB, but unlike
+                         the .NET runtime it is not something a user is likely to
+                         already have, and its absence is far harder for them to
+                         diagnose.
+
+      -SelfContained     with -Zip: bundle the .NET runtime as well, so the user
+                         installs nothing at all. The 65.9 MB flavour.
 
       -Msix              the packaged flavour -- the installer. Requires .NET
                          Framework MSBuild (Visual Studio / Build Tools): the
@@ -37,7 +52,8 @@
     ./build.ps1                     # build + test the core half
     ./build.ps1 -App                # additionally build the WinUI shell (x64)
     ./build.ps1 -App -Platform arm64
-    ./build.ps1 -Zip -Configuration Release   # the GitHub download
+    ./build.ps1 -Zip -Configuration Release                  # the GitHub download
+    ./build.ps1 -Zip -SelfContained -Configuration Release   # ...bundling .NET too
     ./build.ps1 -Msix               # signed if credentials resolve, unsigned otherwise
     ./build.ps1 -Core -App -Configuration Release
 #>
@@ -47,6 +63,7 @@ param(
     [switch]$App,
     [switch]$Msix,
     [switch]$Zip,
+    [switch]$SelfContained,
     [switch]$NoTest,
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Debug',
@@ -340,12 +357,31 @@ if ($Zip) {
     # by the SDK's own Microsoft.WindowsAppSDK.SingleFile.targets, which requires
     # IncludeAllContentForSelfExtract=true. Both directions are closed, so the
     # loose-file layout is what this configuration supports.
+    # THE .NET RUNTIME IS A PREREQUISITE, THE WINDOWS APP SDK IS NOT.
+    #
+    # They are separately switchable and the asymmetry is deliberate. The .NET 9
+    # Desktop Runtime is one well-known Microsoft download that a lot of machines
+    # already have, and when it is missing the apphost says so and links to it.
+    # The Windows App SDK runtime is neither: users do not have it by default and
+    # its absence is not self-explanatory, so it stays bundled.
+    #
+    # Measured 2026-09-04, all three pruned identically:
+    #
+    #   bundling both        280 files,  4 dirs, 166.6 MB -> 65.9 MB zipped
+    #   requiring .NET        96 files,  4 dirs,  92.4 MB -> 31.7 MB zipped
+    #   requiring both        42 files,  0 dirs,  38.7 MB -> 10.8 MB zipped
+    #
+    # The last was measured on a machine that HAS the Windows App SDK runtime
+    # installed, so its size is trustworthy and its "it runs" is not evidence
+    # about a clean machine.
     Invoke-Dotnet @(
         'publish', $appProject
         '-c', $Configuration
         "-p:Platform=$Platform"
         '-r', "win-$($Platform.ToLowerInvariant())"
         '-p:WindowsPackageType=None'
+        "-p:SelfContained=$($SelfContained.IsPresent.ToString().ToLowerInvariant())"
+        '-p:WindowsAppSDKSelfContained=true'
         '-p:DebugType=none'          # no .pdb: ~0.4 MB of no use to a user
         '--nologo'
     )
@@ -398,6 +434,12 @@ if ($Zip) {
 
     $mb = [math]::Round((Get-Item -LiteralPath $archive).Length / 1MB, 1)
     Write-Host "archive: $archive ($mb MB)" -ForegroundColor Green
+    if ($SelfContained) {
+        Write-Host 'requires: nothing -- the .NET runtime is bundled' -ForegroundColor DarkGray
+    } else {
+        Write-Host 'requires: .NET 9 Desktop Runtime (x64) on the user machine' -ForegroundColor Yellow
+        Write-Host '          https://dotnet.microsoft.com/download/dotnet/9.0' -ForegroundColor DarkGray
+    }
 }
 
 Write-Host 'OK' -ForegroundColor Green
