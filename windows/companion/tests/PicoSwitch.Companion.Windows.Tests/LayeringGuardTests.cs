@@ -284,8 +284,19 @@ public sealed class LayeringGuardTests
         var opaqueLiteral = background!.StartsWith("#FF", StringComparison.OrdinalIgnoreCase);
         var solidThemeBrush = background.Contains("SolidBackground", StringComparison.Ordinal);
 
+        // A StaticResource is opaque only if what it names is, so the reference is
+        // followed rather than trusted. The brush is shared with the window's
+        // caption strip, which is why it lives in App.xaml and not here.
+        var named = System.Text.RegularExpressions.Regex.Match(
+            background, @"\{StaticResource (\w+)\}");
+        var resolvedOpaque = named.Success &&
+            System.Text.RegularExpressions.Regex.IsMatch(
+                File.ReadAllText(Path.Combine(
+                    CompanionRoot, "src", "PicoSwitch.Companion.App", "App.xaml")),
+                $@"x:Key=""{named.Groups[1].Value}"" Color=""#FF[0-9A-Fa-f]{{6}}""");
+
         Assert.True(
-            opaqueLiteral || solidThemeBrush,
+            opaqueLiteral || solidThemeBrush || resolvedOpaque,
             $"the root Grid's Background '{background}' is not demonstrably opaque");
     }
 

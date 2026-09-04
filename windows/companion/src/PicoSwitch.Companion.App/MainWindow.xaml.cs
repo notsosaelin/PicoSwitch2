@@ -7,6 +7,7 @@ using PicoSwitch.Companion.App.Pages;
 using PicoSwitch.Companion.App.Touch;
 using PicoSwitch.Companion.Services;
 using Windows.Graphics;
+using Windows.UI;
 
 namespace PicoSwitch.Companion.App;
 
@@ -52,6 +53,14 @@ public sealed partial class MainWindow : Window
         Title = "PicoSwitch2 Companion";
 
         ApplyMinimumSize();
+        ApplyWindowChrome();
+
+        // The caption glyphs are the only chrome that has to follow the theme, and
+        // nothing else in this window changes when it flips.
+        if (Content is FrameworkElement rootElement)
+        {
+            rootElement.ActualThemeChanged += (_, _) => ApplyWindowChrome();
+        }
 
         // Device callbacks arrive on pool threads and must never touch XAML
         // directly; this is the hop they take.
@@ -199,6 +208,142 @@ public sealed partial class MainWindow : Window
             : Visibility.Visible;
         AppTitleBar.Height = active ? TouchCaptionHeight : ShellCaptionHeight;
         AppTitleTextBlock.Visibility = active ? Visibility.Collapsed : Visibility.Visible;
+
+        // THE WHOLE WINDOW IS PAINTED, not just the strip.
+        //
+        // The title bar is extended into the client area, so the top of this
+        // window is ordinary content. In the shell that is exactly right: nothing
+        // is painted and the Mica backdrop shows through. The Touch Gamepad drops
+        // that backdrop -- an opaque controller over a translucent material is not
+        // a thing -- and anything still unpainted then falls through to the
+        // window's DEFAULT brush, which is white in the light theme. That was the
+        // white band across the top of the controller.
+        //
+        // On the ROOT rather than on AppTitleBar, which was the first fix and was
+        // not enough. A fixed 32-epx strip covers the reserved caption band at one
+        // display scale and not at another, and the report was monitor-specific
+        // for exactly that reason: invisible on a 4K panel at 200%, a white line
+        // on a 1920x1200 at 125%. Painting the root removes the whole class --
+        // there is no band left whose height has to be guessed, and any future row
+        // added to this Grid inherits the ground for free.
+        WindowRoot.Background = active ? TouchGround() : null;
+        AppTitleBar.Background = active ? TouchGround() : null;
+        ApplyWindowChrome();
+    }
+
+    /// <summary>The controller's ground, from the one place it is defined.</summary>
+    private static Brush? TouchGround() =>
+        Application.Current.Resources.TryGetValue("TouchSurfaceGroundBrush", out var value)
+            ? value as Brush
+            : null;
+
+    // DWM window attributes. The Windows App SDK exposes the caption BUTTONS
+    // through AppWindow.TitleBar but not the frame border or the caption band
+    // itself, and those are the two surfaces that default to a light colour.
+    private const int DwmBorderColor = 34;
+    private const int DwmCaptionColor = 35;
+
+    /// <summary>Let the frame border draw nothing at all.</summary>
+    private const uint DwmColorNone = 0xFFFFFFFEu;
+
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(
+        IntPtr hwnd, int attribute, ref uint value, int size);
+
+    /// <summary>
+    /// The window's non-client surfaces, which XAML does not reach.
+    /// </summary>
+    /// <remarks>
+    /// THE WHITE BAR. The title bar is extended into the client area, so it is
+    /// natural to assume XAML owns every pixel. It does not: the 1px frame BORDER
+    /// and the caption BAND behind the minimise/maximise/close buttons are drawn
+    /// by DWM, from its own colours, and DWM's defaults are light. Nothing in this
+    /// app had ever set them, which is why the line was there from the beginning
+    /// and in every part of the app rather than only on one screen.
+    ///
+    /// It reads as monitor-specific because that is when the frame is actually
+    /// VISIBLE: maximized, the border sits outside the monitor and is clipped;
+    /// under the FullScreen presenter there is no frame at all; and at a high
+    /// display scale one physical pixel of it is easy to miss. A window merely
+    /// sized to fill a 125% panel shows all of it.
+    ///
+    /// The border is set to NONE rather than to a colour, so there is nothing to
+    /// keep in step with the theme. The caption band follows the app: transparent
+    /// buttons over the Mica backdrop in the shell, and the controller's own
+    /// ground while the Touch Gamepad is up, where there is no backdrop to show
+    /// through.
+    ///
+    /// Called on every transition that can change any of it, and once at startup,
+    /// because DWM keeps these per window and nothing restores them.
+    /// </remarks>
+    private void ApplyWindowChrome()
+    {
+        var handle = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        var none = DwmColorNone;
+        DwmSetWindowAttribute(handle, DwmBorderColor, ref none, sizeof(uint));
+
+        // THE CAPTION BAND IS ALWAYS SET, never left at the system default.
+        //
+        // This is the white bar. Maximized, Windows pushes the frame outside the
+        // monitor and the app's own painted content begins a couple of rows below
+        // the top of the screen; that gap is DWM's caption, and DWM's default is
+        // light. Leaving it alone in the shell -- which the first attempt did --
+        // fixed the Touch Gamepad and left every other page with the same line.
+        //
+        // COLORREF is 0x00BBGGRR, not ARGB.
+        var touch = TouchGamepadHost.Children.Count > 0;
+        var dark = touch ||
+            (Content as FrameworkElement)?.ActualTheme != ElementTheme.Light;
+        var caption = touch
+            ? 0x000C0A0Au   // the controller's ground, #0A0A0C
+            : dark
+                ? 0x00222020u   // the shell's Mica-tinted top in the dark theme
+                : 0x00F3F3F3u;  // and in the light one
+        DwmSetWindowAttribute(handle, DwmCaptionColor, ref caption, sizeof(uint));
+
+        ApplyCaptionButtonColours(touch);
+    }
+
+    /// <summary>
+    /// The system-drawn caption buttons, over the controller's ground.
+    /// </summary>
+    /// <remarks>
+    /// These are painted by the SYSTEM, not by XAML, so the strip's own
+    /// background does not reach them: leaving them alone puts a light plate
+    /// behind minimise/maximise/close at the right-hand end of an otherwise black
+    /// band. Restored to the system defaults on the way out by assigning the
+    /// theme's own values back, rather than by remembering what they were --
+    /// nothing else changes them, so there is nothing to remember.
+    /// </remarks>
+    private void ApplyCaptionButtonColours(bool touch)
+    {
+        var bar = AppWindow.TitleBar;
+
+        // TRANSPARENT IN BOTH MODES. Left unset, the buttons carry their own
+        // opaque plate in the system's colour, which is a light rectangle at the
+        // right-hand end of the title bar whatever is drawn behind it. The band
+        // behind them is already painted -- Mica in the shell, the controller's
+        // ground in the Touch Gamepad -- so the buttons only need to not cover it.
+        var clear = Color.FromArgb(0, 0, 0, 0);
+        bar.ButtonBackgroundColor = clear;
+        bar.ButtonInactiveBackgroundColor = clear;
+
+        // The glyphs still have to be legible on whichever of those it is. The
+        // shell follows the app theme; the controller's ground is dark in both
+        // themes, so it does not.
+        var dark = touch ||
+            (Content as FrameworkElement)?.ActualTheme != ElementTheme.Light;
+        var ink = dark
+            ? Color.FromArgb(0xFF, 0xE2, 0xE2, 0xE9)
+            : Color.FromArgb(0xFF, 0x19, 0x1B, 0x20);
+        var wash = dark ? (byte)0xFF : (byte)0x00;
+
+        bar.ButtonForegroundColor = ink;
+        bar.ButtonInactiveForegroundColor = Color.FromArgb(0x9A, ink.R, ink.G, ink.B);
+        bar.ButtonHoverBackgroundColor = Color.FromArgb(0x2A, wash, wash, wash);
+        bar.ButtonHoverForegroundColor = ink;
+        bar.ButtonPressedBackgroundColor = Color.FromArgb(0x14, wash, wash, wash);
+        bar.ButtonPressedForegroundColor = ink;
     }
 
     private void ToggleTouchFullScreen() => SetTouchFullScreen(

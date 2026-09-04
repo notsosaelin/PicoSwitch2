@@ -322,6 +322,19 @@ public sealed class TouchControlRenderer(Canvas canvas)
 
         private double LegendSize { get; set; }
 
+        /// <summary>
+        /// Half the legend's MEASURED height, which is what centres it.
+        /// </summary>
+        /// <remarks>
+        /// Not half the font size. A TextBlock's box is its line box, which is
+        /// taller than the type and carries the ascent and descent asymmetrically
+        /// around the glyphs -- so offsetting by half the font size put every
+        /// legend on this surface a few pixels below its control's centre.
+        /// Measuring is the only honest answer: it is the same number the
+        /// framework will lay the text out with.
+        /// </remarks>
+        private double LegendHalfHeight { get; set; }
+
         public static ControlVisual Create(Canvas canvas)
         {
             var visual = new ControlVisual
@@ -524,41 +537,61 @@ public sealed class TouchControlRenderer(Canvas canvas)
             if (LegendFit != fit)
             {
                 LegendFit = fit;
-                LegendSize = FittedSize(legend, width, height);
+                FitLegend(legend, width, height);
             }
 
             Legend.Text = legend;
             Legend.Foreground = pressed ? Palette.PressedLegend : Palette.Legend;
             Legend.FontSize = LegendSize;
-            Legend.LineHeight = LegendSize;
             Legend.Width = width;
+
+            // Horizontally: a box the width of the control, centred text. The
+            // vertical offset is measured rather than derived -- see
+            // LegendHalfHeight.
             Canvas.SetLeft(Legend, control.CenterX - control.HalfWidth);
-            Canvas.SetTop(Legend, control.CenterY - (LegendSize * 0.5));
+            Canvas.SetTop(Legend, control.CenterY - LegendHalfHeight);
         }
 
         /// <summary>
-        /// The largest size at or below the base that leaves the control breathing room.
+        /// Pick the legend's size, and measure the box it will be centred in.
         /// </summary>
         /// <remarks>
-        /// One corrective pass, because for a fixed typeface on one unwrapped line
-        /// text dimensions scale linearly — the same reason Android measures twice
-        /// and stops. Measured rather than estimated from a character count: these
-        /// legends run from "-" to "ZR", and an advance-width guess that is wrong by
-        /// a little is a legend touching the outline.
+        /// The size is the largest at or below the base that leaves the control
+        /// breathing room. Measured rather than estimated from a character count:
+        /// these legends run from "-" to "ZR", and an advance-width guess that is
+        /// wrong by a little is a legend touching the outline.
+        ///
+        /// Both results come from the same pass because they have to agree. The
+        /// height a legend is centred on is only correct at the size it is drawn
+        /// at, and computing the two separately is how a shrunk legend ends up
+        /// centred as though it were full size.
         /// </remarks>
-        private double FittedSize(string text, double width, double height)
+        private void FitLegend(string text, double width, double height)
         {
-            Legend.Text = text;
-            Legend.FontSize = LegendBaseSize;
-            Legend.LineHeight = LegendBaseSize;
+            Size Measure(double size)
+            {
+                Legend.Text = text;
+                Legend.FontSize = size;
 
-            // Unconstrained, so an over-wide legend reports its true width instead
-            // of wrapping -- which is what makes the shrink possible at all.
-            Legend.Width = double.NaN;
-            Legend.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                // Unconstrained, so an over-wide legend reports its true width
+                // instead of wrapping -- which is what makes the shrink possible at
+                // all.
+                Legend.Width = double.NaN;
+                Legend.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                return Legend.DesiredSize;
+            }
 
-            return LegendBaseSize * FitScale(
-                Legend.DesiredSize.Width, Legend.DesiredSize.Height, width, height);
+            var natural = Measure(LegendBaseSize);
+            var scale = FitScale(natural.Width, natural.Height, width, height);
+
+            LegendSize = LegendBaseSize * scale;
+
+            // One corrective pass, because for a fixed typeface on one unwrapped
+            // line text dimensions scale linearly -- the same reason Android
+            // measures twice and stops. The second measurement is also what the
+            // legend is CENTRED on, so it has to be taken at the size that will
+            // actually be drawn.
+            LegendHalfHeight = (scale < 1d ? Measure(LegendSize).Height : natural.Height) / 2d;
         }
 
         /// <summary>
