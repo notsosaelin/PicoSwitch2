@@ -602,18 +602,37 @@ Hardware H9, and the three exit criteria: a binding survives a reload and a
 reconnect, reset restores adapter defaults, and live mouse tuning never blocks
 the window.
 
-## 10. What still needs a human
+## 10. Shipping it
 
-Phases 8 and 9 are finished as far as automation can take them: the MSIX
-pipeline builds and signs, the `.appinstaller` is generated from the package,
-and `UpgradePersistenceTests` pins the on-disk documents so an upgrade cannot
-silently empty a user's adapter list.
+```powershell
+.uild.ps1 -Zip -Configuration Release
+```
+
+produces `PicoSwitch2-Companion-<version>-x64.zip` — the artifact to attach to a
+GitHub release. It carries the .NET runtime and the Windows App SDK, so a user
+extracts it and runs the exe with nothing preinstalled and no administrator
+rights.
+
+**Not an MSIX, deliberately.** An MSIX cannot be installed unsigned — a platform
+rule, not a setting — so it needs a paid CA certificate, or a self-signed one
+that every user must install into Trusted Root as Administrator first. For a
+free download that is a larger security ask than an unsigned executable, and it
+buys nothing: SmartScreen reacts to reputation, not to the presence of a
+signature. The MSIX path stays wired and proven for a real certificate or a
+Store submission later.
+
+## 11. What still needs a human
+
+Phases 8 and 9 are finished as far as automation can take them: the archive
+builds, the MSIX pipeline builds and signs, the `.appinstaller` is generated
+from the package, and `UpgradePersistenceTests` pins the on-disk documents so an
+upgrade cannot silently empty a user's adapter list.
 
 What is left needs a certificate, a second machine, a screen reader or a pair of
 hands, and each item is written up with the commands to run in
 [`HUMAN_CHECKLIST.md`](HUMAN_CHECKLIST.md).
 
-## 11. Next
+## 12. Next
 
 Phase 5 (Virtual Amiibo), whose precondition is the shared crypto fixture in
 §16.7. Phase 6 remains gated on the §14.5 HOGP peripheral-role experiment, which
