@@ -609,9 +609,39 @@ the window.
 ```
 
 produces `PicoSwitch2-Companion-<version>-x64.zip` — the artifact to attach to a
-GitHub release. It carries the .NET runtime and the Windows App SDK, so a user
-extracts it and runs the exe with nothing preinstalled and no administrator
-rights.
+GitHub release. **65.9 MB**, extracting to a single folder named
+`PicoSwitch2 Companion` containing 280 files in 4 directories. It carries the
+.NET runtime and the Windows App SDK, so a user extracts it and runs the exe
+with nothing preinstalled and no administrator rights.
+
+`dotnet publish` alone yields 492 files across **89** directories, 85 of which
+are WinUI's own localized strings — two `.mui` files each, for languages this app
+does not ship in. `-Zip` removes those and the `.winmd` WinRT metadata (a
+compile-time input), which is what takes it to 4 directories. Both prunes were
+verified by running the pruned folder, not by reasoning about it.
+
+### A single .exe is not achievable here — tried, 2026-09-04
+
+`PublishSingleFile` produces one 68 MB executable that dies on launch:
+
+```
+FileNotFoundException 0x8007007E at WinRT.ActivationFactory.Get
+  -> Microsoft.Windows.AppLifecycle.AppInstance.FindOrRegisterForKey
+```
+
+WinRT activation resolves the Windows App SDK's native DLLs by filename beside
+the executable, and a bundle has no filenames. The obvious fix — leave the
+natives loose with `IncludeNativeLibrariesForSelfExtract=false` — is refused by
+the SDK's own `Microsoft.WindowsAppSDK.SingleFile.targets`, which *requires*
+`IncludeAllContentForSelfExtract=true`. Both directions are closed, so the
+loose-file layout is what this configuration supports; do not spend another pass
+on it without a Windows App SDK release that says otherwise.
+
+The remaining 262 DLLs are the bundled .NET runtime and Windows App SDK. They are
+the price of "the user installs nothing". A framework-dependent build would be a
+few MB, but every user would first have to install the .NET 9 Desktop Runtime
+*and* the Windows App SDK runtime — which for a free download trades one large
+file for two prerequisites and a support burden.
 
 **Not an MSIX, deliberately.** An MSIX cannot be installed unsigned — a platform
 rule, not a setting — so it needs a paid CA certificate, or a self-signed one

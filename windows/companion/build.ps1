@@ -60,8 +60,8 @@ Set-Location -LiteralPath $PSScriptRoot
 # No switch given means the default: the core half.
 if (-not $Core -and -not $App -and -not $Msix -and -not $Zip) { $Core = $true }
 
-# The archive is the app, so building it implies building the app.
-if ($Zip) { $App = $true }
+# -Zip publishes the app itself, so it does not also need the -App build; the
+# two write to different directories and doing both would only double the work.
 
 # ---------------------------------------------------------------- signing
 #
@@ -318,7 +318,7 @@ and clear certificateFile/certificatePassword.
 }
 
 if ($Zip) {
-    # The unpackaged, self-contained build, archived.
+    # The distributable archive: `dotnet publish`, pruned, zipped.
     #
     # WHY THIS AND NOT AN MSIX, for a free download: an MSIX cannot be installed
     # unsigned -- that is a platform rule, not a setting -- so it needs either a
@@ -328,29 +328,72 @@ if ($Zip) {
     # and buys nothing: SmartScreen is driven by reputation, not by the mere
     # presence of a signature.
     #
-    # So the archive is the honest artifact for GitHub. The MSIX path stays
-    # wired for a real certificate or a Store submission later.
-    $stage = Join-Path $PSScriptRoot "src/PicoSwitch.Companion.App/bin/$Platform/$Configuration/net9.0-windows10.0.22621.0/win-$($Platform.ToLowerInvariant())"
-    if (-not (Test-Path $stage)) { throw "no build output at $stage" }
+    # WHY NOT A SINGLE FILE. Tried, and it does not work here (2026-09-04).
+    # PublishSingleFile produces one 68 MB exe that dies on launch:
+    #
+    #   FileNotFoundException 0x8007007E at WinRT.ActivationFactory.Get
+    #   -> Microsoft.Windows.AppLifecycle.AppInstance.FindOrRegisterForKey
+    #
+    # WinRT activation resolves the Windows App SDK's native DLLs by filename
+    # beside the exe, and a bundle has no filenames. The obvious fix -- leave the
+    # natives loose with IncludeNativeLibrariesForSelfExtract=false -- is refused
+    # by the SDK's own Microsoft.WindowsAppSDK.SingleFile.targets, which requires
+    # IncludeAllContentForSelfExtract=true. Both directions are closed, so the
+    # loose-file layout is what this configuration supports.
+    Invoke-Dotnet @(
+        'publish', $appProject
+        '-c', $Configuration
+        "-p:Platform=$Platform"
+        '-r', "win-$($Platform.ToLowerInvariant())"
+        '-p:WindowsPackageType=None'
+        '-p:DebugType=none'          # no .pdb: ~0.4 MB of no use to a user
+        '--nologo'
+    )
+
+    $stage = Join-Path $PSScriptRoot "src/PicoSwitch.Companion.App/bin/$Platform/$Configuration/net9.0-windows10.0.22621.0/win-$($Platform.ToLowerInvariant())/publish"
+    if (-not (Test-Path $stage)) { throw "no publish output at $stage" }
 
     $version = ([xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'src/PicoSwitch.Companion.App/Package.appxmanifest'))).Package.Identity.Version
     $archive = Join-Path $PSScriptRoot "PicoSwitch2-Companion-$version-$Platform.zip"
     if (Test-Path $archive) { Remove-Item -LiteralPath $archive -Force }
 
-    # AppPackages is the MSIX flavour's output and has no business inside the
-    # portable archive; the symbol files are ~200 MB of no use to a user.
-    $staging = Join-Path ([System.IO.Path]::GetTempPath()) "picoswitch-zip-$([guid]::NewGuid().ToString('N'))"
+    # Staged under a NAMED folder, and the folder is what gets zipped, so
+    # extracting produces one directory rather than emptying 278 files into
+    # whatever the user unzipped into. Windows' own "Extract All" does not add a
+    # containing folder, so the archive has to carry it.
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) "picoswitch-zip-$([guid]::NewGuid().ToString('N'))"
+    $staging = Join-Path $root 'PicoSwitch2 Companion'
     try {
+        New-Item -ItemType Directory -Path $root | Out-Null
         Copy-Item -LiteralPath $stage -Destination $staging -Recurse
-        Get-ChildItem -LiteralPath $staging -Directory -Filter 'AppPackages' |
-            Remove-Item -Recurse -Force
-        Get-ChildItem -LiteralPath $staging -Recurse -File -Include '*.pdb', '*.xml' |
-            Remove-Item -Force -ErrorAction SilentlyContinue
 
-        Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $archive `
+        # The publish output is 492 files across 89 directories, and 85 of those
+        # directories are WinUI's own localized strings -- two .mui files each,
+        # for languages this app does not ship in. Removing all but the English
+        # one, and the WinRT metadata (.winmd is a COMPILE-time input), takes it
+        # to 280 files in 4 directories.
+        #
+        # Both prunes were verified 2026-09-04 by running the pruned folder, not
+        # by reasoning about it: the window comes up.
+        $langs = Get-ChildItem -LiteralPath $staging -Directory | Where-Object {
+            $_.Name -ne 'en-us' -and
+            (Get-ChildItem -LiteralPath $_.FullName -Filter '*.mui' -ErrorAction SilentlyContinue)
+        }
+        $langs | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
+
+        $winmd = Get-ChildItem -LiteralPath $staging -Recurse -Filter '*.winmd'
+        $winmd | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+
+        Write-Host "pruned: $($langs.Count) language packs, $($winmd.Count) winmd" -ForegroundColor DarkGray
+
+        Compress-Archive -Path $staging -DestinationPath $archive `
             -CompressionLevel Optimal
+
+        $kept = Get-ChildItem -LiteralPath $staging -Recurse -File
+        $dirs = Get-ChildItem -LiteralPath $staging -Recurse -Directory
+        Write-Host "contents: $($kept.Count) files in $($dirs.Count) directories" -ForegroundColor DarkGray
     } finally {
-        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     $mb = [math]::Round((Get-Item -LiteralPath $archive).Length / 1MB, 1)
