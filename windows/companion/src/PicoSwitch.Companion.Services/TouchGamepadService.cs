@@ -146,6 +146,21 @@ public sealed class TouchGamepadService
     public void ReleaseGameplay(TouchReleaseReason reason) => controllerInput?.ReleaseTouch(reason);
 
     /// <summary>
+    /// What the touch engine is doing right now.
+    /// </summary>
+    /// <remarks>
+    /// The surface draws presses, latches, trigger travel and stick deflection
+    /// from this rather than from the pointer events it dispatched, so the picture
+    /// and the input the console receives cannot disagree.
+    ///
+    /// A service with no controller input (the layout lab, and every test that
+    /// builds one) reports an empty snapshot rather than refusing: an editor with
+    /// nothing held is exactly right.
+    /// </remarks>
+    public TouchDiagnosticsSnapshot Diagnostics() =>
+        controllerInput?.TouchDiagnostics() ?? new TouchDiagnosticsSnapshot();
+
+    /// <summary>
     /// The personality the adapter confirmed. Idempotent.
     ///
     /// Reloads the library and discards the editor's history, because an undo step from
