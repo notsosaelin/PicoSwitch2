@@ -103,10 +103,43 @@ three fails it. The report goldens are new with the Windows pass and close a gap
 guard could not: the descriptor proves both ends **describe** the same report, the goldens prove
 they **fill** it identically.
 
-A Windows *backend* — the transport and the input/motion/battery/output implementations this
-document specifies — does not exist yet; it is Roadmap Phase 2 and Phase 6, and Phase 6 is gated on
-the peripheral-role experiment in `WINDOWS_PASS.md` §14.5. This section will gain the Windows
-backend's capability notes when that work lands.
+### 2.2 The Windows backend, as shipped
+
+**Landed 2026-09-03.** The Windows backend now exists, and it is the second realisation of this
+contract. Its capability notes are §6 below; what follows is what it cost this document to learn.
+
+**The HID-device gate closed NEGATIVE, and the product survived it.** `WINDOWS_PASS.md` §14.5 asked
+whether Windows can present the canonical descriptor as a Bluetooth HID *device*, the way Android
+does with `BluetoothHidDevice`. It cannot, on two independent grounds, both recorded with evidence:
+
+- **Classic HID Device role**: Windows exposes no user-mode API for it at all
+  (`docs/experiments/windows-classic-hid-device-feasibility-2026-09-02.md`);
+- **HID-over-GATT peripheral**: an LE controller will not hold two connections to one peer
+  identity — the second attempt is refused with `0x0B`, ACL Connection Already Exists
+  (`windows-hogp-bridge-feasibility-2026-08-31.md`,
+  `windows-hogp-legacy-advertising-2026-09-02.md`).
+
+So the question this document has always framed as *the* feasibility gate — "can it be a HID
+device?" — turns out not to be load-bearing. **Path C** carries normalized `ControllerState` over
+the trusted management BLE session on a dedicated binary GATT characteristic pair, beside the
+newline-JSON command channel: one ACL, no HOGP, no second radio, and the adapter's own
+`ns2_companion_link` decodes it through the same canonical layout the Classic bridge uses.
+
+The lesson for a third host is the useful part: **being a HID device is one way to satisfy this
+contract, not the contract itself.** A host that cannot be a HID device can still deliver
+normalized state over a channel it already has. Ask the HID-device question second.
+
+**Touch, and §3.7's accumulation requirement.** The Windows touch adapter is the first non-Compose
+realisation of that rule, and it needed both halves of it:
+
+- WinUI delivers **one changed pointer per event**, so the adapter accumulates the live set and
+  dispatches the complete set every time — a batch naming only the changed contact would cancel
+  every other one, which is the exact defect §3.7 exists to prevent;
+- it takes an explicit **pointer capture** on down, because without it a thumb sliding off a
+  control stops delivering to the surface and the control is left held with nothing to release it.
+
+`PointerPoint.PointerId` is the stable identifier and is used directly; nothing is keyed by
+position in an array.
 
 ---
 
@@ -611,7 +644,7 @@ abstraction is wrong and the boundary should move — not your backend.
 
 ## 6. Sketch: the three platforms
 
-Documentation only. No Windows or Linux backend exists, and none is planned in this pass.
+Android and Windows are implemented. Linux is documentation only.
 
 ```text
 Android      (implemented, hardware-validated)
@@ -623,14 +656,23 @@ Android      (implemented, hardware-validated)
   transport  BluetoothHidDevice (Classic BR/EDR HID Device profile, API 28+)
   battery    ACTION_BATTERY_CHANGED sticky broadcast
 
-Windows      (not implemented)
-  input      RawInput / XInput / Windows.Gaming.Input
-  touch      WM_POINTER (pointerId is the stable identifier) or Windows.UI.Input
-  motion     Windows.Devices.Sensors, or a handheld's vendor IMU
-  output     XInput / Windows.Gaming.Input vibration, or the vendor SDK
-  transport  Windows.Devices.Bluetooth — NOTE: acting as a Classic HID *device* is the
-             open feasibility question here, not a formality
-  battery    Windows.System.Power / WMI
+Windows      (implemented, hardware-validated 2026-09-03)
+  input      Windows.Gaming.Input RawGameController, joined to HID DeviceInformation for
+             the real product name and ContainerId. NOT Gamepad alone: that class is an
+             XInput-shaped SUBSET and is silently blind to DualSense, DualShock 4 and
+             Switch Pro. RawGameControllers reads EMPTY on first access -- the catalog
+             waits for the first enumeration rather than sleeping blindly.
+  touch      WinUI PointerRoutedEventArgs; PointerPoint.PointerId is the stable id. The
+             adapter accumulates the live contact set (see 2.2) and captures the pointer.
+  motion     NOT AVAILABLE. Windows.Gaming.Input exposes no motion for a controller, and
+             the capability is reported absent rather than faked.
+  output     Windows.Gaming.Input vibration for the selected controller
+  feedback   none: a desktop has no equivalent of performHapticFeedback
+  transport  Path C -- normalized state over the management BLE session's own GATT
+             characteristic pair. Windows CANNOT be a Bluetooth HID device, Classic or
+             HOGP; see 2.2 for the evidence and why that did not block the product.
+  battery    RawGameController battery telemetry, polled; Valid distinguishes
+             "no reading" from "empty"
 
 Linux        (not implemented)
   input      evdev (/dev/input/event*) or hidraw
@@ -641,9 +683,13 @@ Linux        (not implemented)
   battery    /sys/class/power_supply
 ```
 
-The Windows transport line is the one to investigate first. Input, motion and output are ordinary
-work on both platforms; being a Bluetooth HID **device** rather than a host is the part that
-decided Android's feasibility and will decide theirs.
+The Linux transport line is the one to investigate first, and Windows is the reason to investigate
+it in a particular way. Being a Bluetooth HID **device** decided Android's feasibility; on Windows
+it was impossible and the product shipped anyway, over a channel the companion already held. Ask
+what channel a host HAS before asking whether it can become a HID device.
+
+BlueZ can export a HID device profile record, so Linux may well pass the gate Windows failed. If it
+does not, Path C is the pattern to copy.
 
 ---
 

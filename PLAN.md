@@ -217,12 +217,31 @@ Settled by the design pass and the first implementation pass:
   stores, the relationship and active-adapter coordinators, and the ordered adapter switch —
   **implementation complete, hardware validation pending.**
 
-Open and unchanged:
+Settled since:
 
-- **Controller Link on Windows is still gated** on the HOGP peripheral-role experiment in
-  `WINDOWS_PASS.md` §14.5, which has not been run. Until it is, no Phase 6 work may be scheduled and
-  the Windows product is a management client. Path C (companion-provided normalized controller
-  state, §14.4) is the sanctioned fallback and would need its own firmware pass.
+- **The transport question is closed, and the answer was Path C** (2026-09-03). The §14.5 gate was
+  run and returned NEGATIVE on both routes, each with its own experiment record: Windows exposes no
+  user-mode Classic HID **Device** role at all, and an LE controller refuses a second connection to
+  one peer identity (`0x0B`, ACL Connection Already Exists). Controller Link therefore carries
+  normalized `ControllerState` over the trusted management BLE session on a dedicated binary GATT
+  characteristic pair — one ACL, no HOGP, no second radio. The HOGP runtime that was built for the
+  other outcome is retired (~2600 lines); its research is preserved, and a layering guard asserts
+  nothing brings the AppContainer helper back. **Hardware-qualified 2026-09-03** against a Switch 2:
+  ATT MTU 527, `received == applied` in every run, stale/short/version/opcode and arbiter-rejected
+  all zero, management not degraded while streaming (117 ms against 241 ms idle).
+- **Phases 6, 6a and 6b are implemented**, including the Touch Gamepad, its layout editor and
+  profile library, the personality dropdown, battery reporting, and gameplay visual feedback drawn
+  from the engine's own state. The two companions' on-screen controllers are now pinned to the same
+  design tokens on both sides so neither can drift alone.
+
+Open:
+
+- **Android's gameplay carrier is unchanged and stays Classic HID for now.** Whether it should move
+  to Path C so a companion holds one Bluetooth link instead of two is analysed in
+  `docs/experiments/android-gameplay-carrier-choice-2026-09-03.md`: the stated motivation is already
+  satisfied by the existing management gating, and the latency case is a hypothesis resting on an
+  unobserved connection interval. Not accepted work; the measurements that would settle it are
+  listed there.
 - **The Phase 2 happy path is hardware-confirmed** (2026-08-29): discovery, Windows pairing, the
   encrypted management session, the identity gate, firmware/personality reads, a complete peer
   inventory, and registry/history persistence. **Boundary C — one management client, no churn — is
