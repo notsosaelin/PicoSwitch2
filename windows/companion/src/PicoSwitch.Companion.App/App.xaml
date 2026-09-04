@@ -11,6 +11,26 @@
                 -->
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
+
+            <!--
+                The ground the on-screen controller is drawn on.
+
+                THE ONE EXCEPTION to "this app uses the system's visual language"
+                (§17.1), and a deliberate one: the Touch Gamepad is a picture of a
+                physical object, its controls are fixed artwork tokens shared with
+                the Android companion, and a theme-following ground would put dark
+                artwork on white. Android paints Color.Black here unconditionally
+                for the same reason.
+
+                Defined once because TWO elements have to agree on it. The surface
+                paints it, and so does the window's title-bar strip: the title bar
+                is extended into the client area, so with the Mica backdrop dropped
+                for the controller an unpainted strip falls through to the window's
+                default brush, which is a white band across the top of a black surface,
+                visible in every windowed size and absent only under the FullScreen
+                presenter, which collapses the strip entirely.
+            -->
+            <SolidColorBrush x:Key="TouchSurfaceGroundBrush" Color="#FF0A0A0C" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>

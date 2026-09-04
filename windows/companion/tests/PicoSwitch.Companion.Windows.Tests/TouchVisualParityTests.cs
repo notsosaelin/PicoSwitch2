@@ -35,6 +35,15 @@ public sealed class TouchVisualParityTests
     private static readonly string SurfaceMarkup =
         Read("src/PicoSwitch.Companion.App/Touch/TouchGamepadView.xaml");
 
+    private static readonly string AppMarkup =
+        Read("src/PicoSwitch.Companion.App/App.xaml");
+
+    private static readonly string Shell =
+        Read("src/PicoSwitch.Companion.App/MainWindow.xaml.cs");
+
+    /// <summary>The one place the controller's ground is defined.</summary>
+    private const string GroundKey = "TouchSurfaceGroundBrush";
+
     private static string Read(string relative)
     {
         var cursor = new DirectoryInfo(AppContext.BaseDirectory);
@@ -139,19 +148,68 @@ public sealed class TouchVisualParityTests
     }
 
     [Fact]
-    public void TheSurfacePaintsAnOpaqueGroundOfItsOwn()
+    public void TheGroundIsDefinedOnceAndIsOpaque()
     {
         // Android paints Color.Black unconditionally. A theme-following ground on
         // Windows would put fixed dark artwork on white in light mode; a
         // translucent one would show the companion's own rail and cards through
         // the controller, which is the failure the markup's own comment records.
-        var match = Regex.Match(SurfaceMarkup, @"<Grid x:Name=""Root"" Background=""([^""]+)""");
+        var match = Regex.Match(
+            AppMarkup,
+            $@"<SolidColorBrush x:Key=""{GroundKey}"" Color=""(#[0-9A-Fa-f]{{8}})""");
 
-        Assert.True(match.Success, "the Touch Gamepad root has no explicit Background");
+        Assert.True(match.Success, $"App.xaml does not define {GroundKey} as an opaque literal");
+        Assert.StartsWith("#FF", match.Groups[1].Value, StringComparison.OrdinalIgnoreCase);
+    }
 
-        var brush = match.Groups[1].Value;
-        Assert.StartsWith("#FF", brush, StringComparison.Ordinal);
-        Assert.DoesNotContain("ThemeResource", brush, StringComparison.Ordinal);
+    [Fact]
+    public void TheSurfaceAndTheCaptionStripPaintTheSameGround()
+    {
+        // The white bar. The title bar is extended into the client area, so the
+        // strip at the top of the window IS the top of the controller. The Touch
+        // Gamepad drops the Mica backdrop -- an opaque controller over a
+        // translucent material is not a thing -- and an unpainted strip then falls
+        // through to the window's default brush, which is white in the light
+        // theme. It showed at every windowed size and vanished only under the
+        // FullScreen presenter, which collapses the strip.
+        //
+        // Both must reference the SAME key. Matching literals in two files is how
+        // the two ends drift and the band comes back a shade off instead of
+        // white.
+        Assert.Contains(
+            $@"Background=""{{StaticResource {GroundKey}}}""",
+            SurfaceMarkup,
+            StringComparison.Ordinal);
+        Assert.Contains(GroundKey, Shell, StringComparison.Ordinal);
+        Assert.Contains("AppTitleBar.Background", Shell, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheWholeWindowCarriesTheGroundAndNotOneBand()
+    {
+        // Painting only the caption strip was the first fix, and it was not
+        // enough: a fixed 32-epx band covers the reserved caption area at one
+        // display scale and not at another, which is why the white line survived
+        // on a 1920x1200 at 125% while never appearing on a 4K panel at 200%.
+        //
+        // The root has no height to get wrong, and any row added to that Grid
+        // later inherits the ground rather than becoming the next white band.
+        Assert.Contains("WindowRoot.Background", Shell, StringComparison.Ordinal);
+        Assert.Contains(
+            "<Grid x:Name=\"WindowRoot\">",
+            Read("src/PicoSwitch.Companion.App/MainWindow.xaml"),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheCaptionButtonsAreToldAboutTheGroundToo()
+    {
+        // The caption buttons are drawn by the SYSTEM, not by XAML, so the
+        // strip's own background does not reach them: without this there is a
+        // light plate behind minimise/maximise/close at the right-hand end of an
+        // otherwise black band.
+        Assert.Contains("ButtonBackgroundColor", Shell, StringComparison.Ordinal);
+        Assert.Contains("ButtonForegroundColor", Shell, StringComparison.Ordinal);
     }
 
     [Fact]

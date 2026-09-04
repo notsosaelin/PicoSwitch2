@@ -17,7 +17,13 @@
         <MicaBackdrop />
     </Window.SystemBackdrop>
 
-    <Grid>
+    <!--
+        Named because the Touch Gamepad paints it. See ApplyTouchTitleBar: the
+        controller's ground goes on the WHOLE window, not on the caption strip
+        alone, because the strip's height is not the only thing that can be left
+        unpainted at a given display scale.
+    -->
+    <Grid x:Name="WindowRoot">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />

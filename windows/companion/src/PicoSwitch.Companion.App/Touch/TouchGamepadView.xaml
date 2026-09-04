@@ -34,7 +34,7 @@
 
       Still explicitly OPAQUE, which is the rule the comment above exists for.
     -->
-    <Grid x:Name="Root" Background="#FF0A0A0C">
+    <Grid x:Name="Root" Background="{StaticResource TouchSurfaceGroundBrush}">
 
         <!--
           The interaction-safe rectangle is built from THIS element's size, and it is
