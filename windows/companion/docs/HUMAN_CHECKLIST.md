@@ -13,11 +13,16 @@ free download.
 ## 1. Publishing to GitHub — no certificate needed
 
 **Done, and nothing is required of you.** `build.ps1 -Zip -Configuration Release`
-produces `PicoSwitch2-Companion-<version>-x64.zip` (68.6 MB), which is the
-artifact to attach to a GitHub release. Verified 2026-09-04 by extracting it to
-a folder outside the repository on a clean path and running it: the window comes
-up. The user needs no .NET runtime, no Windows App SDK, and no administrator
-rights — the archive carries both runtimes.
+produces `PicoSwitch2-Companion-<version>-x64.zip` — **65.9 MB**, extracting to a
+single folder named `PicoSwitch2 Companion`. Attach it to a GitHub release.
+
+Verified 2026-09-04 by extracting the archive itself to a clean path outside the
+repository and running it: one folder appears, and the window comes up. The user
+needs no .NET runtime, no Windows App SDK, and no administrator rights — the
+archive carries both runtimes.
+
+A single `.exe` is not possible for this configuration; `README.md` §10 records
+what was tried and why the Windows App SDK closes both routes.
 
 **Why not an MSIX.** An MSIX **cannot be installed unsigned**; that is a platform
 rule, not a setting. So it needs either a paid CA certificate or a self-signed
