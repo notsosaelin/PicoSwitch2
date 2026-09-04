@@ -8,7 +8,7 @@
 Supersedes nothing. It **extends**
 [`../experiments/android-gameplay-carrier-choice-2026-09-03.md`](../experiments/android-gameplay-carrier-choice-2026-09-03.md)
 with source-level Android platform facts that document did not have, and it
-**reopens one closed question** — see §12.4 on
+**reopens one closed question** — see §12.7 on
 [`../bluetooth/android-audio-feasibility-2026-08-13.md`](../bluetooth/android-audio-feasibility-2026-08-13.md).
 
 ---
@@ -69,14 +69,21 @@ knocks one out and replaces it with a better one.
   produces, it is solvable, and it must be *designed for*, not discovered.
 
 **On audio.** Raw PCM over this BLE link is not marginal, it is impossible by
-roughly 5x (§11). Compressed transport is mandatory. But the project has
-**already built the hard half twice** and validated it on hardware: a UAC1
-console-facing speaker endpoint that receives real Switch 2 PCM, and an Opus/CELT
-encoder that sustains 96 kbit/s to a genuine Pro Controller 2 over GATT writes
-*while* input notifications keep flowing (§10, §12). That is an existence proof
-at the exact bitrate a companion downlink would need, on this exact radio. It is
-also **RP2350-only**, by a CMake gate and by a measured 20 KB of free SRAM on the
-RP2040 (§13).
+roughly 5x (§11). Compressed transport is mandatory — and **the codec question is
+already closed**: the project's trimmed direct-CELT encoder is the answer, and
+§12 documents what it actually is rather than shopping for alternatives. The hard
+half has **already been built twice and validated on hardware**: a UAC1
+console-facing speaker endpoint that receives real Switch 2 PCM, and that encoder
+sustaining 96 kbit/s to a genuine Pro Controller 2 over GATT writes *while* input
+notifications keep flowing (§10, §12). That is an existence proof at the exact
+bitrate a companion downlink would need, on this exact radio, with the same
+encoder. A companion downlink adds **no new codec code** — it aims the existing
+operation at a different peer, and unlike both existing paths it gets to *choose*
+its frame size, bitrate and silence handling because we own both ends (§12.3).
+Two costs are real: a concurrent second encoder state, and — for the microphone
+direction only — a **decoder that this build does not contain at all** (§12.4).
+All of it is **RP2350-only**, by a CMake gate and by a measured 20 KB of free
+SRAM on the RP2040 against 111.6 KiB of resident Opus (§13).
 
 **Recommendation:** `PATH C LOOKS PROMISING; BUILD AN EXPERIMENTAL ANDROID
 CARRIER` — behind a developer flag, with Classic kept as production and as
@@ -637,6 +644,13 @@ PDUs, roughly 2,500 microseconds per exchange) raw PCM would still need about
 191 % of wall-clock air time. Only 2M PHY **and** working DLE would bring it near
 100 %, which is not a design. **Compression is mandatory, not an optimisation.**
 
+The two Opus rows are not fixed points to design around: unlike the DualSense and
+Pro Controller 2 paths, whose frame sizes are dictated by Sony's and Nintendo's
+decoders, a companion downlink sets its own bitrate and frame duration with one
+`OPUS_SET_BITRATE` and one length constant (§12.3). **64 kbit/s at 20 ms is the
+sensible opening bid** — a quarter of the air time, the same encoder, and 50
+packets a second rather than the DualSense path's 100.
+
 ### 11.3 Scenarios
 
 | Scenario | Air time on the companion ACL |
@@ -655,43 +669,210 @@ screening estimate whose job is to say which experiments are worth running.
 
 ---
 
-## 12. Codecs
+## 12. The codec question is already answered: it is our trimmed CELT encoder
 
-### 12.1 What the repository already has
+**The codec is settled and this document does not reopen it.** The project has
+built, cut down and hardware-validated an Opus configuration twice. A companion
+audio plane should be a **third consumer of that same encoder**, not an
+opportunity to evaluate codecs. This section therefore documents *what the
+existing configuration actually is* — because it is far from stock libopus — and
+then asks only what a companion downlink would have to add to it.
 
-**REPO.** `third_party/opus` is pinned as a submodule (BSD-3-Clause), built with
-`OPUS_FIXED_POINT OFF` and `OPUS_ENABLE_FLOAT_API ON`, and its hot code and
-tables are **relocated into SRAM** by an `objcopy` step in `CMakeLists.txt`
-(`--rename-section .text=.time_critical.opus_text` and friends). Two encoders are
-in production use: a direct-CELT path producing the Pro Controller 2's 240-byte
-96 kbit/s frames, and a DualSense path at 10 ms / 200 bytes / 160 kbit/s with
-`OPUS_SET_COMPLEXITY(0)` and VBR off.
+### 12.1 What "Opus" means in this firmware — REPO, read this session
 
-**A codec is therefore not the risk. The board is (§13).**
+It is **not** the public Opus encoder. `ds5_audio_bridge.c` drives Opus's
+**lower-stack CELT encoder directly**, through internal headers that
+`CMakeLists.txt` deliberately keeps local to the firmware target:
 
-### 12.2 Comparison, for a companion downlink
+```cmake
+# Both controller audio formats use Opus's lower-stack CELT encoder
+# directly. Keep these internal headers local to the firmware target.
+target_include_directories(PicoSwitchWGA PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/opus/celt
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/opus/src)
+```
 
-| Codec | Bitrate for acceptable stereo game audio | Frame | Algorithmic latency | RP2040 | RP2350 at 300 MHz | Host decode | Licence |
-|---|---|---|---|---|---|---|---|
-| **Opus/CELT** | 64–96 kbit/s | 10 or 20 ms | ~2.5–6.5 ms plus frame | **No** — the fixed-point/XIP experiment failed hardware playback (REPO) | **Yes, in production** | Android: `MediaCodec audio/opus` or libopus via the NDK; Windows: libopus P/Invoke or Concentus | BSD-3-Clause |
-| **LC3** | 48–96 kbit/s, better than Opus at the low end | 7.5 or 10 ms | ~10 ms | Untested; lighter than Opus | Untested | **No public Android `MediaCodec` API found**; LE Audio uses it internally. `google/liblc3` (Apache-2.0) is portable to firmware and host | Apache-2.0 (liblc3) |
-| **IMA ADPCM** | 4:1 fixed, so **384 kbit/s** at 48 kHz stereo | per sample | ~0 | Trivial | Trivial | Trivial | Public domain |
-| **Raw PCM** | 1,536 kbit/s | — | 0 | — | — | — | — |
+The calls are `celt_encoder_get_size()`, `celt_encoder_init()`,
+`celt_encoder_ctl()` and `celt_encode_with_ec()`. `opus_encode()` is never
+called. Everything the public wrapper exists to do — SILK, hybrid mode, the mode
+decision, the internal resampler, DTX, FEC, the repacketizer — is bypassed. The
+source says why, and the reason is memory and path length rather than taste:
 
-**ADPCM does not help.** 384 kbit/s is 48,000 B/s, about 126 % of air time on its
-own; it fails for the same reason raw PCM does, just less spectacularly.
-**Anything that works here must be a real perceptual codec.**
+> *"Both controller transports carry fixed-size, CELT-only Opus packets. Use
+> dedicated direct-CELT states for each format so DualSense does not pay for the
+> general public Opus encoder's larger state and wrapper path."*
 
-**Recommendation (INFER): Opus.** It is already vendored, already tuned for this
-CPU, already validated at exactly 96 kbit/s on this radio, and decodable on both
-hosts. LC3 becomes interesting only if RP2040 support ever becomes a goal, and
-§13 says it will not.
+**The five decisions that make it work.** Each one is load-bearing:
 
-### 12.3 Not implemented
+| Decision | Call | Why it matters |
+|---|---|---|
+| **CELT only** | `celt_encoder_init(..., 48000, 2, opus_select_arch())` | 48 kHz stereo full-band, no mode switching, no SILK. |
+| **Signalling off** | `CELT_SET_SIGNALLING(0)` | The codec emits **no TOC byte**. The firmware writes the peer's expected TOC itself — `0xFC` for Pro Controller 2, `0xF4` for DualSense. This is what makes the packet a fixed-layout container we control rather than something the codec frames for us. |
+| **CBR** | `OPUS_SET_VBR(0)` | Every packet is exactly the target size. `celt_encode_with_ec()` returning anything other than `FRAME_LEN - 1` is treated as an outright encode **failure**, not a short frame. Fixed-size frames are what let the transport be trivial. |
+| **Bitrate is the frame size** | DS5: `OPUS_SET_BITRATE(200 * 8 * 100)`; Pro2: `OPUS_SET_BITRATE(96000)` | Bitrate is derived from bytes-per-frame times frames-per-second, not chosen independently. |
+| **Complexity floor** | DS5: `OPUS_SET_COMPLEXITY(0)`; Pro2: runtime-settable, default 0 | CPU-constrained, not quality-constrained. |
+
+**Two independent encoder states**, one per format
+(`speaker_encoder_mode`, `BRIDGE_ENCODER_DS5` / `BRIDGE_ENCODER_PRO2`), each
+`malloc`ed as a single block holding the `CELTEncoder`, its float PCM staging
+buffer and — on the Pro2 path only — a `TonalityAnalysisState`. Tonality analysis
+(`run_analysis`, `CELT_SET_ANALYSIS`) is a **runtime-toggled Pro2-only extra**,
+off unless asked for.
+
+**The two formats in production:**
+
+| | DualSense speaker | Pro Controller 2 headset |
+|---|---|---|
+| Frame | **200 B / 10 ms** (480 samples) | **240 B / 20 ms** (960 samples) |
+| Bitrate | 160 kbit/s | 96 kbit/s |
+| TOC written by firmware | `0xF4` | `0xFC` |
+| Carrier | BR/EDR HID report `0x39` | GATT writes to handle `0x002C`, split 120 + 120 |
+| PCM path | USB 512-frame window resampled 512→480 (`ds5_audio_resample`) | USB frames accumulated to 960, no resample |
+| Analysis | none | optional |
+
+### 12.2 What was done to make it fit the board — REPO + LOCAL
+
+Four things, none of which is a compile flag anyone would guess:
+
+1. **The whole hot archive runs from SRAM.** An `objcopy` step renames
+   `.text` / `.rodata` / `.rodata.str1.4` in `libopus.a` into
+   `.time_critical.opus_*`. The CMake comment records the reason: *"Running the
+   encoder from XIP flash caused enough cache stalls to miss its real-time
+   deadline even when the codec had a dedicated core."*
+2. **`memcpy` / `memset` / `memmove` are re-implemented in SRAM**
+   (`src/ds5_audio_ram_mem.c`, `NS2_DS5_AUDIO_RAM_MEM=1`), compiled with
+   `-fno-builtin -fno-tree-loop-distribute-patterns` so the compiler cannot lower
+   the loops back into recursive calls. The RP2350 has no equivalent of the
+   RP2040 boot-ROM memory operations, and Pico W deliberately keeps its
+   accelerated boot-ROM versions.
+3. **The SDK's automatic core-1 stack is disabled** (`PICO_CORE1_STACK_SIZE=0`)
+   and `main.c` supplies a hardware-validated **48 KiB** stack from ordinary
+   SRAM, with an explicit instruction not to grow it statically because that
+   *"starves BT/BOOTSEL"*.
+4. **Float, not fixed point.** `OPUS_FIXED_POINT OFF`,
+   `OPUS_ENABLE_FLOAT_API ON` — which is exactly why the RP2040 cannot host it
+   (no FPU; `audio-passthrough-research.md` records that the fixed-point/XIP
+   experiment failed hardware playback).
+
+**Measured this session, from `PicoSwitchWGA-pico2_w.elf.map`:**
+
+| Section | Bytes | |
+|---|---|---|
+| `.time_critical.opus_text` | 84,092 | 82.1 KiB |
+| `.time_critical.opus_rodata` | 27,711 | 27.1 KiB |
+| `.time_critical.opus_strings` | 2,451 | 2.4 KiB |
+| **Total Opus resident in SRAM** | **114,254** | **111.6 KiB** |
+
+That is the *linked subset*, not the archive: the on-disk `libopus.a` is 2.6 MB
+and the linker pulls in exactly **20 object files**, every one of them CELT-side
+or analysis —
+
+```
+analysis  bands  celt  celt_encoder  celt_lpc  cwrs  entcode  entdec  entenc
+kiss_fft  laplace  mathops  mdct  mlp  mlp_data  modes  pitch  quant_bands
+rate  vq
+```
+
+— and **nothing** from `silk/`, no `opus_encoder.c`, no `opus.c`, no
+`repacketizer.c`. The CMake comment's *"about 220 KiB in RAM"* describes libopus
+as built; the measured cost of what actually links is roughly half that. The
+runtime `malloc` for the encoder state, its PCM staging and the optional analysis
+state comes out of the remaining free SRAM and was **not** measured here.
+
+**The build is encode-only.** `arm-none-eabi-nm` over the ELF finds
+`celt_encode_with_ec`, `celt_encoder_init`, `opus_custom_encoder_ctl`,
+`opus_fft_impl`, `CELT_PVQ_U_DATA` and friends, and **no decoder symbol of any
+kind** — `celt_decoder.c` is not among the 20 linked objects. That is a
+deliberate consequence of the direct-CELT approach and it matters a great deal in
+§12.4.
+
+### 12.3 What a companion audio downlink would actually add
+
+**Almost nothing on the codec side, and that is the finding.** The adapter
+already does exactly this operation; a companion plane aims it at a different
+peer.
+
+| | DS5 speaker | Pro2 headset | **Companion downlink** |
+|---|---|---|---|
+| Role on the wire | BR/EDR HID host, report `0x39` | LE central, GATT write | **LE peripheral, GATT notify** |
+| Codec | direct CELT, CBR, signalling off | same | **same — zero new codec code** |
+| Frame size | 200 B, fixed by Sony | 240 B, fixed by Nintendo | **free — we own both ends** |
+| Frame duration | 10 ms, fixed | 20 ms, fixed | **free** |
+| TOC byte | `0xF4`, fixed by the peer | `0xFC`, fixed by the peer | **free, or omitted entirely** |
+| Silence handling | encode it | encode it — the peer's decoder needs a continuous range-coded stream | **can be a protocol-level "silence" frame with no encode at all** |
+| Decoder on the adapter | none needed | none needed | **none needed** |
+| Decoder on the far end | Sony's | Nintendo's | **ours — libopus on Windows and Android** |
+
+Three genuine design freedoms fall out of owning both ends, none of which the
+existing paths have:
+
+- **Pick the operating point for the link, not for someone else's product.**
+  §11 costs 96 kbit/s at ~35 % of air time and 64 kbit/s at ~25 %. Both are
+  reachable by changing one `OPUS_SET_BITRATE` and one frame-length constant.
+  20 ms frames halve the packet rate relative to the DualSense path's 10 ms.
+- **Skip encoding silence.** Both existing paths must keep the stateful CELT
+  encoder synchronised with a peer decoder they do not control — hence the
+  Pro2 path's eight priming idle packets, its cap of eight catch-up encodes, and
+  its comment that substituting the fixed idle packet *"freezes only our encoder
+  state, so prediction can diverge when nonzero audio resumes."* A companion
+  protocol can define a one-byte silence frame, and the decoder we ship can reset
+  to match. That removes both a CPU cost and a whole class of divergence bug.
+- **Fixed-size CBR frames map onto the transport for free.** The existing
+  encode-failure contract (`payload_bytes != FRAME_LEN - 1` is a failure, never a
+  short frame) is exactly the property that lets a GATT notification carry one
+  frame with no length field and no reassembly.
+
+**What it would genuinely cost, and this is not nothing:**
+
+- **A third `CELTEncoder` state, or a third `bridge_encoder_mode_t`.**
+  `speaker_encoder_mode` currently permits **one live encoder at a time**. A
+  companion downlink running *concurrently* with a DualSense headset session
+  would need two encoder states resident together, out of the ~88.8 KiB of free
+  SRAM (§13). Running them exclusively is much cheaper and may be the right
+  product answer.
+- **Core-1 budget for a second concurrent encode stream.** Still the
+  load-bearing open question (§13, §24 #9).
+- **A decoder on the host.** libopus via P/Invoke on Windows, libopus via the
+  NDK on Android. Note that our packets carry a **firmware-written TOC and no
+  Opus self-delimiting framing**, so a host decoder must be told the frame
+  geometry out of band — which is fine, since capability negotiation (§18) is
+  where that belongs.
+
+### 12.4 Microphone uplink needs something the firmware does not have
+
+The uplink is not the downlink reversed. It requires a **CELT decoder on the
+adapter**, and §12.2 establishes by measurement that **no decoder is linked at
+all**. Adding one means pulling `celt_decoder.c` and its dependencies into the
+same SRAM-resident region that already costs 111.6 KiB, on a board with ~88.8 KiB
+free.
+
+That is a concrete, measured reason — not a vague one — for the §9.5 ordering
+conclusion that microphone uplink must be the last plane attempted. It is also a
+reason to size it properly *before* committing to it rather than after.
+
+### 12.5 Codecs deliberately not evaluated
+
+Recorded so the question is not reopened by a future pass:
+
+**LC3, ADPCM and any other codec are out of scope**, by decision. Opus is already
+vendored, already cut down to a 20-object CELT-only encoder, already tuned for
+this CPU and clock, already validated on this radio at exactly the bitrate a
+companion downlink needs, and already decodable on both hosts. Introducing a
+second codec would mean a second SRAM budget, a second set of encoder
+idioms, a second host decoder and a second thing to hardware-validate, in
+exchange for savings §11 shows are not needed.
+
+For completeness, and so nobody re-derives it: **ADPCM would not have worked
+anyway.** At 4:1 on 48 kHz stereo it is 384 kbit/s = 48,000 B/s, about 126 % of
+available air time — it fails for the same reason raw PCM does, just less
+spectacularly. Anything viable here has to be a real perceptual codec, and we
+already have one.
+
+### 12.6 Not implemented
 
 No codec work is authorised by this document.
 
-### 12.4 One closed question is reopened, narrowly
+### 12.7 One closed question is reopened, narrowly
 
 [`android-audio-feasibility-2026-08-13.md`](../bluetooth/android-audio-feasibility-2026-08-13.md)
 declares Android companion audio **CLOSED — will not be implemented**, on three
@@ -723,13 +904,18 @@ because this pass has not measured the transport.**
 | | **Pico W (RP2040)** | **Pico 2 W (RP2350)** |
 |---|---|---|
 | `.ram_vector_table` | 192 | 272 |
-| `.data` | 8,612 | **129,140** (relocated libopus) |
+| `.data` | 8,612 | **129,140** — of which **114,254 is the relocated CELT encoder** (§12.2) |
 | `.bss` | 230,624 | 299,824 |
 | `.heap` | 2,048 | 2,048 |
-| stacks | 2,048 + 2,048 (scratch banks) | 2,048 |
+| stacks | 2,048 + 2,048 (scratch banks) | 2,048 (plus the 48 KiB core-1 audio stack inside `.bss`) |
 | **SRAM used, main region** | **241,476 / 262,144** | **433,332 / 524,288** |
 | **SRAM free** | **about 20.2 KB** | **about 88.8 KB** |
 | `.text` plus `.rodata` | about 905 KB of 2 MB flash | about 915 KB of 4 MB flash |
+
+The RP2350 `.data` figure is not incidental bloat: **88 % of it is the Opus
+archive deliberately relocated into SRAM** so the encoder cannot stall on the XIP
+cache (§12.2). Strip audio from that build and the two boards' RAM profiles look
+much alike.
 
 **REPO, and it agrees.** `CMakeLists.txt` gates the whole live-audio path on
 `PICO_PLATFORM MATCHES "^rp2350"`; the Pico 2 W runs at **300 MHz** (from a
@@ -744,19 +930,28 @@ and Bluetooth scheduling."
 - **Controller Path C: both boards.** Its entire cost is a 30-byte frame, a
   16-bit sequence, a millisecond timestamp and two ATT handles. Nothing in the
   table above is threatened by it.
-- **Audio, either direction: Pico 2 W only.** 20 KB of free SRAM on the RP2040
-  cannot hold a codec whose tables alone consume about 120 KB on the RP2350, and
-  the RP2040 has no FPU for the float build in use. Settled by measurement and by
+- **Audio, either direction: Pico 2 W only.** The RP2040 has **20.2 KB free**
+  and the encoder alone is **111.6 KiB resident**, five times the entire
+  headroom — before its encoder state, PCM staging, queues and 48 KiB core-1
+  stack. The RP2040 also has no FPU for the float build in use, which is
+  precisely why the fixed-point experiment failed. Settled by measurement and by
   an existing CMake gate, not by clock-speed reasoning.
+- **A companion downlink adds no codec, but it may add a second encoder.**
+  `speaker_encoder_mode` permits one live `CELTEncoder` at a time. Running a
+  companion downlink *exclusively* costs nothing new in SRAM; running it
+  *concurrently* with a DualSense headset session costs a second encoder state
+  and PCM buffer out of the 88.8 KB free. Decide which product behaviour is
+  wanted before sizing anything (§12.3).
 - **Consequence:** if audio is ever built it must be a **negotiated capability**
   (§18), not a compile-time assumption. A Pico W must answer "no" and a companion
   must accept that gracefully. Do not compromise the controller planes to make
   one board's limitation universal.
 
-**Not measured this session:** CPU headroom on either board, core-1 load, and the
-audio jitter-buffer working set. `audio-passthrough-research.md` names the core-1
-budget as *"the load-bearing open question — everything else is detail work until
-this is answered"*, and it is still open for a **third** concurrent audio stream.
+**Not measured this session:** CPU headroom on either board, core-1 load, the
+runtime `malloc` for the encoder state and analysis, and the audio jitter-buffer
+working set. `audio-passthrough-research.md` names the core-1 budget as *"the
+load-bearing open question — everything else is detail work until this is
+answered"*, and it is still open for a **third** concurrent audio stream.
 
 ---
 
@@ -1031,10 +1226,13 @@ is recorded so the benchmark design does not have to be reinvented.
 
 **Do not combine the Android carrier migration and audio into one patch.**
 
+**And do not re-open the codec.** Step B below is *"point the existing encoder at
+a third frame geometry"*, not *"choose a codec"* — §12 settles that.
+
 | Step | Question | Success criterion |
 |---|---|---|
 | A | Does the adapter capture usable console speaker PCM *for a purpose other than the DualSense bridge*? | 48 kHz stereo frames arrive continuously with a bounded, counted underrun rate |
-| B | Can a synthetic compressed payload be generated at the target rate with **no BLE involved**? | Encoder sustains 50 fps with headroom; core-1 budget measured |
+| B | Can the **existing direct-CELT encoder**, given a third frame geometry (say 20 ms / 160 B / 64 kbit/s), sustain the rate with **no BLE involved**? | Encoder sustains 50 fps with headroom; `diag_opus_encode_max_us` and the core-1 gap counters measured; SRAM cost of the extra encoder state known |
 | C | Compressed audio over a companion BLE plane to **Windows** | No controller regression: `clink` stale and coalesced counters unchanged within noise |
 | D | Decode and play on Windows | Bounded, measured end-to-end audio latency; no unbounded queue |
 | E | Controller latency **while** audio streams | §21 metrics unchanged within noise |
@@ -1094,8 +1292,10 @@ carrier before its replacement is measured.
 | 5 | **No working DLE on CYW43439** — roughly 5x less payload per PDU than the spec allows | **Confirmed present** (EXT, issue open) | Medium for controller, **High for audio** | Air-time budget §11 | Design to 27-octet PDUs; treat any DLE fix as upside | — |
 | 6 | **2M PHY availability unknown** on CYW43439 | Unknown | High **upside**, no downside | `gap_set_connection_phys` plus the §5.4 diagnostic extended to PHY | If available, every audio number in §11 halves | Cheap add-on to Phase A |
 | 7 | **Audio starves the controller plane** | Medium if unscheduled | High | §21 metrics with audio on | §15 reserved-opportunity scheduler | Step E of §22 |
-| 8 | **RP2040 cannot host audio** | **Confirmed** (§13) | Medium | — | Capability negotiation (§18); never a compile-time universal assumption | — |
-| 9 | **Core-1 budget** — a third concurrent audio stream on the core already running BTstack plus codec | Medium | High | Core-1 timing counters | Named as the load-bearing open question since 2026-07 | Step B of §22 |
+| 8 | **RP2040 cannot host audio** — 20.2 KB free against a 111.6 KiB resident encoder, and no FPU | **Confirmed** (§13) | Medium | — | Capability negotiation (§18); never a compile-time universal assumption | — |
+| 9 | **Core-1 budget** — a third concurrent audio stream on the core already running BTstack plus codec | Medium | High | Core-1 timing counters (`diag_core1_*`, `diag_opus_*` already exist) | Named as the load-bearing open question since 2026-07 | Step B of §22 |
+| 9b | **A second concurrent `CELTEncoder`** — companion downlink while a DualSense headset session is live. `speaker_encoder_mode` allows one at a time today | Medium | Medium | SRAM at activation; `bridge_configure_encoder` returning false | Make the planes mutually exclusive, or size both states against the 88.8 KB free | Step B of §22 |
+| 9c | **No CELT decoder exists in this build** — needed only for microphone uplink, and it must be SRAM-resident alongside the 111.6 KiB encoder | **Confirmed** (§12.2, `nm` finds no decoder symbol) | High for mic only | Link-time size | Size it before committing; keep mic last (§9.5) | Step G of §22 |
 | 10 | **Switch 2 audio initialisation unknowns** for a non-DualSense consumer | Medium | Medium | UAC1 alt-setting and Feature Unit traces | The UAC1 path is validated; the *consumer* is what is new | Step A of §22 |
 | 11 | **Stale plane ownership** (the phantom-source class of bug) | Medium | High | Arbiter source list against plane `active` flags | §17 invariants 1 to 3; a regression test per plane | Any new plane |
 | 12 | **Protocol-version drift** across firmware and app | Medium | Medium | `info` plus per-plane version, §18 | Refuse at Start with a reason; follow the descriptor-digest precedent | Any new plane |
@@ -1219,7 +1419,7 @@ authorised by it and must be requested separately:
   contract, or the descriptor.
 - Any capability-negotiation field (§18) — the shape is a proposal.
 - The one-line correction to
-  `docs/bluetooth/android-audio-feasibility-2026-08-13.md` identified in §12.4.
+  `docs/bluetooth/android-audio-feasibility-2026-08-13.md` identified in §12.7.
 
 ---
 
@@ -1232,7 +1432,11 @@ authorised by it and must be requested separately:
    a prototype answers this.
 3. **Does the CYW43439 support 2M PHY?** Every audio number in §11 halves if so.
 4. **Core-1 budget for a third audio stream.** Open since 2026-07 and still the
-   load-bearing question for audio.
+   load-bearing question for audio. Note this is *not* a codec question — §12
+   settles the codec — it is a scheduling and SRAM question about a third
+   consumer of an encoder that already exists.
+4b. **What does a CELT decoder cost in SRAM**, if microphone uplink is ever
+   wanted? The build contains none today (§12.2).
 5. **Do two `BluetoothGatt` objects to one device give independent send tokens?**
    An optimisation, not a gate.
 6. **What is in the genuine controller's 50-byte `0x002E` audio field?**
@@ -1256,4 +1460,6 @@ session:
 - [pico-sdk issue #1465 — LE Data Length Extensions not working on cyw43439](https://github.com/raspberrypi/pico-sdk/issues/1465)
 - [Android `BluetoothDevice` reference (`createL2capChannel`)](https://developer.android.com/reference/android/bluetooth/BluetoothDevice)
 - [Android low-latency audio guidance](https://developer.android.com/games/sdk/oboe/low-latency-audio)
-- [google/liblc3](https://github.com/google/liblc3)
+
+No external codec research is cited, deliberately: §12 settles the codec from
+this repository's own implementation and measurements.
