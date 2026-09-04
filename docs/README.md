@@ -16,6 +16,7 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Runtime architecture | [`architecture/overview.md`](architecture/overview.md) |
 | Proposed Device Appearance customization architecture | [`architecture/device-appearance-customization-hld.md`](architecture/device-appearance-customization-hld.md) |
 | Proposed composable Amiibo, extraction, acquisition, and UID-alias architecture | [`architecture/amiibo-composable-library-hld.md`](architecture/amiibo-composable-library-hld.md) |
+| Single-ACL multiplane companion BLE transport research (Android carrier, audio/mic planes) | [`architecture/companion-multiplane-ble-architecture-research-2026-09-04.md`](architecture/companion-multiplane-ble-architecture-research-2026-09-04.md) |
 | Management architecture, protocol, clients, and conformance | [`management/README.md`](management/README.md) |
 | USB Serial and bonded/encrypted in-band BLE carrier history/details | [`architecture/config-transports.md`](architecture/config-transports.md) |
 | Compatibility results | [`status/compatibility-matrix.md`](status/compatibility-matrix.md) |
