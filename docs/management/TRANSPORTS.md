@@ -26,9 +26,23 @@ the first-class carrier for the Android app and new general management clients.
 | RX | `5252186a-817f-489f-ad75-94c3bd444769` | client to Pico; Write and Write Without Response |
 | TX | `81462706-8e64-407a-bc3d-d303529fbe1c` | Pico to client; Notify |
 | TX CCC | standard `0x2902` | client enables notifications before first command |
+| CL-IN | `2f9e54c1-0b7a-4d62-9c18-3e74a52166d0` | client to Pico; Write Without Response |
+| CL-OUT | `6b33e18a-c45d-470e-b291-7f0c88ae3914` | Pico to client; Notify |
+| CL-OUT CCC | standard `0x2902` | client enables notifications before streaming |
 
 The advertisement includes the service UUID and uses the friendly name `PicoSwitch2`. UUID
 matching is the discovery authority; a name is not authentication.
+
+**CL-IN / CL-OUT are gameplay, not management.** They are Controller Link's Path C data plane, on
+this service so they inherit the same bond, encryption and allowlist -- one ACL, not a second
+relationship. They are listed here because a management client discovers the whole service and
+because `tools/fixtures/management/protocol-v1.json` pins all five UUIDs for both companions; the
+newline-JSON contract in this document does not apply to them. Their framing is
+`include/ns2_companion_link.h`.
+
+Write Without Response is deliberate: at gameplay rates an acknowledged write would serialise
+input behind a round trip, and a lost frame is superseded by the next one. The frame's sequence
+number, not ATT, enforces latest-state-wins.
 
 ### Security and admission
 
@@ -112,6 +126,9 @@ reconnect before another command.
 
 ### Connection lifecycle
 
+Both product backends follow the same shape; the numbered steps below are the Android backend, and
+the Windows differences are noted after it.
+
 The Android backend:
 
 1. scans by service UUID or directly connects to a previously saved address;
@@ -128,6 +145,26 @@ The Android backend:
 Portable `ManagementClient` starts after carrier subscription in step 4 and performs the identity
 probe that promotes the session. Android permission, association, bond repair,
 and user-facing retry behavior remain app/backend responsibilities.
+
+The Windows backend (`windows/companion`, C#/WinUI 3) follows the same sequence with four carrier
+differences, none of which change the logical contract:
+
+1. **No association model.** Windows has no counterpart to Android's companion-device association;
+   the relationship is the bond plus the app's own remembered adapter registry. `WINDOWS_PASS.md`
+   §19.2 records why this is not a gap.
+2. **Bonding is the OS's.** Pairing goes through the system's own flow rather than an in-app one,
+   and a bond the adapter has erased -- which every firmware install does -- must be forgotten in
+   Windows Bluetooth settings before it can be re-made. The same is true on Android, where the
+   failure surfaces as HCI `0x05`/`0x06` on connect.
+3. **Connection parameters are requested explicitly.** The backend asks for
+   `BluetoothLEPreferredConnectionParameters.ThroughputOptimized`, which Windows granted, because
+   the same ACL carries Controller Link. Measured coexistence: management round trips of 117 ms
+   while streaming against 241 ms idle -- streaming is FASTER, because the link is already on a
+   short interval.
+4. **Controller Link rides this session.** Windows cannot be a Bluetooth HID device in either role
+   (`docs/bridge/PLATFORM_BACKEND.md` §2.2), so gameplay uses CL-IN/CL-OUT above rather than a
+   second connection. A Path C session is a facility of the management relationship and does not
+   outlive it: the adapter ends it when this ACL drops.
 
 ## Existing Config USB CDC path
 
