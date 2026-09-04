@@ -18,6 +18,12 @@
       -App               the unpackaged WinUI 3 shell. Needs the Windows App SDK
                          build components; see docs/README.md §4.
 
+      -Zip               the distributable archive: the unpackaged app, zipped.
+                         THIS IS THE ONE TO PUT ON GITHUB. It needs no
+                         certificate, and the user needs no .NET runtime, no
+                         Windows App SDK and no administrator rights -- they
+                         extract it and run the exe.
+
       -Msix              the packaged flavour -- the installer. Requires .NET
                          Framework MSBuild (Visual Studio / Build Tools): the
                          packaging task loads `System.Security.Permissions`,
@@ -31,6 +37,7 @@
     ./build.ps1                     # build + test the core half
     ./build.ps1 -App                # additionally build the WinUI shell (x64)
     ./build.ps1 -App -Platform arm64
+    ./build.ps1 -Zip -Configuration Release   # the GitHub download
     ./build.ps1 -Msix               # signed if credentials resolve, unsigned otherwise
     ./build.ps1 -Core -App -Configuration Release
 #>
@@ -39,6 +46,7 @@ param(
     [switch]$Core,
     [switch]$App,
     [switch]$Msix,
+    [switch]$Zip,
     [switch]$NoTest,
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Debug',
@@ -50,7 +58,10 @@ $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 
 # No switch given means the default: the core half.
-if (-not $Core -and -not $App -and -not $Msix) { $Core = $true }
+if (-not $Core -and -not $App -and -not $Msix -and -not $Zip) { $Core = $true }
+
+# The archive is the app, so building it implies building the app.
+if ($Zip) { $App = $true }
 
 # ---------------------------------------------------------------- signing
 #
@@ -304,6 +315,46 @@ and clear certificateFile/certificatePassword.
         Write-Host "package: $($package.FullName)" -ForegroundColor Green
         New-AppInstaller -Package $package -Url $appInstallerUrl
     }
+}
+
+if ($Zip) {
+    # The unpackaged, self-contained build, archived.
+    #
+    # WHY THIS AND NOT AN MSIX, for a free download: an MSIX cannot be installed
+    # unsigned -- that is a platform rule, not a setting -- so it needs either a
+    # paid CA certificate or a self-signed one. Self-signed means asking every
+    # user to install a root certificate as Administrator before they can even
+    # begin, which is a larger security ask than running an unsigned executable
+    # and buys nothing: SmartScreen is driven by reputation, not by the mere
+    # presence of a signature.
+    #
+    # So the archive is the honest artifact for GitHub. The MSIX path stays
+    # wired for a real certificate or a Store submission later.
+    $stage = Join-Path $PSScriptRoot "src/PicoSwitch.Companion.App/bin/$Platform/$Configuration/net9.0-windows10.0.22621.0/win-$($Platform.ToLowerInvariant())"
+    if (-not (Test-Path $stage)) { throw "no build output at $stage" }
+
+    $version = ([xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'src/PicoSwitch.Companion.App/Package.appxmanifest'))).Package.Identity.Version
+    $archive = Join-Path $PSScriptRoot "PicoSwitch2-Companion-$version-$Platform.zip"
+    if (Test-Path $archive) { Remove-Item -LiteralPath $archive -Force }
+
+    # AppPackages is the MSIX flavour's output and has no business inside the
+    # portable archive; the symbol files are ~200 MB of no use to a user.
+    $staging = Join-Path ([System.IO.Path]::GetTempPath()) "picoswitch-zip-$([guid]::NewGuid().ToString('N'))"
+    try {
+        Copy-Item -LiteralPath $stage -Destination $staging -Recurse
+        Get-ChildItem -LiteralPath $staging -Directory -Filter 'AppPackages' |
+            Remove-Item -Recurse -Force
+        Get-ChildItem -LiteralPath $staging -Recurse -File -Include '*.pdb', '*.xml' |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+
+        Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $archive `
+            -CompressionLevel Optimal
+    } finally {
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $mb = [math]::Round((Get-Item -LiteralPath $archive).Length / 1MB, 1)
+    Write-Host "archive: $archive ($mb MB)" -ForegroundColor Green
 }
 
 Write-Host 'OK' -ForegroundColor Green

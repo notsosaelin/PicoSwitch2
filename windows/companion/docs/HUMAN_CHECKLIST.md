@@ -1,104 +1,96 @@
 # What still needs a human
 
-Everything in Phases 8 and 9 that could be automated is done. What remains needs
-a certificate, a second machine, a screen reader, or a pair of hands — and each
-one is listed here with enough detail to be done in one sitting.
+Everything in Phases 8 and 9 that could be automated is done, and the shippable
+artifact exists: `build.ps1 -Zip -Configuration Release`. What remains needs a
+second machine, a screen reader, or a pair of hands.
 
-Nothing below blocks *using* the app. The unpackaged self-contained build runs
-today, and an unsigned MSIX installs on a machine with developer mode on. These
-are the steps between "works" and "shippable to strangers".
-
----
-
-## 1. Get a code-signing certificate — everything else in Phase 9 waits on this
-
-**Why it cannot be done for you:** a certificate is an identity. `CLAUDE.md`
-forbids committing one, and `WINDOWS_PASS.md` §27.2 requires credentials to live
-outside version control. The build is already wired for one and produces an
-unsigned package until it finds it.
-
-**What to get.** Any of these works; they differ in who trusts the result.
-
-| Option | Cost | Who trusts it |
-|---|---|---|
-| A public CA's code-signing certificate (Sectigo, DigiCert, SSL.com…) | ~$200–400/yr, OV; more for EV | everyone, no SmartScreen warning after reputation builds |
-| Microsoft Store publishing | $19 one-off individual account | everyone; the Store signs it for you and you never hold a key |
-| Self-signed | free | only machines you install the certificate on — fine for you and testers, not for strangers |
-
-**If you only want to test the pipeline,** self-signed is enough and takes a
-minute. The subject **must** be `CN=PicoSwitch2`, matching `Package.appxmanifest`
-`<Identity Publisher="…">`, or signing fails:
-
-```powershell
-$cert = New-SelfSignedCertificate -Type Custom -Subject 'CN=PicoSwitch2' `
-    -KeyUsage DigitalSignature -FriendlyName 'PicoSwitch2 signing' `
-    -CertStoreLocation 'Cert:\CurrentUser\My' `
-    -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3', '2.5.29.19={text}')
-$cert.Thumbprint
-```
-
-**Wire it up.** Create `windows/companion/signing.properties` — already
-gitignored, and never commit it:
-
-```properties
-certificateThumbprint = <the thumbprint printed above>
-appInstallerUrl = https://<wherever you publish releases>
-```
-
-Then:
-
-```powershell
-cd windows\companion
-.\build.ps1 -Msix -Configuration Release
-```
-
-You should see `signing: certificate store thumbprint …`, a `package:` line, and
-an `appinstaller:` line. If you see `the package will be UNSIGNED`, the
-properties file was not found or the key names are misspelled.
-
-**A password-protected `.pfx` will not work** — the packaging task cannot import
-one. `build.ps1` stops with the fix rather than letting MSBuild emit APPX0105.
-Import it to the store once and use the thumbprint. Details in `README.md` §4.
-
-**Verify:**
-
-```powershell
-Get-AuthenticodeSignature <path to the .msix> | Format-List Status, SignerCertificate
-```
-
-`Valid` for a CA certificate. `UnknownError` for a self-signed one is expected —
-its chain does not validate until you install it into Trusted Root on the test
-machine.
+**Nothing here blocks releasing.** The zip is ready to attach to a GitHub
+release today; §1 explains why it, and not an MSIX, is the right artifact for a
+free download.
 
 ---
 
-## 2. Publish a release, then test the upgrade
+## 1. Publishing to GitHub — no certificate needed
 
-**Why it cannot be done for you:** it needs two signed packages, published at a
-real URL, installed in sequence.
+**Done, and nothing is required of you.** `build.ps1 -Zip -Configuration Release`
+produces `PicoSwitch2-Companion-<version>-x64.zip` (68.6 MB), which is the
+artifact to attach to a GitHub release. Verified 2026-09-04 by extracting it to
+a folder outside the repository on a clean path and running it: the window comes
+up. The user needs no .NET runtime, no Windows App SDK, and no administrator
+rights — the archive carries both runtimes.
 
-The automated half is done: `UpgradePersistenceTests` pins the exact on-disk JSON
-the shipping build writes and proves the current decoders still read it, so a
-codec change that would empty someone's adapter list fails in CI. What that
-cannot prove is that MSIX itself carries `%LOCALAPPDATA%` across a version bump.
+**Why not an MSIX.** An MSIX **cannot be installed unsigned**; that is a platform
+rule, not a setting. So it needs either a paid CA certificate or a self-signed
+one — and self-signed means every user must install your `.cer` into **Trusted
+Root as Administrator** before they can begin. For a free download that is a
+larger security ask than running an unsigned executable, and it buys nothing:
+SmartScreen is driven by reputation and EV certificates, not by the presence of
+any signature. Users will see the same "Windows protected your PC" prompt either
+way, on first run, until reputation accrues.
 
-**Steps:**
+**What to write in the release notes**, because the prompt will surprise people:
 
-1. Build and sign `0.1.0.0`. Install it. Use it enough to create real state:
-   pair an adapter, **rename it** (the alias is the field a user typed, so it is
-   the one worth checking), let a peer inventory populate, add an Amiibo to the
-   library, change a setting, and edit a Touch Gamepad layout.
-2. Bump `<Identity Version>` in `Package.appxmanifest` to `0.1.1.0`. Build, sign,
-   publish both the `.msix` and the generated `.appinstaller` to
-   `appInstallerUrl`.
+> Windows will show "Windows protected your PC" the first time you run this.
+> That is SmartScreen reacting to a new download, not a virus warning. Click
+> **More info** then **Run anyway**.
+
+### The MSIX path, if you ever want it
+
+It is wired and proven, so nothing has to be built later — only configured.
+
+A self-signed certificate was created on this machine on 2026-09-04
+(`CN=PicoSwitch2`, thumbprint `83FDEB8E…`, valid to 2031-09-04) and a Release
+MSIX was signed with it and verified to chain to its own public `.cer`. The
+thumbprint is in `windows/companion/signing.properties`, which is gitignored.
+
+Nothing depends on it. To remove it:
+
+```powershell
+Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Subject -eq 'CN=PicoSwitch2' } |
+    ForEach-Object { Remove-Item "Cert:\CurrentUser\My\$($_.Thumbprint)" -Force }
+Remove-Item windows\companion\signing.properties
+```
+
+To use it for real distribution instead, you would want a certificate from a CA
+(~$200–400/yr) or a Microsoft Store account ($19 one-off, and the Store signs on
+your behalf so you never hold a key). Then replace the thumbprint in
+`signing.properties` and run `build.ps1 -Msix -Configuration Release`. Details,
+including why a password-protected `.pfx` will not work, are in `README.md` §4.
+
+**If you keep the self-signed certificate, back up its private key.** It lives
+only in `Cert:\CurrentUser\My` on this machine. An MSIX upgrade requires the
+same publisher, so losing it means never being able to sign a compatible update.
+Export it from `certmgr.msc` → Personal → Certificates → right-click → Export,
+with the private key and a password of your choosing, and keep that `.pfx`
+somewhere outside the repository.
+
+---
+
+## 2. Test an upgrade — only if you go the MSIX route
+
+**Not applicable to the zip.** A zip has no upgrade mechanism: users download the
+new one and replace the folder. Their configuration lives in `%LOCALAPPDATA%`
+and is untouched by that, which is what
+`AdapterRegistryStoreTests.TheDefaultLocationIsUnderLocalAppDataSoBothPackageFlavoursAgree`
+pins.
+
+The automated half is done regardless: `UpgradePersistenceTests` pins the exact
+on-disk JSON the shipping build writes and proves the current decoders still
+read it, so a codec change that would empty someone's adapter list fails in CI.
+
+If you later ship MSIX and want the full check, it needs two signed packages
+installed in sequence:
+
+1. Build and sign `0.1.0.0`, install it, and create real state: pair an adapter,
+   **rename it** (the alias is the field a user typed, so it is the one worth
+   checking), let a peer inventory populate, add an Amiibo, change a setting,
+   edit a Touch Gamepad layout.
+2. Bump `<Identity Version>` in `Package.appxmanifest` to `0.1.1.0`, build, sign,
+   and publish both the `.msix` and the generated `.appinstaller`.
 3. Launch the installed app. With `HoursBetweenUpdateChecks="0"` it checks on
    every launch, so the update should offer itself immediately.
-4. After updating, confirm **all** of this survived: the adapter list, the alias
-   you typed, which adapter is selected, peer history, the Amiibo library, your
-   settings, and your Touch Gamepad layout.
-
-If something is lost, that is a real defect — capture which document and it is
-fixable in the codec, which is exactly what the automated test then pins.
+4. Confirm all of it survived: adapter list, alias, active selection, peer
+   history, Amiibo library, settings, Touch Gamepad layout.
 
 ---
 
