@@ -31,6 +31,17 @@ class ProtocolConformanceTest {
         assertEquals(BleManagementContract.SERVICE_UUID, ble["serviceUuid"]!!.jsonPrimitive.content)
         assertEquals(BleManagementContract.RX_UUID, ble["rxUuid"]!!.jsonPrimitive.content)
         assertEquals(BleManagementContract.TX_UUID, ble["txUuid"]!!.jsonPrimitive.content)
+        // The Controller Link pair. Android does not speak them, but it does
+        // discover the service that carries them, so a change to either is a
+        // change to this app's peripheral.
+        assertEquals(
+            BleManagementContract.CONTROLLER_LINK_IN_UUID,
+            ble["controllerLinkInUuid"]!!.jsonPrimitive.content,
+        )
+        assertEquals(
+            BleManagementContract.CONTROLLER_LINK_OUT_UUID,
+            ble["controllerLinkOutUuid"]!!.jsonPrimitive.content,
+        )
         assertEquals(
             BleManagementContract.ATT_PAYLOAD_WITH_DEFAULT_MTU,
             ble["minimumMtuPayloadBytes"]!!.jsonPrimitive.int,

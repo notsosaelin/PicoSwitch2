@@ -39,6 +39,16 @@ public sealed class ProtocolConformanceTests
         Assert.Equal(BleManagementContract.ServiceUuid, ble.GetProperty("serviceUuid").GetString());
         Assert.Equal(BleManagementContract.RxUuid, ble.GetProperty("rxUuid").GetString());
         Assert.Equal(BleManagementContract.TxUuid, ble.GetProperty("txUuid").GetString());
+
+        // The Controller Link pair, on the same service and therefore the same
+        // bond. Pinned against the shared fixture so the two companions and the
+        // firmware cannot disagree about what the service contains.
+        Assert.Equal(
+            BleManagementContract.ControllerLinkInUuid,
+            ble.GetProperty("controllerLinkInUuid").GetString());
+        Assert.Equal(
+            BleManagementContract.ControllerLinkOutUuid,
+            ble.GetProperty("controllerLinkOutUuid").GetString());
         Assert.Equal(
             BleManagementContract.AttPayloadWithDefaultMtu,
             ble.GetProperty("minimumMtuPayloadBytes").GetInt32());

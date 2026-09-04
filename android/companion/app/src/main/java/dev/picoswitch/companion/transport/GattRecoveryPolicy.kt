@@ -54,6 +54,37 @@ object GattStatusFormatter {
         }
         return "$namespace status=0x${status.toString(16).uppercase().padStart(2, '0')} $symbolic"
     }
+
+    /**
+     * What the person holding the phone should actually do, when there is
+     * something they can do.
+     *
+     * [describe] already named the stale-bond statuses, and naming them was what
+     * turned an unactionable hex code into a diagnosis -- for a developer reading
+     * a log. The user was still shown `HCI status=0x05 AUTHENTICATION_FAILURE`
+     * and no way forward, which reads as "the app stopped working".
+     *
+     * The situation is specific and completely recoverable. The adapter erases
+     * its Bluetooth bonds on every firmware install by design (`config.c`: the
+     * one-shot install marker erases all six persistence sectors, BTstack's TLV
+     * bank among them). Android keeps its half of that bond, so it reconnects
+     * with a key the adapter no longer has. Neither side is broken and neither
+     * side can fix it alone: Android will not run a fresh pairing while it still
+     * holds a bond record, so the bond has to be removed in system Bluetooth
+     * settings first.
+     *
+     * Null for everything else. Advice attached to a failure it does not explain
+     * sends people to Settings to fix a problem that is not there, and the next
+     * genuine occurrence is then ignored.
+     */
+    fun recovery(stage: GattFailureStage, status: Int): String? =
+        if (stage == GattFailureStage.Connect && (status == 0x05 || status == 0x06)) {
+            "The adapter cleared its saved pairing, which happens whenever its " +
+                "firmware is updated. Forget \"PicoSwitch\" in Android's Bluetooth " +
+                "settings, then pair with it again."
+        } else {
+            null
+        }
 }
 
 /** Small, bounded policy. Status 133 is Android's long-standing generic stack failure. */

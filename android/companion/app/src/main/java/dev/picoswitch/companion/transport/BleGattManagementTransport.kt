@@ -126,8 +126,17 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
                 "status=$status state=$newState elapsedMs=${SystemClock.elapsedRealtime() - owner.startedAtElapsedMillis}",
             )
             if (status != BluetoothGatt.GATT_SUCCESS) {
+                // The recovery leads, when there is one: a person reading this has
+                // to know what to DO, and the status code is the evidence for it
+                // rather than the message itself.
+                val detail = GattStatusFormatter.describe(GattFailureStage.Connect, status)
+                val advice = GattStatusFormatter.recovery(GattFailureStage.Connect, status)
                 val failure = GattTransportException(
-                    "Bluetooth connection failed (${GattStatusFormatter.describe(GattFailureStage.Connect, status)})",
+                    if (advice == null) {
+                        "Bluetooth connection failed ($detail)"
+                    } else {
+                        "$advice ($detail)"
+                    },
                     status, GattFailureStage.Connect,
                 )
                 fail(owner, failure)
