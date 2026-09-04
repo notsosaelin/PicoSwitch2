@@ -2269,7 +2269,7 @@ static void handle_line(char *cmd) {
         char info[192];
         snprintf(info, sizeof(info),
                  "{\"id\":\"picoswitch\",\"product\":\"PicoSwitch Config\","
-                 "\"version\":\"2.0\",\"bridge_contract\":%u,\"build\":\"%s\"}",
+                 "\"version\":\"2.5\",\"bridge_contract\":%u,\"build\":\"%s\"}",
                  (unsigned)ANDROID_BRIDGE_CONTRACT_VERSION, PICOSWITCH_BUILD_ID);
         reply(info);
     } else if (strcmp(cmd, "ping") == 0) {
