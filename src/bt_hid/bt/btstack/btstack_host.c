@@ -2890,6 +2890,26 @@ static bool config_ble_handle_disconnect(
     // and the HID close path resumes the scan once the link is actually down.
     classic_companion_release_on_mgmt_loss();
 
+    // AND THE PATH C SESSION, for exactly the same reason.
+    //
+    // This was missing, and the two carriers are easy to confuse because both
+    // are called Controller Link: the line above releases a COMPANION CONNECTED
+    // OVER CLASSIC HID, while this one ends the BLE data plane that rides this
+    // very ACL. Only the Classic half was ever released here.
+    //
+    // What that cost: btstack_host_companion_link_stop() had a single caller,
+    // the explicit `clink stop` command, so a companion that simply went away --
+    // app killed, PC asleep, link dropped -- left the session marked active and
+    // left the input arbiter holding a source named "Controller Link" that no
+    // longer had anything behind it. It stayed selectable forever, and selecting
+    // it handed the console to a dead peer: the on-screen controller of the
+    // OTHER, still-connected companion then drove nothing, with every counter on
+    // both ends looking healthy.
+    //
+    // The stop publishes neutral before releasing ownership, so the console does
+    // not keep the departed companion's last frame.
+    btstack_host_companion_link_stop();
+
     if (!config_ble.mode_active && !g_usb_config_mode &&
         !btstack_host_controller_connected()) {
         btstack_host_start_scan();

@@ -190,6 +190,21 @@ def check_controller_link_is_bound_to_management(source: str) -> None:
         "alive is the invariant violation captured on 2026-08-22"
     )
 
+    # BOTH carriers, not just the Classic one. The two are easy to confuse
+    # because both are called Controller Link: the line above releases a
+    # companion connected over Classic HID, and this one ends the Path C data
+    # plane that rides the management ACL itself.
+    #
+    # Only the Classic half was released here until 2026-09-03, so a Path C
+    # companion that simply went away left the session marked active and left
+    # the input arbiter holding a selectable source with nothing behind it.
+    # Selecting it handed the console to a dead peer, and the other companion's
+    # on-screen controller then drove nothing while every counter looked healthy.
+    assert "btstack_host_companion_link_stop();" in disconnect, (
+        "management disconnect must also end the Path C session; a session that "
+        "outlives its ACL leaves a phantom source in the input arbiter"
+    )
+
     # Teardown goes through the existing Classic close path rather than a second
     # mechanism that could disagree with it about released state.
     release = function_body(
