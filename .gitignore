@@ -73,3 +73,10 @@ dumps/*bugreport-extract/
 # working session, not project documentation.
 /DOUBLE_TAP*.md
 /ANALOG_TRIGGER.md
+
+# MSIX signing credentials, same rule as the Android keystore: external by
+# construction, never committed. build.ps1 reads this file or the equivalent
+# environment variables, and produces an UNSIGNED package when neither resolves.
+windows/companion/signing.properties
+*.pfx
+*.appinstaller

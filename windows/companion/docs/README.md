@@ -160,6 +160,52 @@ a clear message when there is none. This is a Windows App SDK packaging gap, not
 a project defect, and it is not worked around by copying assemblies into the
 NuGet cache — that fixes one machine and no other.
 
+### Signing an MSIX, and why a password-protected .pfx will not work
+
+`build.ps1 -Msix` follows the Android arrangement exactly (`WINDOWS_PASS.md`
+§27.2): credentials resolve from `signing.properties` beside the script, then
+from environment variables, and **their absence produces an unsigned package
+rather than a build failure**. Both paths are gitignored; no certificate,
+password or thumbprint is ever committed.
+
+| `signing.properties` | Environment | Meaning |
+|---|---|---|
+| `certificateThumbprint` | `PICOSWITCH_MSIX_THUMBPRINT` | a certificate already in `Cert:\CurrentUser\My` — **the recommended route** |
+| `certificateFile` | `PICOSWITCH_MSIX_CERT` | a `.pfx` on disk, relative paths resolved from `windows/companion/` |
+| `certificatePassword` | `PICOSWITCH_MSIX_CERT_PASSWORD` | see the warning below |
+| `appInstallerUrl` | `PICOSWITCH_APPINSTALLER_URL` | where releases are published; absent means no `.appinstaller` is written |
+
+**A password-protected `.pfx` cannot be used.** Observed 2026-09-03 with a
+throwaway self-signed certificate:
+
+```
+error APPX0105: Cannot import the key file '...pfx'. The key file may be
+               password protected.
+error APPX0107: The certificate specified is not valid for signing.
+```
+
+which reads like a bad certificate rather than an unsupported input. `build.ps1`
+therefore refuses that combination up front with the fix instead of letting
+MSBuild produce those two codes: import the certificate once, then sign by
+thumbprint.
+
+```powershell
+Import-PfxCertificate -FilePath 'release.pfx' -CertStoreLocation Cert:\CurrentUser\My `
+    -Password (Read-Host -AsSecureString)
+# then set certificateThumbprint and clear certificateFile/certificatePassword
+```
+
+The thumbprint route is verified end to end: a package built that way carries
+the expected signer subject and thumbprint. A self-signed certificate reports
+`Get-AuthenticodeSignature` status `UnknownError` because its chain does not
+validate — that is the certificate, not the wiring. A certificate from a CA
+reports `Valid`.
+
+The `.appinstaller` is generated from the built package rather than checked in:
+the version and architecture come from the package's own manifest, so the update
+manifest cannot drift from what was actually produced. Only the URL is
+configuration.
+
 ### `runFullTrust` is required, contradicting §27.3
 
 `WINDOWS_PASS.md` §27.3 specifies the manifest declare "exactly `bluetooth`,
@@ -556,7 +602,18 @@ Hardware H9, and the three exit criteria: a binding survives a reload and a
 reconnect, reset restores adapter defaults, and live mouse tuning never blocks
 the window.
 
-## 10. Next
+## 10. What still needs a human
+
+Phases 8 and 9 are finished as far as automation can take them: the MSIX
+pipeline builds and signs, the `.appinstaller` is generated from the package,
+and `UpgradePersistenceTests` pins the on-disk documents so an upgrade cannot
+silently empty a user's adapter list.
+
+What is left needs a certificate, a second machine, a screen reader or a pair of
+hands, and each item is written up with the commands to run in
+[`HUMAN_CHECKLIST.md`](HUMAN_CHECKLIST.md).
+
+## 11. Next
 
 Phase 5 (Virtual Amiibo), whose precondition is the shared crypto fixture in
 §16.7. Phase 6 remains gated on the §14.5 HOGP peripheral-role experiment, which
