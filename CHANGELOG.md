@@ -3,7 +3,17 @@
 Release notes describe user-visible behavior. Detailed implementation history remains in
 `docs/archive/` and the experiment records.
 
-## Unreleased
+## 2.5.0 — 2026-09-04
+
+The Windows companion becomes a real product. 2.0.0 shipped an Android companion and wireless
+management; this release brings Windows to parity — it can manage the adapter, drive the console as
+a controller, and it now installs like an ordinary Windows application.
+
+Both companions also gain a fully editable on-screen controller, and the adapter learns to take
+input from a Bluetooth keyboard and mouse.
+
+The bridge contract is version 4. Firmware and companions from different releases are not
+interchangeable: update all of them together.
 
 ### Added
 
@@ -26,17 +36,26 @@ Release notes describe user-visible behavior. Detailed implementation history re
   import; the shipped **Default** layout can never be overwritten — saving over it makes a new
   profile instead — so there is always something to go back to. Everything here is local: it works
   with no adapter attached, and it uses the last controller the adapter was seen emulating when
-  nothing is connected. **It cannot drive a console on this release** — that needs Controller Link,
-  which this Windows build does not have. The controller says so in one short line rather than
-  looking broken, and the menu explains the whole of it.
-- **Gamepad page on Windows: an answer about whether this PC can act as a controller.** Using a PC
-  as a controller for the adapter needs its Bluetooth radio to advertise as a peripheral, and
-  whether it will do that turns out to vary by radio and driver rather than being a property of
-  Windows. The page now measures it on this PC and says what it found, including whether the radio
-  claims to support the role and whether it actually does — the two can disagree. Controller Link
-  itself is **not** available in this release; the page explains specifically what is missing rather
-  than saying the feature is unsupported, and it can be re-checked if you try a different Bluetooth
-  adapter.
+  nothing is connected. It drives the console through Controller Link, below.
+- **Controller Link on Windows: this PC as a controller for the adapter.** Pick any controller
+  Windows can see — Xbox, DualSense, DualShock 4, Switch Pro, a handheld's built-in sticks — and the
+  adapter presents it to the console as the emulated controller, with rumble coming back the other
+  way and the controller's battery shown on the console. The on-screen controller drives it too, so
+  a touchscreen PC needs no physical pad at all. It rides the same encrypted Bluetooth connection
+  the app already uses for management: one radio link, not two, and it only works while that
+  management session is live. Buttons, sticks, D-pad, shoulders, triggers, stick clicks, Home,
+  Capture and C all cross. Motion does not, because Windows does not expose it for a controller —
+  the app says so rather than pretending.
+  A controller connected to the PC over Bluetooth rather than USB adds a second radio hop and can
+  feel laggy; the app now says so once when it notices, and dismisses itself.
+- **A Windows installer, alongside the portable download.** `PicoSwitch2-Companion-Setup-2.5.0-x64.exe`
+  is an ordinary Windows setup: install for yourself or for all users, choose the folder, choose
+  whether you want Start Menu and Desktop shortcuts, and uninstall from Settings → Apps like
+  anything else. Installing for yourself needs no administrator rights. It fetches the .NET Desktop
+  Runtime from Microsoft only if you do not already have it. Uninstalling leaves your adapters,
+  layouts, Amiibo library and settings alone.
+  The portable ZIP remains for anyone who would rather not install anything: extract one folder and
+  run it, with no runtime to fetch and nothing written outside it except your settings.
 - **Bluetooth keyboard and keyboard + mouse input.** A new **Input source** setting selects
   Controller (the default and unchanged behavior), Keyboard, or Keyboard + Mouse. A Bluetooth
   keyboard can drive the console by itself, and a keyboard plus a mouse act as one controller — one
@@ -96,6 +115,18 @@ the one still connected keeps working throughout. See
 
 ### Fixed
 
+- **A Controller Link that had ended stayed in the console-input list forever.** If a companion
+  driving the console over Controller Link went away — app closed, PC asleep, link dropped — the
+  adapter kept the session and kept offering "Controller Link" as something to select. Selecting it
+  handed the console to a peer that no longer existed, so the other companion's on-screen controller
+  drove nothing while everything reported healthy. The session now ends with the connection that
+  authorised it.
+- **The on-screen controller looked like a different application on Windows.** It drew from Windows'
+  own theme colours rather than the shared design, so the D-pad and stick knobs came out white, the
+  pads were square-cornered and the outlines invisible. It also had no gameplay feedback at all:
+  nothing lit up when pressed, and the sticks never moved. Both companions now draw the same
+  controller, and presses, holds, trigger travel, stick movement and lit D-pad directions are all
+  visible. A white bar along the top of the window in every maximised view is gone with it.
 - **The Windows companion showed the wrong adapter colours until you pressed Refresh.** Body and
   the two Joy-Con accents were read only by the manual Refresh, and the app's placeholder for an
   unread colour is black — so a freshly connected adapter presented three black swatches as if they

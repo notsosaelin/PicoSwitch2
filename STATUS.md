@@ -921,14 +921,26 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   non-zero Classic connection index. Records:
   [`docs/experiments/android-le-bond-transport-and-coexistence-soak-2026-08-21.md`](docs/experiments/android-le-bond-transport-and-coexistence-soak-2026-08-21.md),
   [`docs/experiments/controller-link-console-slot-misroute-2026-08-21.md`](docs/experiments/controller-link-console-slot-misroute-2026-08-21.md).
-- **Current release:** v2.0.0, published 2026-08-15 from commit `a1491b2`.
-- **Development branch:** `ns2-testing`; v2.0.0 is the last tag on it.
-- **Bridge contract:** 3 (`ANDROID_BRIDGE_CONTRACT_VERSION` / `BridgeContract.VERSION`) — unchanged.
+- **Current release:** v2.5.0, published 2026-09-04.
+- **Development branch:** `ns2-testing`; v2.5.0 is the last tag on it.
+- **Bridge contract:** 4 (`ANDROID_BRIDGE_CONTRACT_VERSION` / `BridgeContract.VERSION`).
 - **Settings schema:** 11 (was 10; adds KB/M configuration, migrates v10 in place).
+- **Release artifacts:** firmware UF2 for both boards, the Android APK, and — new in this release —
+  two Windows artifacts: a Setup `.exe` and a portable ZIP. Built by
+  `windows/companion/build.ps1 -ReleaseArtifacts`; see
+  [`windows/companion/docs/HUMAN_CHECKLIST.md`](windows/companion/docs/HUMAN_CHECKLIST.md) for the
+  release checklist.
 
 ## Release baseline
 
-v2.0.0 is a major-generation release, not a point update on v1.5.0. It establishes the current
+**v2.5.0 (2026-09-04)** brings the Windows companion to parity: it manages the adapter, drives the
+console as a controller over Controller Link, and ships as an installer as well as a portable ZIP.
+Both companions gained an editable on-screen controller, and the adapter learned keyboard and
+keyboard+mouse input. Bridge contract 4 — firmware and companions from different releases are not
+interchangeable.
+
+v2.0.0 established the shape that 2.5.0 extends. It is a major-generation release, not a point
+update on v1.5.0, and defines the current
 product shape: native Switch 2 controller personalities, Bluetooth physical-controller input, a
 native Android companion with a host-controller bridge, a platform-neutral bridge core, translated
 motion and rumble, battery passthrough, C/GameChat, bonded/encrypted in-band Bluetooth management,
@@ -944,7 +956,7 @@ evidence:
   path.
 - **Pico W** — validated non-audio profile.
 
-Release notes and the release validation record: [`CHANGELOG.md`](CHANGELOG.md) §2.0.0.
+Release notes: [`CHANGELOG.md`](CHANGELOG.md) §2.5.0, and §2.0.0 for the baseline it extends.
 
 ## Current architecture
 
@@ -2377,9 +2389,10 @@ validation; state the level performed.
 
 ## Immediate status
 
-No known release-blocking regression. v2.0.0 remains the released baseline; the branch now carries
+No known release-blocking regression. **v2.5.0 is the released baseline**, published 2026-09-04 with
+firmware for both boards, the Android APK, and the Windows installer and portable ZIP. It carries
 the Bluetooth Keyboard / Keyboard + Mouse input pass, the 2026-08-21 Android/Bluetooth reliability
-pass, and the Touch Gamepad on top of it.
+pass, the Touch Gamepad on both companions, and Windows Controller Link.
 
 The reliability pass is physically accepted. Confirmed on hardware: fresh LE management pairing,
 repeated Refresh, personality switching with post-transition management recovery, DualSense Edge +
