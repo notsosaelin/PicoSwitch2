@@ -1,53 +1,86 @@
 # What still needs a human
 
-Everything in Phases 8 and 9 that could be automated is done, and the shippable
-artifact exists: `build.ps1 -Zip -Configuration Release`. What remains needs a
-second machine, a screen reader, or a pair of hands.
+Both release artifacts build, install and uninstall. What remains needs a second
+machine, a screen reader, or a pair of hands.
 
-**Nothing here blocks releasing.** The zip is ready to attach to a GitHub
-release today; §1 explains why it, and not an MSIX, is the right artifact for a
-free download.
+**Nothing here blocks releasing.** Neither code signing nor MSIX is required for
+an ordinary GitHub release; both are optional polish and are listed as such at
+the end.
 
 ---
 
-## 1. Publishing to GitHub — no certificate needed
+## Release checklist
 
-**Done, and nothing is required of you.** `build.ps1 -Zip -Configuration Release`
-produces `PicoSwitch2-Companion-<version>-x64.zip` — **31.7 MB**, extracting to a
-single folder named `PicoSwitch2 Companion`. Attach it to a GitHub release.
+```powershell
+cd windows\companion
+./build.ps1 -Configuration Release                       # build + run every test
+./build.ps1 -ReleaseArtifacts -Configuration Release     # both artifacts + hashes
+```
 
-Verified 2026-09-04 by extracting the archive itself to a clean path outside the
-repository and running it: one folder appears, 96 files in 4 directories, and
-the window comes up.
+- [ ] tests green (four suites, plus the descriptor parity check)
+- [ ] `artifacts/` contains exactly the Setup `.exe`, the portable `.zip` and
+      `SHA256SUMS.txt` — no PDBs, no MSIX, no `AppPackages`
+- [ ] hashes in `SHA256SUMS.txt` match the two files
+- [ ] install the Setup `.exe` from a folder outside the repository; the app
+      launches, the Start Menu shortcut works, and it appears in Installed Apps
+- [ ] uninstall it; shortcuts and files go, `%LOCALAPPDATA%\PicoSwitch2` stays
+- [ ] extract the portable `.zip` somewhere clean and run it
+- [ ] create the GitHub Release and upload **both** artifacts and
+      `SHA256SUMS.txt`
 
-**Users need the .NET 9 Desktop Runtime (x64)**, which halves the download.
-Link it in the release notes: <https://dotnet.microsoft.com/download/dotnet/9.0>.
-If you would rather they install nothing at all, `build.ps1 -Zip -SelfContained`
-bundles it and the archive becomes 65.9 MB. The Windows App SDK runtime is
-bundled either way — see `README.md` §10 for why that one is not made a
-prerequisite.
+### What to write in the release notes
 
-A single `.exe` is not possible for this configuration; `README.md` §10 records
-what was tried and why the Windows App SDK closes both routes.
-
-**Why not an MSIX.** An MSIX **cannot be installed unsigned**; that is a platform
-rule, not a setting. So it needs either a paid CA certificate or a self-signed
-one — and self-signed means every user must install your `.cer` into **Trusted
-Root as Administrator** before they can begin. For a free download that is a
-larger security ask than running an unsigned executable, and it buys nothing:
-SmartScreen is driven by reputation and EV certificates, not by the presence of
-any signature. Users will see the same "Windows protected your PC" prompt either
-way, on first run, until reputation accrues.
-
-**What to write in the release notes**, because the prompt will surprise people:
-
-> Requires the [.NET 9 Desktop Runtime
-> (x64)](https://dotnet.microsoft.com/download/dotnet/9.0) — most machines
-> already have it.
+> **Installer (recommended)** — `PicoSwitch2-Companion-Setup-<version>-x64.exe`
+> Installs for you only by default, no administrator rights needed. Choose the
+> location and whether you want Start Menu and Desktop shortcuts. Uninstalls
+> from Settings → Apps → Installed apps. Fetches the .NET Desktop Runtime for
+> you if you do not already have it.
 >
-> Windows will show "Windows protected your PC" the first time you run this.
-> That is SmartScreen reacting to a new download, not a virus warning. Click
-> **More info** then **Run anyway**.
+> **Portable** — `PicoSwitch2-Companion-<version>-x64-portable.zip`
+> Extract and run. Nothing is installed and no runtime is required; the download
+> is larger because both runtimes are inside it.
+>
+> Windows SmartScreen may warn on first launch, because this unsigned GitHub
+> release has not yet accumulated reputation. Choose **More info** → **Run
+> anyway** if you downloaded it from the official PicoSwitch2 releases page.
+
+Both builds store settings in `%LOCALAPPDATA%\PicoSwitch2`. "Portable" means no
+installer is required, not that the app keeps its configuration beside the
+executable — an uninstall and a re-extract both find your existing adapters.
+
+---
+
+## 1. Signing — optional, and not needed to release
+
+Neither artifact is signed, and neither needs to be. SmartScreen is driven by
+reputation and EV certificates, not by the presence of any signature, so a
+self-signed certificate would produce the *same* first-run prompt while also
+asking every user to install a root certificate. Do not do that.
+
+If you ever want real signing, `build.ps1` already resolves credentials from
+`signing.properties` or the environment, and produces unsigned output when it
+finds none — see `README.md` §4. A certificate from a CA (~$200–400/yr) or a
+Microsoft Store account ($19 one-off, where the Store signs on your behalf) are
+the two routes.
+
+### The MSIX path, if you ever want it
+
+MSIX **cannot be installed unsigned** — a platform rule, not a setting — which
+is why it is not the primary artifact for a free download. It is wired and
+proven, so nothing has to be built later, only configured.
+
+A self-signed certificate was created on this machine on 2026-09-04
+(`CN=PicoSwitch2`, thumbprint `83FDEB8E…`, valid to 2031-09-04) and a Release
+MSIX was signed with it and verified to chain to its own public `.cer`. The
+thumbprint is in `windows/companion/signing.properties`, which is gitignored.
+
+Nothing depends on it. To remove it:
+
+```powershell
+Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Subject -eq 'CN=PicoSwitch2' } |
+    ForEach-Object { Remove-Item "Cert:\CurrentUser\My\$($_.Thumbprint)" -Force }
+Remove-Item windows\companion\signing.properties
+```
 
 ### The MSIX path, if you ever want it
 

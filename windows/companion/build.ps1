@@ -18,26 +18,35 @@
       -App               the unpackaged WinUI 3 shell. Needs the Windows App SDK
                          build components; see docs/README.md §4.
 
-      -Zip               the distributable archive: the unpackaged app, zipped.
-                         THIS IS THE ONE TO PUT ON GITHUB. It needs no
-                         certificate and no administrator rights -- the user
-                         extracts it and runs the exe.
+      -Zip               the PORTABLE release artifact: the unpackaged app,
+                         zipped, extracting to one folder. No installer, no
+                         administrator rights, no system changes.
 
-                         Requires the .NET 9 Desktop Runtime on the user's
-                         machine, which halves the download. Measured
-                         2026-09-04, both pruned identically:
+                         SELF-CONTAINED by default, which is the whole promise of
+                         a portable build: extract and run, with no prerequisite
+                         to chase. It is the larger of the two downloads and that
+                         is the trade being offered.
+
+      -Installer         the INSTALLER release artifact, a single Setup .exe.
+                         Framework-dependent on .NET, so the payload is a third
+                         the size, and the installer detects the runtime and
+                         fetches Microsoft's own redistributable when it is
+                         missing. Needs Inno Setup 6.3+.
+
+      -ReleaseArtifacts  both of the above, plus SHA256SUMS.txt, into artifacts/.
+                         This is what a GitHub release is made from.
+
+      -FrameworkDependent
+                         with -Zip: require the .NET runtime instead of bundling
+                         it. Measured 2026-09-04, both pruned identically:
 
                            bundling it     280 files, 4 dirs, 65.9 MB zipped
                            requiring it     96 files, 4 dirs, 31.7 MB zipped
 
-                         The Windows App SDK runtime is always BUNDLED. Dropping
-                         that too would reach 42 files and 10.8 MB, but unlike
-                         the .NET runtime it is not something a user is likely to
-                         already have, and its absence is far harder for them to
-                         diagnose.
-
-      -SelfContained     with -Zip: bundle the .NET runtime as well, so the user
-                         installs nothing at all. The 65.9 MB flavour.
+                         Not the default for the portable build: a portable
+                         archive that stops with "install a runtime first" is not
+                         portable. The installer takes that trade instead,
+                         because an installer can resolve it for the user.
 
       -Msix              the packaged flavour -- the installer. Requires .NET
                          Framework MSBuild (Visual Studio / Build Tools): the
@@ -52,8 +61,9 @@
     ./build.ps1                     # build + test the core half
     ./build.ps1 -App                # additionally build the WinUI shell (x64)
     ./build.ps1 -App -Platform arm64
-    ./build.ps1 -Zip -Configuration Release                  # the GitHub download
-    ./build.ps1 -Zip -SelfContained -Configuration Release   # ...bundling .NET too
+    ./build.ps1 -ReleaseArtifacts -Configuration Release     # both, for a GitHub release
+    ./build.ps1 -Zip -Configuration Release                  # portable only
+    ./build.ps1 -Installer -Configuration Release            # installer only
     ./build.ps1 -Msix               # signed if credentials resolve, unsigned otherwise
     ./build.ps1 -Core -App -Configuration Release
 #>
@@ -63,7 +73,9 @@ param(
     [switch]$App,
     [switch]$Msix,
     [switch]$Zip,
-    [switch]$SelfContained,
+    [switch]$Installer,
+    [switch]$ReleaseArtifacts,
+    [switch]$FrameworkDependent,
     [switch]$NoTest,
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Debug',
@@ -74,11 +86,21 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 
-# No switch given means the default: the core half.
-if (-not $Core -and -not $App -and -not $Msix -and -not $Zip) { $Core = $true }
+# -ReleaseArtifacts is the two release outputs together, and the version, hashes
+# and artifacts directory only make sense when both were produced from one run.
+if ($ReleaseArtifacts) { $Zip = $true; $Installer = $true }
 
-# -Zip publishes the app itself, so it does not also need the -App build; the
-# two write to different directories and doing both would only double the work.
+# No switch given means the default: the core half.
+if (-not $Core -and -not $App -and -not $Msix -and -not $Zip -and -not $Installer) { $Core = $true }
+
+# -Zip and -Installer publish the app themselves, so neither also needs the -App
+# build; they write to different directories and doing both would only duplicate
+# the work.
+
+# Where release artifacts land. Deliberately NOT the publish tree: a GitHub
+# release directory should hold the two files a user downloads and nothing else
+# -- no Debug output, no PDBs, no AppPackages, no MSIX.
+$artifactsDir = Join-Path $PSScriptRoot 'artifacts'
 
 # ---------------------------------------------------------------- signing
 #
@@ -155,7 +177,11 @@ $testProjects = @(
 function Invoke-Dotnet {
     param([string[]]$Arguments)
     Write-Host "dotnet $($Arguments -join ' ')" -ForegroundColor DarkGray
-    & dotnet @Arguments
+    # Out-Host, not bare output: called from inside a function that RETURNS a
+    # value, dotnet's stdout would otherwise be part of that return value and the
+    # caller would get an array of build log lines with the real result at the
+    # end of it.
+    & dotnet @Arguments | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "dotnet $($Arguments -join ' ') failed with exit code $LASTEXITCODE" }
 }
 
@@ -166,6 +192,106 @@ function Find-FrameworkMsbuild {
     ) -Recurse -Filter 'MSBuild.exe' -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -like '*\Bin\amd64\MSBuild.exe' } |
         Select-Object -First 1 -ExpandProperty FullName
+}
+
+# THE authoritative product version: Package.appxmanifest's Identity.
+#
+# One source, read here and passed to everything downstream -- the archive name,
+# the installer name, and the installer's own AppVersion. Duplicating it into a
+# script is how an installer ends up claiming a version the binaries do not have.
+function Get-ProductVersion {
+    $manifest = Join-Path $PSScriptRoot 'src/PicoSwitch.Companion.App/Package.appxmanifest'
+    ([xml](Get-Content -LiteralPath $manifest)).Package.Identity.Version
+}
+
+# Inno Setup's command-line compiler.
+#
+# Registry first, because that is where an install of either scope records
+# itself and it is the only mechanism that survives the user choosing a
+# non-default directory. The fixed paths are a fallback for a copy that was
+# unpacked rather than installed. winget installs per-user by default when it
+# runs unelevated, which is why HKCU is checked before HKLM.
+function Find-InnoSetup {
+    foreach ($key in @(
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1'
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1'
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1'
+    )) {
+        $location = (Get-ItemProperty -Path $key -ErrorAction SilentlyContinue).InstallLocation
+        if ($location) {
+            $candidate = Join-Path $location 'ISCC.exe'
+            if (Test-Path -LiteralPath $candidate) { return $candidate }
+        }
+    }
+
+    foreach ($candidate in @(
+        "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe"
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+        "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+    )) {
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
+
+    $onPath = Get-Command 'ISCC.exe' -ErrorAction SilentlyContinue
+    if ($onPath) { return $onPath.Source }
+
+    return $null
+}
+
+# One publish, used by both release artifacts.
+#
+# The two differ in exactly one property -- whether the .NET runtime is carried
+# -- so they share everything else rather than drifting into two recipes that
+# produce subtly different applications.
+function Publish-App {
+    param([bool]$Bundled)
+
+    Invoke-Dotnet @(
+        'publish', $appProject
+        '-c', $Configuration
+        "-p:Platform=$Platform"
+        '-r', "win-$($Platform.ToLowerInvariant())"
+        '-p:WindowsPackageType=None'
+        "-p:SelfContained=$($Bundled.ToString().ToLowerInvariant())"
+        '-p:WindowsAppSDKSelfContained=true'
+        '-p:DebugType=none'          # no .pdb: of no use to a user
+        '--nologo'
+    )
+
+    $published = Join-Path $PSScriptRoot "src/PicoSwitch.Companion.App/bin/$Platform/$Configuration/net9.0-windows10.0.22621.0/win-$($Platform.ToLowerInvariant())/publish"
+    if (-not (Test-Path $published)) { throw "no publish output at $published" }
+    return $published
+}
+
+# Copy a publish tree to $Destination, dropping what a user never needs.
+#
+# `dotnet publish` emits a directory per WinUI language -- af-ZA through zh-TW,
+# two .mui files each -- for languages this app does not ship in, plus the
+# .winmd WinRT metadata, which is a COMPILE-time input. Removing both takes the
+# self-contained tree from 492 files across 89 directories to 280 across 4.
+#
+# Both prunes were verified 2026-09-04 by RUNNING the pruned folder rather than
+# by reasoning about it. Nothing else is removed: PublishTrimmed is deliberately
+# not used, because WinUI's XAML loading is reflection-heavy and a trimmed build
+# fails on the page nobody tested.
+function Copy-PrunedPayload {
+    param([string]$From, [string]$Destination)
+
+    Copy-Item -LiteralPath $From -Destination $Destination -Recurse
+
+    $langs = Get-ChildItem -LiteralPath $Destination -Directory | Where-Object {
+        $_.Name -ne 'en-us' -and
+        (Get-ChildItem -LiteralPath $_.FullName -Filter '*.mui' -ErrorAction SilentlyContinue)
+    }
+    $langs | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
+
+    $winmd = Get-ChildItem -LiteralPath $Destination -Recurse -Filter '*.winmd'
+    $winmd | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+
+    $files = Get-ChildItem -LiteralPath $Destination -Recurse -File
+    $dirs = Get-ChildItem -LiteralPath $Destination -Recurse -Directory
+    Write-Host "  pruned $($langs.Count) language packs and $($winmd.Count) winmd" -ForegroundColor DarkGray
+    Write-Host "  payload: $($files.Count) files in $($dirs.Count) directories, $([math]::Round((($files | Measure-Object -Property Length -Sum).Sum) / 1MB, 1)) MB" -ForegroundColor DarkGray
 }
 
 # Only MSIX packaging still needs .NET Framework MSBuild. The unpackaged app
@@ -334,111 +460,163 @@ and clear certificateFile/certificatePassword.
     }
 }
 
+# ------------------------------------------------------------- release artifacts
+#
+# TWO artifacts, deliberately using DIFFERENT runtime models, because they are
+# offering the user different trades:
+#
+#   installer   framework-dependent .NET. A third the payload, and the installer
+#               resolves the missing runtime itself -- which an installer can do
+#               and an archive cannot.
+#
+#   portable    self-contained. Larger, and in exchange it needs nothing, asks
+#               nothing, and changes nothing on the machine. An archive that
+#               stopped with "install a runtime first" would not be portable.
+#
+# The Windows App SDK runtime is bundled in BOTH. Making it a prerequisite too
+# would reach 42 files and 10.8 MB, but users do not have it by default and its
+# absence is not self-explanatory the way a missing .NET runtime is.
+#
+# Measured 2026-09-04, all pruned identically:
+#
+#   bundling both        280 files,  4 dirs, 166.6 MB -> 65.9 MB zipped
+#   requiring .NET        96 files,  4 dirs,  92.4 MB -> 31.7 MB zipped
+#   requiring both        42 files,  0 dirs,  38.7 MB -> 10.8 MB zipped
+#
+# WHY NEITHER IS A SINGLE FILE. Tried 2026-09-04, and it does not work here.
+# PublishSingleFile produces one 68 MB exe that dies on launch:
+#
+#   FileNotFoundException 0x8007007E at WinRT.ActivationFactory.Get
+#   -> Microsoft.Windows.AppLifecycle.AppInstance.FindOrRegisterForKey
+#
+# WinRT activation resolves the Windows App SDK's native DLLs by filename beside
+# the exe, and a bundle has no filenames. Leaving the natives loose with
+# IncludeNativeLibrariesForSelfExtract=false is refused by the SDK's own
+# Microsoft.WindowsAppSDK.SingleFile.targets, which requires
+# IncludeAllContentForSelfExtract=true. Both directions are closed. The
+# INSTALLER is one file; the installed application is not, and does not need to
+# be.
+# NOT $producedArtifacts. PowerShell variable names are case-INSENSITIVE, so that
+# name is the -ReleaseArtifacts switch parameter, and assigning a list to it
+# fails the whole script at binding with an error that names neither the
+# variable nor the line:
+#   Cannot convert "System.Object[]" to "SwitchParameter"
+$producedArtifacts = @()
+
+if ($Zip -or $Installer) {
+    $version = Get-ProductVersion
+    if (-not (Test-Path $artifactsDir)) { New-Item -ItemType Directory -Path $artifactsDir | Out-Null }
+}
+
 if ($Zip) {
-    # The distributable archive: `dotnet publish`, pruned, zipped.
-    #
-    # WHY THIS AND NOT AN MSIX, for a free download: an MSIX cannot be installed
-    # unsigned -- that is a platform rule, not a setting -- so it needs either a
-    # paid CA certificate or a self-signed one. Self-signed means asking every
-    # user to install a root certificate as Administrator before they can even
-    # begin, which is a larger security ask than running an unsigned executable
-    # and buys nothing: SmartScreen is driven by reputation, not by the mere
-    # presence of a signature.
-    #
-    # WHY NOT A SINGLE FILE. Tried, and it does not work here (2026-09-04).
-    # PublishSingleFile produces one 68 MB exe that dies on launch:
-    #
-    #   FileNotFoundException 0x8007007E at WinRT.ActivationFactory.Get
-    #   -> Microsoft.Windows.AppLifecycle.AppInstance.FindOrRegisterForKey
-    #
-    # WinRT activation resolves the Windows App SDK's native DLLs by filename
-    # beside the exe, and a bundle has no filenames. The obvious fix -- leave the
-    # natives loose with IncludeNativeLibrariesForSelfExtract=false -- is refused
-    # by the SDK's own Microsoft.WindowsAppSDK.SingleFile.targets, which requires
-    # IncludeAllContentForSelfExtract=true. Both directions are closed, so the
-    # loose-file layout is what this configuration supports.
-    # THE .NET RUNTIME IS A PREREQUISITE, THE WINDOWS APP SDK IS NOT.
-    #
-    # They are separately switchable and the asymmetry is deliberate. The .NET 9
-    # Desktop Runtime is one well-known Microsoft download that a lot of machines
-    # already have, and when it is missing the apphost says so and links to it.
-    # The Windows App SDK runtime is neither: users do not have it by default and
-    # its absence is not self-explanatory, so it stays bundled.
-    #
-    # Measured 2026-09-04, all three pruned identically:
-    #
-    #   bundling both        280 files,  4 dirs, 166.6 MB -> 65.9 MB zipped
-    #   requiring .NET        96 files,  4 dirs,  92.4 MB -> 31.7 MB zipped
-    #   requiring both        42 files,  0 dirs,  38.7 MB -> 10.8 MB zipped
-    #
-    # The last was measured on a machine that HAS the Windows App SDK runtime
-    # installed, so its size is trustworthy and its "it runs" is not evidence
-    # about a clean machine.
-    Invoke-Dotnet @(
-        'publish', $appProject
-        '-c', $Configuration
-        "-p:Platform=$Platform"
-        '-r', "win-$($Platform.ToLowerInvariant())"
-        '-p:WindowsPackageType=None'
-        "-p:SelfContained=$($SelfContained.IsPresent.ToString().ToLowerInvariant())"
-        '-p:WindowsAppSDKSelfContained=true'
-        '-p:DebugType=none'          # no .pdb: ~0.4 MB of no use to a user
-        '--nologo'
-    )
+    Write-Host "portable: publishing ($(if ($FrameworkDependent) { 'framework-dependent' } else { 'self-contained' }))" -ForegroundColor Cyan
+    $published = Publish-App -Bundled (-not $FrameworkDependent)
 
-    $stage = Join-Path $PSScriptRoot "src/PicoSwitch.Companion.App/bin/$Platform/$Configuration/net9.0-windows10.0.22621.0/win-$($Platform.ToLowerInvariant())/publish"
-    if (-not (Test-Path $stage)) { throw "no publish output at $stage" }
-
-    $version = ([xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'src/PicoSwitch.Companion.App/Package.appxmanifest'))).Package.Identity.Version
-    $archive = Join-Path $PSScriptRoot "PicoSwitch2-Companion-$version-$Platform.zip"
+    $archive = Join-Path $artifactsDir "PicoSwitch2-Companion-$version-$Platform-portable.zip"
     if (Test-Path $archive) { Remove-Item -LiteralPath $archive -Force }
 
     # Staged under a NAMED folder, and the folder is what gets zipped, so
-    # extracting produces one directory rather than emptying 278 files into
-    # whatever the user unzipped into. Windows' own "Extract All" does not add a
+    # extracting produces one directory rather than emptying hundreds of files
+    # into whatever the user unzipped into. Windows' own Extract All adds no
     # containing folder, so the archive has to carry it.
     $root = Join-Path ([System.IO.Path]::GetTempPath()) "picoswitch-zip-$([guid]::NewGuid().ToString('N'))"
-    $staging = Join-Path $root 'PicoSwitch2 Companion'
     try {
         New-Item -ItemType Directory -Path $root | Out-Null
-        Copy-Item -LiteralPath $stage -Destination $staging -Recurse
-
-        # The publish output is 492 files across 89 directories, and 85 of those
-        # directories are WinUI's own localized strings -- two .mui files each,
-        # for languages this app does not ship in. Removing all but the English
-        # one, and the WinRT metadata (.winmd is a COMPILE-time input), takes it
-        # to 280 files in 4 directories.
-        #
-        # Both prunes were verified 2026-09-04 by running the pruned folder, not
-        # by reasoning about it: the window comes up.
-        $langs = Get-ChildItem -LiteralPath $staging -Directory | Where-Object {
-            $_.Name -ne 'en-us' -and
-            (Get-ChildItem -LiteralPath $_.FullName -Filter '*.mui' -ErrorAction SilentlyContinue)
-        }
-        $langs | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
-
-        $winmd = Get-ChildItem -LiteralPath $staging -Recurse -Filter '*.winmd'
-        $winmd | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
-
-        Write-Host "pruned: $($langs.Count) language packs, $($winmd.Count) winmd" -ForegroundColor DarkGray
-
-        Compress-Archive -Path $staging -DestinationPath $archive `
-            -CompressionLevel Optimal
-
-        $kept = Get-ChildItem -LiteralPath $staging -Recurse -File
-        $dirs = Get-ChildItem -LiteralPath $staging -Recurse -Directory
-        Write-Host "contents: $($kept.Count) files in $($dirs.Count) directories" -ForegroundColor DarkGray
+        Copy-PrunedPayload -From $published -Destination (Join-Path $root 'PicoSwitch2 Companion')
+        Compress-Archive -Path (Join-Path $root 'PicoSwitch2 Companion') `
+            -DestinationPath $archive -CompressionLevel Optimal
     } finally {
         Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    $mb = [math]::Round((Get-Item -LiteralPath $archive).Length / 1MB, 1)
-    Write-Host "archive: $archive ($mb MB)" -ForegroundColor Green
-    if ($SelfContained) {
-        Write-Host 'requires: nothing -- the .NET runtime is bundled' -ForegroundColor DarkGray
+    $producedArtifacts += $archive
+}
+
+if ($Installer) {
+    $iscc = Find-InnoSetup
+    if (-not $iscc) {
+        throw @'
+Inno Setup 6.3 or later is required to build the installer, and ISCC.exe was not found.
+
+Install it with:
+
+    winget install --id JRSoftware.InnoSetup --exact
+
+or from https://jrsoftware.org/isdl.php, then run this again. build.ps1 finds it
+through the uninstall registry key (either scope), the default per-user and
+Program Files locations, and PATH.
+'@
+    }
+    Write-Host "installer: using $iscc" -ForegroundColor DarkGray
+
+    # Framework-dependent: the installer can resolve a missing runtime, so it
+    # takes the smaller payload and does exactly that.
+    Write-Host 'installer: publishing (framework-dependent)' -ForegroundColor Cyan
+    $published = Publish-App -Bundled $false
+
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) "picoswitch-setup-$([guid]::NewGuid().ToString('N'))"
+    $payload = Join-Path $root 'payload'
+    try {
+        New-Item -ItemType Directory -Path $root | Out-Null
+        Copy-PrunedPayload -From $published -Destination $payload
+
+        $baseName = "PicoSwitch2-Companion-Setup-$version-$Platform"
+        & $iscc `
+            "/DAppVersion=$version" `
+            "/DPayloadDir=$payload" `
+            "/DOutputDir=$artifactsDir" `
+            "/DOutputBaseFilename=$baseName" `
+            '/Qp' `
+            (Join-Path $PSScriptRoot 'installer/PicoSwitch2Companion.iss')
+        if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+
+        $producedArtifacts += Join-Path $artifactsDir "$baseName.exe"
+    } finally {
+        Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+if ($producedArtifacts.Count -gt 0) {
+    Write-Host ''
+    Write-Host 'artifacts' -ForegroundColor Green
+    foreach ($artifact in $producedArtifacts) {
+        $item = Get-Item -LiteralPath $artifact
+        $hash = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
+        Write-Host ("  {0,-52} {1,7:N1} MB" -f $item.Name, ($item.Length / 1MB))
+        Write-Host ("  {0,-52} sha256 {1}" -f '', $hash) -ForegroundColor DarkGray
+    }
+
+    # SHA256SUMS.txt is written ONLY for a full release build.
+    #
+    # It describes a release, and a release is both files. Writing it from a
+    # -Zip-only or -Installer-only run would silently replace a complete
+    # manifest with a partial one that still looks authoritative -- the worst
+    # possible failure for a file whose entire job is to be trusted.
+    if ($Zip -and $Installer) {
+        $lines = foreach ($artifact in $producedArtifacts) {
+            $item = Get-Item -LiteralPath $artifact
+            "$((Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()) *$($item.Name)"
+        }
+        # The conventional `hash *name` shape, so `sha256sum -c` reads it. Names
+        # only, no paths: it sits beside the artifacts it describes.
+        $sums = Join-Path $artifactsDir 'SHA256SUMS.txt'
+        Set-Content -LiteralPath $sums -Value $lines -Encoding ASCII
+        Write-Host "  SHA256SUMS.txt" -ForegroundColor Green
     } else {
-        Write-Host 'requires: .NET 9 Desktop Runtime (x64) on the user machine' -ForegroundColor Yellow
-        Write-Host '          https://dotnet.microsoft.com/download/dotnet/9.0' -ForegroundColor DarkGray
+        $stale = Join-Path $artifactsDir 'SHA256SUMS.txt'
+        if (Test-Path $stale) { Remove-Item -LiteralPath $stale -Force }
+        Write-Host '  (no SHA256SUMS.txt: that is written by -ReleaseArtifacts, which builds both)' -ForegroundColor DarkGray
+    }
+    Write-Host "  in $artifactsDir" -ForegroundColor DarkGray
+    Write-Host ''
+    if ($Installer) {
+        Write-Host 'installer requires: .NET 9 Desktop Runtime, detected and fetched from' -ForegroundColor DarkGray
+        Write-Host '                    Microsoft if absent. Windows App SDK is bundled.' -ForegroundColor DarkGray
+    }
+    if ($Zip -and -not $FrameworkDependent) {
+        Write-Host 'portable requires:  nothing -- both runtimes are bundled' -ForegroundColor DarkGray
+    } elseif ($Zip) {
+        Write-Host 'portable requires:  .NET 9 Desktop Runtime (x64) on the user machine' -ForegroundColor Yellow
     }
 }
 

@@ -602,39 +602,60 @@ Hardware H9, and the three exit criteria: a binding survives a reload and a
 reconnect, reset restores adapter defaults, and live mouse tuning never blocks
 the window.
 
-## 10. Shipping it
+## 10. Shipping it — two artifacts
 
 ```powershell
-.uild.ps1 -Zip -Configuration Release
+./build.ps1 -ReleaseArtifacts -Configuration Release
 ```
 
-produces `PicoSwitch2-Companion-<version>-x64.zip` — the artifact to attach to a
-GitHub release. **31.7 MB**, extracting to a single folder named
-`PicoSwitch2 Companion` containing 96 files in 4 directories. No administrator
-rights, no installer.
+writes both release files plus `SHA256SUMS.txt` into `artifacts/`:
 
-### What is bundled, and what is a prerequisite
+| Artifact | Size | Runtime model | User must install |
+|---|---|---|---|
+| `PicoSwitch2-Companion-Setup-<version>-x64.exe` | **21.0 MB** | framework-dependent .NET, Windows App SDK bundled | nothing — Setup fetches the .NET runtime only if it is missing |
+| `PicoSwitch2-Companion-<version>-x64-portable.zip` | **65.9 MB** | fully self-contained | nothing |
 
-The two runtimes are separately switchable, and the asymmetry is deliberate.
+`-Installer` and `-Zip` build one each.
 
-| | Files | Dirs | Extracted | Zip | User must install |
-|---|---|---|---|---|---|
-| `-Zip` *(default)* | 96 | 4 | 92.4 MB | **31.7 MB** | .NET 9 Desktop Runtime |
-| `-Zip -SelfContained` | 280 | 4 | 166.6 MB | 65.9 MB | nothing |
-| *(not offered)* | 42 | 0 | 38.7 MB | 10.8 MB | .NET **and** Windows App SDK |
+### Why the two use different runtime models
 
-Measured 2026-09-04, all three pruned identically.
+They offer different trades, so they are deliberately not the same build.
 
-The **.NET 9 Desktop Runtime** is one well-known Microsoft download that many
-machines already have, and when it is missing the apphost says so and links to
-it. Requiring it halves the download, so it is the default.
+The **installer** takes the framework-dependent payload — 96 files, 92.4 MB,
+compressing to a 21 MB Setup — because an installer can resolve a missing
+runtime and an archive cannot. It detects the .NET 9 Desktop Runtime by looking
+for a `9.*` directory under
+`%ProgramFiles%\dotnet\shared\Microsoft.WindowsDesktop.App`, which is the
+location the host actually probes, and only when it is absent downloads
+Microsoft's own redistributable from the `aka.ms` redirect that resolves to
+`builds.dotnet.microsoft.com`.
 
-The **Windows App SDK runtime** stays bundled in both offered flavours. Dropping
-it as well reaches 10.8 MB and no subdirectories at all, which is tempting — but
-users do not have it by default, and its absence is not self-explanatory the way
-a missing .NET runtime is. That third row was measured on a machine that *has*
-the runtime installed, so its size is trustworthy while its "it runs" says
-nothing about a clean machine.
+The **portable** archive is self-contained — 280 files, 166.6 MB, compressing to
+66 MB — because an archive that stops with "install a runtime first" is not
+portable. That is the entire point of the alternative.
+
+The **Windows App SDK runtime is bundled in both**. Making it a prerequisite as
+well would reach 42 files and 10.8 MB, which is tempting, but users do not have
+it by default and its absence is not self-explanatory the way a missing .NET
+runtime is. That figure was measured on a machine that *has* the runtime
+installed, so its size is trustworthy while its "it runs" says nothing about a
+clean machine.
+
+All sizes measured 2026-09-04, every flavour pruned identically.
+
+### Two Inno controls this installer deliberately does not use
+
+Inno renders `[Tasks]` in a `TNewCheckListBox`, and `postinstall` `[Run]` entries
+in `WizardForm.RunList`, which is another one. Both **owner-draw their own
+checkboxes, and at 200% display scaling on Windows 11 that draw lands a few
+pixels left of the control's client area** — every checkbox loses its left
+border, and a checked one looks cut in half. Removing the `GroupDescription`
+indent changed nothing; the offset is in the control, not in the layout.
+
+So the shortcut choices and the Finish page's "Launch" offer are ordinary
+`TNewCheckBox` controls on pages this script owns. The cost is that shortcuts
+are no longer addressable through `/TASKS=` in a silent install, so
+`/STARTMENUICON=` and `/DESKTOPICON=` replace it.
 
 ### Pruning
 
