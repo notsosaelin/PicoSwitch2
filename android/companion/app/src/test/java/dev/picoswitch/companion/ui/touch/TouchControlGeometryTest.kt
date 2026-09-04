@@ -113,6 +113,35 @@ class TouchControlGeometryTest {
         assertEquals(0.46f, TOUCH_STICK_KNOB_FRACTION, 0f)
     }
 
+    /**
+     * The proportions the Windows surface copies.
+     *
+     * Both companions draw the same controller, and until 2026-09-03 they did not:
+     * Windows derived its proportions and colours from Fluent theme resources while
+     * these were resolved from the Material theme, and the result was square-ish
+     * pads, no visible outlines, a white D-pad and a white stick knob. Windows now
+     * carries these numbers literally, pinned by `TouchVisualParityTests`.
+     *
+     * Pinning them on BOTH sides is the point. One side alone catches a Windows
+     * edit and misses an Android one, which is the direction the drift actually
+     * came from.
+     */
+    @Test fun `shared visual proportions match the values Windows mirrors`() {
+        assertEquals(2f, OUTLINE_WIDTH, 0f)
+        assertEquals(0.90f, ARM_FRACTION, 0f)
+        assertEquals(0.26f, ARM_HALF_WIDTH, 0f)
+        assertEquals(0.55f, WELL_ALPHA, 0f)
+        assertEquals(0.78f, LABEL_WIDTH_FRACTION, 0f)
+        assertEquals(0.68f, LABEL_HEIGHT_FRACTION, 0f)
+        assertEquals(0.28f, CAPTURE_DISC_RADIUS_FRACTION, 0f)
+        assertEquals(0.18f, CAPTURE_DISC_FILL_ALPHA, 0f)
+        assertEquals(0.82f, CAPTURE_DISC_RIM_ALPHA, 0f)
+        assertEquals(0.045f, CAPTURE_DISC_STROKE_FRACTION, 0f)
+        assertEquals(0.30f, HOME_CIRCLE_RADIUS_FRACTION, 0f)
+        assertEquals(0.05f, HOME_CIRCLE_STROKE_FRACTION, 0f)
+        assertEquals(0.18f, HOME_HOUSE_UNIT_FRACTION, 0f)
+    }
+
     @Test fun `oriented GameCube contours stay inside their existing touch margins`() {
         val x = orientedGameCubeFaceContour(
             TouchVisualRole.GameCubeBeanX, width = 52f, height = 84f, rotationDegrees = 10.7f,

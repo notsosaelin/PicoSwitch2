@@ -23,7 +23,18 @@
       the controller. Do not move that brush back onto the UserControl, and do not
       replace it with a Layer, Acrylic, Mica or otherwise translucent brush.
     -->
-    <Grid x:Name="Root" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
+    <!--
+      The ground the controller is drawn on: near-black, in BOTH host themes.
+
+      Android paints Color.Black here unconditionally, and the controller's own
+      colours are fixed artwork tokens rather than theme brushes (see
+      TouchControlRenderer.Palette). A theme-following ground would put those
+      fixed colours on white in light mode, where the outline disappears and the
+      near-black button faces become the loudest thing on the display.
+
+      Still explicitly OPAQUE, which is the rule the comment above exists for.
+    -->
+    <Grid x:Name="Root" Background="#FF0A0A0C">
 
         <!--
           The interaction-safe rectangle is built from THIS element's size, and it is

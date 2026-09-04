@@ -264,16 +264,29 @@ public sealed class LayeringGuardTests
     /// Asserted on the ROOT ELEMENT specifically, because that is the one that has to
     /// carry it: a brush on any inner panel leaves the gaps between them transparent, and
     /// gaps are where the regression showed.
+    ///
+    /// The invariant is OPACITY, not one particular brush. This used to name
+    /// SolidBackgroundFillColorBaseBrush exactly, which made a correct change look
+    /// like a regression: the ground is now a literal near-black in both host themes,
+    /// matching the Android surface, because the controller's own colours are fixed
+    /// artwork tokens and a theme-following ground would put dark artwork on white.
+    /// A literal ARGB with a full alpha is at least as opaque as the theme brush was.
     /// </remarks>
     [Fact]
     public void TheTouchGamepadRootIsOpaque()
     {
         var root = TouchGamepadMarkup().Root!.Elements().First();
+        var background = root.Attribute("Background")?.Value;
 
         Assert.Equal("Grid", root.Name.LocalName);
-        Assert.Equal(
-            "{ThemeResource SolidBackgroundFillColorBaseBrush}",
-            root.Attribute("Background")?.Value);
+        Assert.False(string.IsNullOrWhiteSpace(background), "the root Grid paints nothing");
+
+        var opaqueLiteral = background!.StartsWith("#FF", StringComparison.OrdinalIgnoreCase);
+        var solidThemeBrush = background.Contains("SolidBackground", StringComparison.Ordinal);
+
+        Assert.True(
+            opaqueLiteral || solidThemeBrush,
+            $"the root Grid's Background '{background}' is not demonstrably opaque");
     }
 
     /// <summary>
