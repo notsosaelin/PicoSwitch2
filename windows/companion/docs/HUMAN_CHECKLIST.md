@@ -13,13 +13,19 @@ free download.
 ## 1. Publishing to GitHub — no certificate needed
 
 **Done, and nothing is required of you.** `build.ps1 -Zip -Configuration Release`
-produces `PicoSwitch2-Companion-<version>-x64.zip` — **65.9 MB**, extracting to a
+produces `PicoSwitch2-Companion-<version>-x64.zip` — **31.7 MB**, extracting to a
 single folder named `PicoSwitch2 Companion`. Attach it to a GitHub release.
 
 Verified 2026-09-04 by extracting the archive itself to a clean path outside the
-repository and running it: one folder appears, and the window comes up. The user
-needs no .NET runtime, no Windows App SDK, and no administrator rights — the
-archive carries both runtimes.
+repository and running it: one folder appears, 96 files in 4 directories, and
+the window comes up.
+
+**Users need the .NET 9 Desktop Runtime (x64)**, which halves the download.
+Link it in the release notes: <https://dotnet.microsoft.com/download/dotnet/9.0>.
+If you would rather they install nothing at all, `build.ps1 -Zip -SelfContained`
+bundles it and the archive becomes 65.9 MB. The Windows App SDK runtime is
+bundled either way — see `README.md` §10 for why that one is not made a
+prerequisite.
 
 A single `.exe` is not possible for this configuration; `README.md` §10 records
 what was tried and why the Windows App SDK closes both routes.
@@ -35,6 +41,10 @@ way, on first run, until reputation accrues.
 
 **What to write in the release notes**, because the prompt will surprise people:
 
+> Requires the [.NET 9 Desktop Runtime
+> (x64)](https://dotnet.microsoft.com/download/dotnet/9.0) — most machines
+> already have it.
+>
 > Windows will show "Windows protected your PC" the first time you run this.
 > That is SmartScreen reacting to a new download, not a virus warning. Click
 > **More info** then **Run anyway**.
