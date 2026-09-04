@@ -204,6 +204,21 @@ function Get-ProductVersion {
     ([xml](Get-Content -LiteralPath $manifest)).Package.Identity.Version
 }
 
+# The same version as the release is tagged with.
+#
+# The manifest must carry four parts -- that is the MSIX identity format -- but a
+# release is tagged v2.5.0, so an artifact called ...-2.5.0.0-x64.exe sitting
+# under it reads like a different build. The fourth component is dropped for
+# FILENAMES only; the installer's own AppVersion keeps all four, because
+# VersionInfoVersion is a numeric Windows resource.
+function Get-DisplayVersion {
+    $parts = (Get-ProductVersion) -split '\.'
+    if ($parts.Count -eq 4 -and $parts[3] -eq '0') {
+        return ($parts[0..2] -join '.')
+    }
+    return (Get-ProductVersion)
+}
+
 # Inno Setup's command-line compiler.
 #
 # Registry first, because that is where an install of either scope records
@@ -504,7 +519,8 @@ and clear certificateFile/certificatePassword.
 $producedArtifacts = @()
 
 if ($Zip -or $Installer) {
-    $version = Get-ProductVersion
+    $version = Get-ProductVersion            # four parts, for the installer's AppVersion
+    $displayVersion = Get-DisplayVersion     # three, for the filenames a release links to
     if (-not (Test-Path $artifactsDir)) { New-Item -ItemType Directory -Path $artifactsDir | Out-Null }
 }
 
@@ -512,7 +528,7 @@ if ($Zip) {
     Write-Host "portable: publishing ($(if ($FrameworkDependent) { 'framework-dependent' } else { 'self-contained' }))" -ForegroundColor Cyan
     $published = Publish-App -Bundled (-not $FrameworkDependent)
 
-    $archive = Join-Path $artifactsDir "PicoSwitch2-Companion-$version-$Platform-portable.zip"
+    $archive = Join-Path $artifactsDir "PicoSwitch2-Companion-$displayVersion-$Platform-portable.zip"
     if (Test-Path $archive) { Remove-Item -LiteralPath $archive -Force }
 
     # Staged under a NAMED folder, and the folder is what gets zipped, so
@@ -560,7 +576,7 @@ Program Files locations, and PATH.
         New-Item -ItemType Directory -Path $root | Out-Null
         Copy-PrunedPayload -From $published -Destination $payload
 
-        $baseName = "PicoSwitch2-Companion-Setup-$version-$Platform"
+        $baseName = "PicoSwitch2-Companion-Setup-$displayVersion-$Platform"
         & $iscc `
             "/DAppVersion=$version" `
             "/DPayloadDir=$payload" `
