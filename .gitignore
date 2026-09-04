@@ -84,3 +84,6 @@ windows/companion/signing.properties
 # The distributable archive produced by build.ps1 -Zip. A release artifact,
 # not a source file: it is 60+ MB and is rebuilt from source on demand.
 windows/companion/PicoSwitch2-Companion-*.zip
+
+# Release artifacts: rebuilt from source on demand, never committed.
+artifacts/
