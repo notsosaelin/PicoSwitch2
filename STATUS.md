@@ -7,6 +7,33 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Two controllers paired at once both drove the console 2026-09-06; the arbiter was demoting its
+  own owner on every report.** A tester had a DualSense and an Xbox Elite paired together and both
+  moved the console, while the companion correctly showed one active source. The one-owner rule was
+  never broken as the arbiter saw it — ownership was being handed back and forth at report rate.
+  `bthid` gives EVERY input report to the raw hook before the bound driver parses it, the seam's
+  hook calls `ns2_active_input_note_connection()`, and that registers the peer as class `UNKNOWN`
+  (a connection hook cannot see what a peer is). `register_source()` treated any class difference as
+  a genuine change of standing, so the owner was demoted below every other connected peer on each of
+  its own reports and the policy gave the console to the rival; the parsed event then took it back.
+  A report the driver does NOT turn into an event leaves the owner parked at `UNKNOWN`, and that is
+  the window where the second controller published to slot 0. Both halves also emitted a
+  `report_neutralize_slot(0)`, so neutral state was being interleaved with real input. **Ignorance
+  now never overwrites knowledge**: only a report may reclassify a source. A second, independent
+  defect in the same policy function is fixed with it — equal-class ties were broken by registry
+  slot, which is reused on disconnect, so a controller reconnecting into a vacated slot took the
+  console away from the controller being played on; ties now go to the lower (monotonic) source id.
+  Reproduced and pinned in `test_ns2_input_arbiter`; 80/80 host tests pass and both boards build.
+  **Keyboard + Mouse is unaffected and was checked, not assumed**: a peer holding a KB/M role is
+  registered only by the KB/M runtime, always `DIRECT` and always carrying its composite group, and
+  the composite was already immune to the defect because the policy will not move the token between
+  two peers of the group that already owns the console. The new composite regression passes against
+  the pre-fix arbiter as well as the fixed one, so composite behaviour is unchanged in both
+  directions.
+  **Not yet hardware-validated** — the discriminator on hardware is the `transitions` counter in
+  `input sources`, which must stay flat while both controllers are moved. Full record in
+  [`docs/experiments/two-controllers-both-drive-console-2026-09-06.md`](docs/experiments/two-controllers-both-drive-console-2026-09-06.md).
+
 - **The two companions draw the same on-screen controller 2026-09-03; the shared BLE contract now
   describes the whole service.** The Windows Touch Gamepad rendered the same layout as a visibly
   different product: it resolved colours and proportions from Fluent theme resources while Android

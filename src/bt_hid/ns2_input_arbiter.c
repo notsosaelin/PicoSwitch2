@@ -173,13 +173,23 @@ bool ns2_input_arbiter_queue_active(ns2_input_arbiter_t *arbiter,
 // Best source to own the console when nobody has been chosen explicitly.
 // Higher class wins; ties go to the earliest registered source so the result is
 // stable and does not flap between two peers of the same class.
+//
+// "Earliest registered" is the lower id, NOT the lower array index. Ids are
+// allocated monotonically and never reused within a boot, while a registry slot
+// is reused the moment its occupant disconnects -- so with two controllers
+// paired, a peer reconnecting into the slot its predecessor vacated used to
+// outrank the peer that had inherited the console, and took it away from the
+// controller actually being played on.
 static int preferred_index(const ns2_input_arbiter_t *arbiter)
 {
     int best = -1;
     for (unsigned i = 0; i < NS2_INPUT_ARBITER_MAX_SOURCES; ++i) {
         const ns2_input_source_info_t *source = &arbiter->sources[i];
         if (!source->present) continue;
-        if (best < 0 || source->source_class > arbiter->sources[best].source_class)
+        if (best < 0 ||
+            source->source_class > arbiter->sources[best].source_class ||
+            (source->source_class == arbiter->sources[best].source_class &&
+             source->id < arbiter->sources[best].id))
             best = (int)i;
     }
     return best;
@@ -232,7 +242,20 @@ static int register_source(ns2_input_arbiter_t *arbiter,
         // so ownership is re-evaluated exactly as it is for a new arrival --
         // otherwise a controller that connected before it could be identified
         // would never reclaim the console from the companion bridge.
-        if (arbiter->sources[existing].source_class != source_class) {
+        //
+        // The reverse is NOT a change of standing. UNKNOWN means "this caller
+        // could not see what the peer is", and the firmware re-registers a live
+        // source that way constantly: bthid hands EVERY input report to the raw
+        // hook, which calls ns2_active_input_note_connection() before the bound
+        // driver parses it. Letting that overwrite an established class demoted
+        // the owner below every other connected peer on every single report, so
+        // with two controllers paired the console was handed back and forth and
+        // both of them drove it -- hardware-reported 2026-09-06 with a DualSense
+        // and an Xbox Elite, while the companion still showed one active source
+        // because each individual status snapshot was internally consistent.
+        // Ignorance never overwrites knowledge; only a report can reclassify.
+        if (source_class != NS2_INPUT_SOURCE_CLASS_UNKNOWN &&
+            arbiter->sources[existing].source_class != source_class) {
             arbiter->sources[existing].source_class = source_class;
             if (apply_auto_policy(arbiter) && auto_switched) *auto_switched = true;
         }

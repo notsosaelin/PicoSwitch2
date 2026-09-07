@@ -462,9 +462,236 @@ static void test_nameless_bridge_source_is_still_identified(void)
     assert(ns2_input_source_display_name("", NS2_INPUT_SOURCE_CLASS_UNKNOWN) == NULL);
 }
 
+// Two controllers paired to the adapter at once, driven through the SAME call
+// sequence the firmware actually produces per report: bthid delivers every
+// input report to the raw hook (ns2_active_input_note_connection -> class
+// UNKNOWN, because a connection hook cannot see what a peer is), and only then
+// does the bound driver parse it into a normalized event (class DIRECT).
+//
+// Reported from hardware: a DualSense and an Xbox Elite paired together BOTH
+// moved the console, while the companion still showed one source driving it.
+// The information-free UNKNOWN registration must never overwrite a class the
+// source has already established, or the owner is demoted below its rival on
+// every report and ownership follows whichever controller reported last.
+static void test_connection_hook_cannot_demote_a_classified_source(void)
+{
+    ns2_input_arbiter_t arbiter;
+    ns2_input_arbiter_init(&arbiter);
+    ns2_input_source_key_t ds5 = key(2, 0, 0xC1, 21);
+    ns2_input_source_key_t elite = key(2, 1, 0xC2, 22);
+    ns2_input_route_decision_t decision;
+    ns2_input_arbiter_status_t status;
+
+    // Both connect: the lifecycle hook registers each one before it can be
+    // identified, and each one's first report classifies it.
+    (void)ns2_input_arbiter_submit(&arbiter, &ds5, "DualSense", 0x054C, 0x0CE6,
+                                   NS2_INPUT_SOURCE_CLASS_UNKNOWN, &decision);
+    assert(ns2_input_arbiter_submit(&arbiter, &ds5, "DualSense", 0x054C, 0x0CE6,
+                                    NS2_INPUT_SOURCE_CLASS_DIRECT, &decision));
+    uint32_t ds5_id = source_id(&arbiter, &ds5);
+    (void)ns2_input_arbiter_submit(&arbiter, &elite, "Xbox Elite", 0x045E, 0x0B22,
+                                   NS2_INPUT_SOURCE_CLASS_UNKNOWN, &decision);
+    assert(!ns2_input_arbiter_submit(&arbiter, &elite, "Xbox Elite", 0x045E,
+                                     0x0B22, NS2_INPUT_SOURCE_CLASS_DIRECT,
+                                     &decision));
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    assert(status.active_id == ds5_id);
+
+    // Ordinary play: every report of either controller hits the raw hook first.
+    // The owner must keep the console, and the other controller must stay shut
+    // out through the whole exchange.
+    for (unsigned round = 0; round < 4u; ++round) {
+        (void)ns2_input_arbiter_submit(&arbiter, &ds5, NULL, 0, 0,
+                                       NS2_INPUT_SOURCE_CLASS_UNKNOWN, &decision);
+        assert(!decision.auto_switched);
+        assert(ns2_input_arbiter_submit(&arbiter, &ds5, NULL, 0, 0,
+                                        NS2_INPUT_SOURCE_CLASS_DIRECT, &decision));
+        assert(decision.accepted && !decision.auto_switched);
+
+        (void)ns2_input_arbiter_submit(&arbiter, &elite, NULL, 0, 0,
+                                       NS2_INPUT_SOURCE_CLASS_UNKNOWN, &decision);
+        assert(!decision.auto_switched);
+        assert(!ns2_input_arbiter_submit(&arbiter, &elite, NULL, 0, 0,
+                                         NS2_INPUT_SOURCE_CLASS_DIRECT, &decision));
+        assert(!decision.accepted);
+    }
+
+    // The decisive case: a report the bound driver does NOT turn into an event
+    // (a mode/battery/paddle report, a report id the driver skips) reaches the
+    // raw hook and nothing else. The owner is then sitting on an unfollowed
+    // UNKNOWN registration, and this is where the rival used to take over.
+    (void)ns2_input_arbiter_submit(&arbiter, &ds5, NULL, 0, 0,
+                                   NS2_INPUT_SOURCE_CLASS_UNKNOWN, &decision);
+    (void)ns2_input_arbiter_submit(&arbiter, &elite, NULL, 0, 0,
+                                   NS2_INPUT_SOURCE_CLASS_UNKNOWN, &decision);
+    assert(!ns2_input_arbiter_submit(&arbiter, &elite, NULL, 0, 0,
+                                     NS2_INPUT_SOURCE_CLASS_DIRECT, &decision));
+    assert(!decision.accepted && !decision.auto_switched);
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    assert(status.active_id == ds5_id);
+
+    // And the owner is still the owner, without a handover of its own.
+    assert(ns2_input_arbiter_submit(&arbiter, &ds5, NULL, 0, 0,
+                                    NS2_INPUT_SOURCE_CLASS_DIRECT, &decision));
+    assert(decision.accepted && !decision.auto_switched && !decision.fresh_report);
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    assert(status.transition_count <= 2u);  // the two initial takeovers only
+
+    // A source that genuinely changes standing is still reclassified: UNKNOWN
+    // is refused because it carries no information, not because the class is
+    // frozen.
+    assert(!ns2_input_arbiter_submit(&arbiter, &elite, NULL, 0, 0,
+                                     NS2_INPUT_SOURCE_CLASS_BRIDGE, &decision));
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    for (unsigned i = 0; i < status.source_count; ++i) {
+        if (status.sources[i].id != ds5_id)
+            assert(status.sources[i].source_class == NS2_INPUT_SOURCE_CLASS_BRIDGE);
+    }
+}
+
+// Ties go to the source that registered first, and "first" has to survive a
+// freed registry slot being reused. Otherwise a controller reconnecting into
+// the slot its predecessor vacated silently takes the console away from the
+// controller currently being played on.
+static void test_equal_class_arrival_cannot_take_a_live_console(void)
+{
+    ns2_input_arbiter_t arbiter;
+    ns2_input_arbiter_init(&arbiter);
+    ns2_input_source_key_t first = key(2, 0, 0xD1, 31);
+    ns2_input_source_key_t second = key(2, 1, 0xD2, 32);
+    ns2_input_route_decision_t decision;
+    ns2_input_arbiter_status_t status;
+    bool was_active = false;
+
+    assert(ns2_input_arbiter_submit(&arbiter, &first, "first", 0, 0,
+                                    NS2_INPUT_SOURCE_CLASS_DIRECT, &decision));
+    assert(!ns2_input_arbiter_submit(&arbiter, &second, "second", 0, 0,
+                                     NS2_INPUT_SOURCE_CLASS_DIRECT, &decision));
+    uint32_t second_id = source_id(&arbiter, &second);
+
+    // The incumbent leaves; the survivor inherits the console by policy.
+    assert(ns2_input_arbiter_disconnect(&arbiter, &first, &was_active));
+    assert(was_active);
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    assert(status.active_id == second_id);
+
+    // It comes back and lands in the registry slot the first one vacated. The
+    // player is mid-game on the survivor: an equal-class arrival does not get
+    // the console.
+    ns2_input_source_key_t returning = key(2, 0, 0xD1, 33);
+    assert(!ns2_input_arbiter_submit(&arbiter, &returning, "first", 0, 0,
+                                     NS2_INPUT_SOURCE_CLASS_DIRECT, &decision));
+    assert(!decision.accepted && !decision.auto_switched);
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    assert(status.active_id == second_id);
+    assert(ns2_input_arbiter_submit(&arbiter, &second, NULL, 0, 0,
+                                    NS2_INPUT_SOURCE_CLASS_DIRECT, &decision));
+    assert(decision.accepted);
+}
+
+// Keyboard + Mouse is two Bluetooth peers that are ONE logical owner, so both
+// of the rules the two-controller fix changed have to be checked against it.
+//
+// In production a composite peer only ever reaches the arbiter through
+// ns2_kbm_runtime's submit, always class DIRECT and always carrying the group
+// handle -- ns2_kbm_runtime_gates_connection() keeps the UNKNOWN-registering
+// connection hook off any peer holding a KB/M role. This test does NOT rely on
+// that gate: it drives the composite through an UNKNOWN re-registration anyway,
+// so the arbiter alone still holds the composite together if the gate above it
+// ever changes.
+static void test_composite_survives_the_two_controller_fix(void)
+{
+    ns2_input_arbiter_t arbiter;
+    ns2_input_arbiter_init(&arbiter);
+    ns2_input_route_decision_t decision;
+    ns2_input_arbiter_status_t status;
+    const uint32_t group = 5u;
+    ns2_input_source_key_t keyboard = key(2, 0, 0xE1, 41);
+    ns2_input_source_key_t mouse = key(2, 1, 0xE2, 42);
+
+    assert(ns2_input_arbiter_submit_group(&arbiter, &keyboard, "KB", 0, 0,
+                                          NS2_INPUT_SOURCE_CLASS_DIRECT, group,
+                                          &decision));
+    uint32_t keyboard_id = source_id(&arbiter, &keyboard);
+    assert(ns2_input_arbiter_submit_group(&arbiter, &mouse, "Mouse", 0, 0,
+                                          NS2_INPUT_SOURCE_CLASS_DIRECT, group,
+                                          &decision));
+    assert(decision.accepted && !decision.auto_switched);
+
+    // Rule 1, applied to a composite: an information-free registration of the
+    // member holding the token must not demote it, must not move the token to
+    // its own other half, and must not stop either half publishing. Both peers
+    // keep typing and pointing across it.
+    (void)ns2_input_arbiter_submit_group(&arbiter, &keyboard, NULL, 0, 0,
+                                         NS2_INPUT_SOURCE_CLASS_UNKNOWN, group,
+                                         &decision);
+    assert(!decision.auto_switched);
+    (void)ns2_input_arbiter_submit_group(&arbiter, &mouse, NULL, 0, 0,
+                                         NS2_INPUT_SOURCE_CLASS_UNKNOWN, group,
+                                         &decision);
+    assert(!decision.auto_switched);
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    assert(status.active_id == keyboard_id);
+    assert(ns2_input_arbiter_submit_group(&arbiter, &keyboard, NULL, 0, 0,
+                                          NS2_INPUT_SOURCE_CLASS_DIRECT, group,
+                                          &decision));
+    assert(decision.accepted && !decision.auto_switched);
+    assert(ns2_input_arbiter_submit_group(&arbiter, &mouse, NULL, 0, 0,
+                                          NS2_INPUT_SOURCE_CLASS_DIRECT, group,
+                                          &decision));
+    assert(decision.accepted && !decision.auto_switched);
+
+    // Rule 2, applied to a composite: the keyboard's battery dies, the mouse
+    // inherits the token, and the keyboard comes back into the registry slot the
+    // keyboard just vacated. Ties are decided by source id, not by that slot, so
+    // the returning half rejoins its own composite instead of taking the token
+    // mid-sentence -- and the group is unbroken, so it publishes immediately
+    // with no neutral boundary and no fresh-report wait.
+    bool was_active = false;
+    assert(ns2_input_arbiter_disconnect(&arbiter, &keyboard, &was_active));
+    assert(!was_active);  // one peer lost is not whole-source loss
+    uint32_t mouse_id = source_id(&arbiter, &mouse);
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    assert(status.active_id == mouse_id);
+
+    ns2_input_source_key_t returning = key(2, 0, 0xE1, 43);
+    assert(ns2_input_arbiter_submit_group(&arbiter, &returning, "KB", 0, 0,
+                                          NS2_INPUT_SOURCE_CLASS_DIRECT, group,
+                                          &decision));
+    assert(decision.accepted && !decision.auto_switched && !decision.fresh_report);
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    assert(status.active_id == mouse_id);
+    assert(status.source_count == 2);
+
+    // An unrelated controller still cannot join or displace the composite, and
+    // the composite still cannot be split by it.
+    ns2_input_source_key_t pad = key(2, 2, 0xE3, 44);
+    assert(!ns2_input_arbiter_submit(&arbiter, &pad, "Pad", 0, 0,
+                                     NS2_INPUT_SOURCE_CLASS_DIRECT, &decision));
+    assert(!decision.accepted && !decision.auto_switched);
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    assert(status.active_id == mouse_id);
+    assert(ns2_input_arbiter_submit_group(&arbiter, &returning, NULL, 0, 0,
+                                          NS2_INPUT_SOURCE_CLASS_DIRECT, group,
+                                          &decision));
+    assert(decision.accepted);
+
+    // Whole-source loss is still whole-source loss: both halves gone means the
+    // caller owes the console a neutral boundary and the policy falls back.
+    assert(ns2_input_arbiter_disconnect(&arbiter, &returning, &was_active));
+    assert(!was_active);
+    assert(ns2_input_arbiter_disconnect(&arbiter, &mouse, &was_active));
+    assert(was_active);
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    assert(status.active_id == source_id(&arbiter, &pad));
+}
+
 int main(void)
 {
     test_nameless_bridge_source_is_still_identified();
+    test_connection_hook_cannot_demote_a_classified_source();
+    test_equal_class_arrival_cannot_take_a_live_console();
+    test_composite_survives_the_two_controller_fix();
     test_composite_group_source();
     test_composite_explicit_selection();
     test_bridge_defaults_and_yields_to_direct();
