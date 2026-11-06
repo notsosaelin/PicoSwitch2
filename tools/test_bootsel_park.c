@@ -89,6 +89,35 @@ static void advance_one_interval(void)
     pico_host_now_us += SAMPLE_INTERVAL_US + 1u;
 }
 
+static double monotonic_seconds(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+// Core0's USB loop for the concurrent tests: keep sampling until `target` rounds have
+// tri-stated CS, bounded by WALL-CLOCK time rather than an iteration count. Core1 holds its
+// park for only ~BOOTSEL_PARK_MAX_SPINS nops (microseconds) and then sleeps, so whether a
+// fixed iteration budget ever overlaps a park depends on the host scheduler -- on Windows,
+// thread start-up and nanosleep granularity are milliseconds, and a 200000-iteration budget
+// lost the race every run. When core1 withdraws, close the round out and advance the fake
+// clock so core0 re-requests, exactly as the 30 ms interval does on hardware.
+static void core0_sample_until_hiz(uint32_t target)
+{
+    const double deadline = monotonic_seconds() + 2.0;
+    uint32_t abandons = bootsel_park_abandon_count();
+    while (pico_host_cs_hiz_count < target && monotonic_seconds() < deadline) {
+        bootsel_sample_core0();
+        const uint32_t now_abandons = bootsel_park_abandon_count();
+        if (now_abandons != abandons) {
+            abandons = now_abandons;
+            bootsel_sample_core0();   // closes the withdrawn round out
+            advance_one_interval();   // next call issues a fresh request
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 1. THE CRASH REGRESSION. Core0 issues a request and then stops running --
 //    exactly what happens when it blocks in recursive_mutex_enter_blocking()
@@ -200,9 +229,7 @@ static void test_concurrent_round_samples_and_publishes(void)
 
     // Core0's loop: request, then keep spinning like usb_core_task() does until the round lands.
     advance_one_interval();
-    for (int i = 0; i < 200000 && pico_host_cs_hiz_count == 0; ++i) {
-        bootsel_sample_core0();
-    }
+    core0_sample_until_hiz(1u);
     assert(pico_host_cs_hiz_count >= 1);
 
     core1_should_run = false;
@@ -222,9 +249,8 @@ static void test_concurrent_round_samples_and_publishes(void)
     core1_should_run = true;
     core1_finished = false;
     assert(pthread_create(&core1, NULL, core1_thread, NULL) == 0);
-    for (int i = 0; i < 200000 && pico_host_cs_hiz_count < 2; ++i) {
-        bootsel_sample_core0();
-    }
+    advance_one_interval();
+    core0_sample_until_hiz(2u);
     core1_should_run = false;
     assert(pthread_join(core1, NULL) == 0);
     assert(pico_host_cs_hiz_count >= 2);
