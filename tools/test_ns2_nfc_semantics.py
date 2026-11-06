@@ -6,7 +6,7 @@ Two kinds of coverage:
 * unit tests pinning each capture-derived layout, so a decoder edit that
   silently changes a field name or an offset fails here rather than in the
   middle of a hardware session;
-* regression tests over real captures committed under ``dumps/``. These assert
+* regression tests over real captures committed under ``tests/fixtures/captures/nfc/``. These assert
   the specific facts the v3 investigation had to learn the expensive way --
   the escalated 4-block descriptor, the 83-byte device result, the
   allocation-relative King Dedede records, and the error-to-operation pairing.
@@ -21,7 +21,7 @@ from pathlib import Path
 import ns2_nfc_semantics as nfc
 import ns2_trace
 
-DUMPS = Path(__file__).resolve().parent.parent / "dumps"
+DUMPS = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "captures" / "nfc"
 
 
 def bulk(sequence, subcommand, data, response=False, direction_byte=None):
@@ -245,7 +245,7 @@ class CaptureRegressionTests(unittest.TestCase):
 
     def test_genuine_write_capture_decodes_both_extended_operations(self):
         steps, warnings = timeline_for(
-            "amiibo/genuine-kirby-warp-air-riders-write-usb-2026-07-28.jsonl")
+            "genuine-kirby-warp-air-riders-write-usb-2026-07-28.jsonl")
         self.assertEqual(warnings, [])
         envelopes = [step.fields["envelope"] for step in steps if step.kind == "stage"]
         self.assertIn("extended_update", envelopes)
@@ -264,7 +264,7 @@ class CaptureRegressionTests(unittest.TestCase):
                          ["s0:0x05+32", "s0:0x30+240", "s0:0x6C+152"])
 
     def test_dedede_failure_names_the_allocation_and_the_failing_operation(self):
-        steps, _ = timeline_for("amiibo/v3-dedede-fix1-2115-0096-2026-07-28.jsonl")
+        steps, _ = timeline_for("v3-dedede-fix1-2115-0096-2026-07-28.jsonl")
         update = next(step for step in steps if step.kind == "stage"
                       and step.fields["envelope"] == "extended_update")
         # The whole Dedede diagnosis, straight off a capture that already

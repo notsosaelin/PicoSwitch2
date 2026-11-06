@@ -26,11 +26,11 @@ Both controlled captures contain 127 records and zero drops. Three passive
 gameplay captures later extended the boundary corpus. The five primary files
 are:
 
-- [`pro2-chart-transition-lazy-susan-2026-07-29.jsonl`](../../dumps/BLE%20CAPTURE/pro2-chart-transition-lazy-susan-2026-07-29.jsonl)
-- [`pro2-chart-transition-lazy-susan-return-2026-07-29.jsonl`](../../dumps/BLE%20CAPTURE/pro2-chart-transition-lazy-susan-return-2026-07-29.jsonl)
-- [`pro2-chart-transition-splatoon-0-to-1-2026-07-29.jsonl`](../../dumps/BLE%20CAPTURE/pro2-chart-transition-splatoon-0-to-1-2026-07-29.jsonl)
-- [`pro2-chart-transition-splatoon-3-to-1-2026-07-29.jsonl`](../../dumps/BLE%20CAPTURE/pro2-chart-transition-splatoon-3-to-1-2026-07-29.jsonl)
-- [`pro2-chart-transition-3-to-2-2026-07-29.jsonl`](../../dumps/BLE%20CAPTURE/pro2-chart-transition-3-to-2-2026-07-29.jsonl)
+- [`pro2-chart-transition-lazy-susan-2026-07-29.jsonl`](../../tests/fixtures/captures/ble/pro2-chart-transition-lazy-susan-2026-07-29.jsonl)
+- [`pro2-chart-transition-lazy-susan-return-2026-07-29.jsonl`](../../tests/fixtures/captures/ble/pro2-chart-transition-lazy-susan-return-2026-07-29.jsonl)
+- [`pro2-chart-transition-splatoon-0-to-1-2026-07-29.jsonl`](../../tests/fixtures/captures/ble/pro2-chart-transition-splatoon-0-to-1-2026-07-29.jsonl)
+- [`pro2-chart-transition-splatoon-3-to-1-2026-07-29.jsonl`](../../tests/fixtures/captures/ble/pro2-chart-transition-splatoon-3-to-1-2026-07-29.jsonl)
+- [`pro2-chart-transition-3-to-2-2026-07-29.jsonl`](../../tests/fixtures/captures/ble/pro2-chart-transition-3-to-2-2026-07-29.jsonl)
 
 The two controlled-capture SHA-256 values are
 `2754446EDA522EC1DA3E5AFB588B1ACC8D0F4F0C6A92D1D28024DD2359DD1630` and
@@ -79,7 +79,7 @@ records remained state 3. The ring's `3881` dropped count is expected rolling
 pre-trigger overwrite; no trigger ever froze a window. This is useful negative
 evidence, but not a transition fixture:
 
-- [`pro2-chart-face-forward-no-transition-2026-07-29.jsonl`](../../dumps/BLE%20CAPTURE/pro2-chart-face-forward-no-transition-2026-07-29.jsonl)
+- [`pro2-chart-face-forward-no-transition-2026-07-29.jsonl`](../../tests/fixtures/captures/ble/pro2-chart-face-forward-no-transition-2026-07-29.jsonl)
 - SHA-256:
   `E7347A368745A1D98D831B8318B5486F277875B6BE6DEE4D3C9F82BC817D7EF1`
 

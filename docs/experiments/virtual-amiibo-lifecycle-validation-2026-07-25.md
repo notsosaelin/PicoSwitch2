@@ -57,7 +57,7 @@ No one-second present/Stop loop followed the final removal. This confirms the re
 the old loop while a later explicit scan can re-present the still-selected image.
 
 Primary trace:
-[`dumps/virtual-amiibo-lifecycle-validation-2026-07-25.jsonl`](../../dumps/virtual-amiibo-lifecycle-validation-2026-07-25.jsonl)
+`dumps/virtual-amiibo-lifecycle-validation-2026-07-25.jsonl`
 
 ## RAM mutation and UART export
 
@@ -75,7 +75,7 @@ After the interaction, live UART status reported:
 2. received exactly 540 bytes;
 3. validated the NTAG215 UID/BCC;
 4. wrote
-   [`dumps/virtual-amiibo-after-write-2026-07-25.bin`](../../dumps/virtual-amiibo-after-write-2026-07-25.bin);
+   `dumps/virtual-amiibo-after-write-2026-07-25.bin`;
 5. acknowledged the download only after the file was safely written.
 
 Post-acknowledgement status retained the same loaded generation and changed dirty from true to

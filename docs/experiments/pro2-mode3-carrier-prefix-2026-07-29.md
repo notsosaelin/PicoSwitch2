@@ -170,7 +170,7 @@ independently bracket the Q3 native result, including its fractional resolution.
 triplets matched in `993/1023` zero-drop records because adjacent temperature samples usually share
 the same fractional eighth; the unequal 3% are expected sample variation rather than padding.
 
-[`dumps/research/ndeadly-switch2-research.json`](../../dumps/research/ndeadly-switch2-research.json)
+`dumps/research/ndeadly-switch2-research.json`
 independently records the raw handle-`0x000A` temperature as signed 16-bit motion data. It also
 preserves a July 2025 visual guess that the first two handle-`0x000E` byte pairs were timestamp and
 temperature. Direct captures now refine that guess: the first four bytes are

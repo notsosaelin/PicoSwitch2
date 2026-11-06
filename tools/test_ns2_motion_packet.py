@@ -23,11 +23,11 @@ import ns2_motion_carrier as C
 import ns2_motion_packet as P
 import ns2_motion_reference as R
 
-DUMPS = Path(__file__).resolve().parent.parent / "dumps"
+DUMPS = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "captures"
 
 
 def all_captures():
-    yield from sorted((DUMPS / "BLE CAPTURE").glob("*.jsonl"))
+    yield from sorted((DUMPS / "ble").glob("*.jsonl"))
     yield from sorted((DUMPS / "motion").rglob("*.jsonl"))
 
 

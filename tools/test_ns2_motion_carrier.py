@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ns2_motion_carrier as C
 import ns2_motion_reference as R
 
-CAPTURES = Path(__file__).resolve().parent.parent / "dumps" / "BLE CAPTURE"
+CAPTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "captures" / "ble"
 TRANSITION_CAPTURES = (
     "pro2-chart-transition-lazy-susan-2026-07-29.jsonl",
     "pro2-chart-transition-lazy-susan-return-2026-07-29.jsonl",

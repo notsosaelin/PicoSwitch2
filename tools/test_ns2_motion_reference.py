@@ -358,8 +358,10 @@ def test_motionpair_reader() -> None:
 def test_prefix_truncated_carrier_model_real_capture() -> None:
     capture = (
         Path(__file__).resolve().parents[1]
-        / "dumps"
-        / "BLE CAPTURE"
+        / "tests"
+        / "fixtures"
+        / "captures"
+        / "ble"
         / "sw2_native_passthrough_live_2026-07-21.jsonl"
     )
     streams, dropped = read_blecap_jsonl(capture)
@@ -387,9 +389,10 @@ def test_prefix_truncated_carrier_model_real_capture() -> None:
 def test_predecessor_plus_four_epoch_real_capture() -> None:
     capture = (
         Path(__file__).resolve().parents[1]
-        / "dumps"
+        / "tests"
+        / "fixtures"
+        / "captures"
         / "motion"
-        / "2026-07-24"
         / "ds5-pro2-paired-pitch-2026-07-22.jsonl"
     )
     notifications, dropped = read_motionpair_jsonl(capture)
@@ -409,7 +412,7 @@ def test_predecessor_plus_four_epoch_real_capture() -> None:
 
 
 def test_reciprocal_chart_transition_captures() -> None:
-    root = Path(__file__).resolve().parents[1] / "dumps" / "BLE CAPTURE"
+    root = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "captures" / "ble"
     captures = (
         (
             root / "pro2-chart-transition-lazy-susan-2026-07-29.jsonl",
@@ -469,8 +472,10 @@ def test_reciprocal_chart_transition_captures() -> None:
 def test_state1_chart_transition_capture() -> None:
     capture = (
         Path(__file__).resolve().parents[1]
-        / "dumps"
-        / "BLE CAPTURE"
+        / "tests"
+        / "fixtures"
+        / "captures"
+        / "ble"
         / "pro2-chart-transition-splatoon-0-to-1-2026-07-29.jsonl"
     )
     notifications, dropped = read_motionpair_jsonl(capture)
@@ -490,8 +495,10 @@ def test_state1_chart_transition_capture() -> None:
 def test_rapid_state1_capture_does_not_compose_state0_projections() -> None:
     capture = (
         Path(__file__).resolve().parents[1]
-        / "dumps"
-        / "BLE CAPTURE"
+        / "tests"
+        / "fixtures"
+        / "captures"
+        / "ble"
         / "pro2-chart-transition-splatoon-3-to-1-2026-07-29.jsonl"
     )
     notifications, dropped = read_motionpair_jsonl(capture)
@@ -541,8 +548,10 @@ def test_rapid_state1_capture_does_not_compose_state0_projections() -> None:
 def test_state2_chart_and_prefix_seam_capture() -> None:
     capture = (
         Path(__file__).resolve().parents[1]
-        / "dumps"
-        / "BLE CAPTURE"
+        / "tests"
+        / "fixtures"
+        / "captures"
+        / "ble"
         / "pro2-chart-transition-3-to-2-2026-07-29.jsonl"
     )
     notifications, dropped = read_motionpair_jsonl(capture)
@@ -582,7 +591,7 @@ def test_state2_chart_and_prefix_seam_capture() -> None:
 
 
 def test_catchup_reserved_bit_zero_real_corpus() -> None:
-    root = Path(__file__).resolve().parents[1] / "dumps" / "BLE CAPTURE"
+    root = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "captures" / "ble"
     captures = (
         root / "sw2_uart_variant7_stationary_2026-07-21.jsonl",
         root / "sw2_uart_variant7_pitch90_2026-07-21.jsonl",

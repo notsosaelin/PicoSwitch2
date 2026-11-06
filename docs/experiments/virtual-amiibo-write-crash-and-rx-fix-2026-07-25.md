@@ -78,7 +78,7 @@ losing every record while waiting to write the completed list.
 
 The rebuilt Pico 2 W repeated the same game-owned write with **no console crash**. The retained
 NFC-only trace in
-[`dumps/virtual-amiibo-write-retest-2026-07-25.jsonl`](../../dumps/virtual-amiibo-write-retest-2026-07-25.jsonl)
+`dumps/virtual-amiibo-write-retest-2026-07-25.jsonl`
 confirms:
 
 1. full reassembled `0x14` commands are 88 bytes;

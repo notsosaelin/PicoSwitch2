@@ -393,22 +393,22 @@ observation window.**
 
 ## Evidence artifacts
 
-- [`dumps/picoswitch-management-20260825.log`](../../dumps/picoswitch-management-20260825.log)
+- `dumps/picoswitch-management-20260825.log`
   - SHA-256 `bbb1d84badfe860e06732523b1f7f2ed368e33a4b7e6a90a858a2a508931fb02`
-- [`dumps/management-gatt-20260825-uart.jsonl`](../../dumps/management-gatt-20260825-uart.jsonl)
+- `dumps/management-gatt-20260825-uart.jsonl`
   - SHA-256 `9803a720b338302296cc86c9b56c04d98a0faca0e1ea13a1cdde387716cd0029`
-- [`dumps/20260825-160751-odin-root-bluetooth-audit/`](../../dumps/20260825-160751-odin-root-bluetooth-audit/)
+- `dumps/20260825-160751-odin-root-bluetooth-audit/`
   - rooted Odin stack/HAL/controller audit, initial protected-log inventory, and
     exact reversible HCI/BQR settings
-- [`dumps/20260825-161402-collector-smoke/`](../../dumps/20260825-161402-collector-smoke/)
+- `dumps/20260825-161402-collector-smoke/`
   - retained dual-link HCI/BQR timeout and post-failure fresh Pico boot ring;
     `manifest.json` inventories and hashes every file
-- [`dumps/20260825-161710-baseline-a-management-only/`](../../dumps/20260825-161710-baseline-a-management-only/)
+- `dumps/20260825-161710-baseline-a-management-only/`
   - despite its early directory label, this is the healthy 60-second dual-link
     Condition B and handle-mapping bundle
-- [`dumps/20260825-162221-baseline-a-management-only-verified/`](../../dumps/20260825-162221-baseline-a-management-only-verified/)
+- `dumps/20260825-162221-baseline-a-management-only-verified/`
   - verified healthy 45-second management-only Condition A
-- [`dumps/20260825-162517-baseline-c-human-paced-transitions/`](../../dumps/20260825-162517-baseline-c-human-paced-transitions/)
+- `dumps/20260825-162517-baseline-c-human-paced-transitions/`
   - Condition F freeze and post-failure Pico state; the failure occurred before
     the attempted Classic transition, so the directory's originally selected
     scenario does not describe the event's cause

@@ -20,9 +20,9 @@ not a fixed controller constant.
 - Input size / CRC32 / UID: `2048` / `40762971` / `04B4438ADB1F90`
 - Input crypto: both amiibo HMACs valid against the owner's retail keys
 - UART trace:
-  [`../../dumps/v3-downloaded-kirby-warp-read-write-2026-07-28.jsonl`](../../dumps/v3-downloaded-kirby-warp-read-write-2026-07-28.jsonl)
+  `../../dumps/v3-downloaded-kirby-warp-read-write-2026-07-28.jsonl`
 - Written export:
-  [`../../dumps/v3-downloaded-kirby-warp-written-2026-07-28.bin`](../../dumps/v3-downloaded-kirby-warp-written-2026-07-28.bin)
+  `../../dumps/v3-downloaded-kirby-warp-written-2026-07-28.bin`
 - Post-write CRC32: `C59933E5`
 - Post-write crypto: HMAC valid; nickname `Test`, owner `Miles`
 - Runtime diagnostics:

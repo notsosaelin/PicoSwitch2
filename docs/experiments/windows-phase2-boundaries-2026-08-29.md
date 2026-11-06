@@ -71,7 +71,7 @@ at any point.
 
 ### Result — PASS, 2026-08-29 16:13–16:18
 
-Evidence: [`dumps/windows-phase2-oneclient-2026-08-29.md`](../../dumps/windows-phase2-oneclient-2026-08-29.md).
+Evidence: `dumps/windows-phase2-oneclient-2026-08-29.md`.
 
 - **Maximum concurrent management clients: 1.** 21 lifecycle records in the
   adapter's own ring, all on a single handle `0x0040`, strictly alternating

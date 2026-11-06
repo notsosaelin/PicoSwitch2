@@ -33,12 +33,12 @@ validated encoder.
 
 Canonical captures:
 
-- [`sw2_pro2_gatt_discovery_2026-07-21.jsonl`](../../dumps/BLE%20CAPTURE/sw2_pro2_gatt_discovery_2026-07-21.jsonl)
-- [`sw2_uart_variant8_verified_rate_2026-07-21.jsonl`](../../dumps/BLE%20CAPTURE/sw2_uart_variant8_verified_rate_2026-07-21.jsonl)
-- [`sw2_uart_variant9_fast_link_2026-07-21.jsonl`](../../dumps/BLE%20CAPTURE/sw2_uart_variant9_fast_link_2026-07-21.jsonl)
-- [`sw2_auto_motion_failure_2026-07-21.jsonl`](../../dumps/BLE%20CAPTURE/sw2_auto_motion_failure_2026-07-21.jsonl)
-- [`sw2_auto_motion_success_2026-07-21.jsonl`](../../dumps/BLE%20CAPTURE/sw2_auto_motion_success_2026-07-21.jsonl)
-- [`sw2_native_passthrough_live_2026-07-21.jsonl`](../../dumps/BLE%20CAPTURE/sw2_native_passthrough_live_2026-07-21.jsonl)
+- [`sw2_pro2_gatt_discovery_2026-07-21.jsonl`](../../tests/fixtures/captures/ble/sw2_pro2_gatt_discovery_2026-07-21.jsonl)
+- [`sw2_uart_variant8_verified_rate_2026-07-21.jsonl`](../../tests/fixtures/captures/ble/sw2_uart_variant8_verified_rate_2026-07-21.jsonl)
+- [`sw2_uart_variant9_fast_link_2026-07-21.jsonl`](../../tests/fixtures/captures/ble/sw2_uart_variant9_fast_link_2026-07-21.jsonl)
+- [`sw2_auto_motion_failure_2026-07-21.jsonl`](../../tests/fixtures/captures/ble/sw2_auto_motion_failure_2026-07-21.jsonl)
+- [`sw2_auto_motion_success_2026-07-21.jsonl`](../../tests/fixtures/captures/ble/sw2_auto_motion_success_2026-07-21.jsonl)
+- [`sw2_native_passthrough_live_2026-07-21.jsonl`](../../tests/fixtures/captures/ble/sw2_native_passthrough_live_2026-07-21.jsonl)
 
 ## Production behavior
 

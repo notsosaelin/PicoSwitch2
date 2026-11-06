@@ -67,9 +67,9 @@ def test_solver_recovers_state3_cyclic_map() -> None:
 
 def test_real_reciprocal_fixture_and_unresolved_states() -> None:
     captures = [
-        ROOT / "dumps/BLE CAPTURE/pro2-chart-transition-lazy-susan-2026-07-29.jsonl",
-        ROOT / "dumps/BLE CAPTURE/pro2-chart-transition-lazy-susan-return-2026-07-29.jsonl",
-        ROOT / "dumps/experiments/20260729-122701-pro2-mag-ceramic-confirmation-immediate-baseline/motion.raw.jsonl",
+        ROOT / "tests/fixtures/captures/ble/pro2-chart-transition-lazy-susan-2026-07-29.jsonl",
+        ROOT / "tests/fixtures/captures/ble/pro2-chart-transition-lazy-susan-return-2026-07-29.jsonl",
+        ROOT / "tests/fixtures/captures/experiments/pro2-mag-ceramic-confirmation-immediate-baseline-2026-07-29/motion.raw.jsonl",
     ]
     result = analyze_captures(captures)
     assert result["solution"]["best"]["maps"][3] == (1, 2, 0)
@@ -91,13 +91,13 @@ def test_real_reciprocal_fixture_and_unresolved_states() -> None:
 def test_rolling_untriggered_window_is_not_transition_evidence() -> None:
     capture = (
         ROOT
-        / "dumps/BLE CAPTURE/pro2-chart-face-forward-no-transition-2026-07-29.jsonl"
+        / "tests/fixtures/captures/ble/pro2-chart-face-forward-no-transition-2026-07-29.jsonl"
     )
     assert not transition_window_is_contiguous(capture, 3881)
 
 
 def test_state1_transition_supplies_one_anchor_edge_observation() -> None:
-    root = ROOT / "dumps/BLE CAPTURE"
+    root = ROOT / "tests/fixtures/captures/ble"
     result = analyze_captures(
         [
             root / "pro2-chart-transition-lazy-susan-2026-07-29.jsonl",
@@ -118,7 +118,7 @@ def test_state1_transition_supplies_one_anchor_edge_observation() -> None:
 
 
 def test_rapid_state1_capture_rejects_global_unsigned_composition() -> None:
-    root = ROOT / "dumps/BLE CAPTURE"
+    root = ROOT / "tests/fixtures/captures/ble"
     result = analyze_captures(
         [
             root / "pro2-chart-transition-lazy-susan-2026-07-29.jsonl",
@@ -189,7 +189,7 @@ def test_rapid_state1_capture_rejects_global_unsigned_composition() -> None:
 
 
 def test_state2_transition_closes_all_chart_states() -> None:
-    root = ROOT / "dumps/BLE CAPTURE"
+    root = ROOT / "tests/fixtures/captures/ble"
     result = analyze_captures(
         [
             root / "pro2-chart-transition-lazy-susan-2026-07-29.jsonl",

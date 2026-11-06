@@ -34,7 +34,6 @@ __pycache__/
 *.py[cod]
 
 build
-/8Bitdo/research/
 
 # C++/WinRT projection output. Native projects place generated headers beside
 # their sources by default; only the IDL and hand-written implementation belong
@@ -62,12 +61,11 @@ tools/fixtures/amiibo-showgames.json
 # not project documentation -- durable guidance belongs in docs/ or AGENTS.md.
 *_PASS.md
 
-# Android bugreports. A bugreport is not a capture: alongside the Bluetooth
-# dumpsys it carries the maintainer's account addresses, home Wi-Fi SSIDs and
-# router BSSIDs, and this repository is public. Extract the Bluetooth sections
-# you need into dumps/ instead; the raw bugreport stays local.
-dumps/*bugreport*.zip
-dumps/*bugreport-extract/
+# Local lab output. The capture tools (tools/*_lab.ps1, read_uart_diag.ps1, ...)
+# write recordings here; they are evidence for a working session, not source.
+# Test inputs that must be versioned live in tests/fixtures/captures/.
+# (Android bugreports in particular carry account addresses and Wi-Fi SSIDs.)
+/dumps/
 
 # Local-only task prompts, same rule as *_PASS.md above: these are inputs to a
 # working session, not project documentation.

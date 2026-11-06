@@ -376,7 +376,7 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   on data saved nowhere.
   4 Windows suites green (123/146/52/412); descriptor parity green. **Not validated on hardware:**
   a tag uploaded from Windows being read by the console, and a console-written tag syncing back.
-  [`WINDOWS_PASS.md` §31 Phase 5](WINDOWS_PASS.md)
+  `WINDOWS_PASS.md` §31 Phase 5
 
 - **KB/M profile system shipped end-to-end 2026-08-30; REQUIRES A REFLASH; hardware validation
   pending.** Firmware, management protocol, Windows and Android in one pass. Two defects are fixed.
@@ -1756,7 +1756,7 @@ and what is designed stays explicit.
   handle, strictly alternating, **zero** alternation violations; two Refreshes, all five
   destinations and a minimise/restore produced **no** transition at all; Disconnect retired the
   session exactly once; every disconnect carried `cause=none` and `disc.ctrl`/`disc.hci` never
-  moved. Evidence: [`dumps/windows-phase2-oneclient-2026-08-29.md`](dumps/windows-phase2-oneclient-2026-08-29.md).
+  moved. Evidence: `dumps/windows-phase2-oneclient-2026-08-29.md`.
   Method note for whoever repeats it: `mgmt_watch.ps1` at `-IntervalMs 1500 -RingEverySec 60` gives
   a ~42 s effective host sample gap, too coarse to ORDER a connect/disconnect pair. Read the ring,
   not the poll deltas.
