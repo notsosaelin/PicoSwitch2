@@ -17,8 +17,7 @@ import unittest
 from collections import Counter
 from pathlib import Path
 
-
-import _repo  # noqa: F401  -- puts tools/ on sys.path
+import _repo  # puts tools/ on sys.path
 import ns2_motion_carrier as C
 import ns2_motion_packet as P
 import ns2_motion_reference as R

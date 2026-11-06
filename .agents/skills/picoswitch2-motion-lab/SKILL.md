@@ -89,17 +89,12 @@ successful gesture.
 Run:
 
 ```powershell
-.\build\host-tests\build-host-test-ns2-motion-pdu.exe
-.\build\host-tests\build-host-test-ns2-motion-pdu40.exe
-.\build\host-tests\build-host-test-ns2-ds5-motion.exe
-.\build\host-tests\build-host-test-ns2-ds5-motion40.exe
-.\build\host-tests\test_ns2_motion_hybrid.exe
-.\build\host-tests\test_ns2_motion_hybrid_projector.exe
-python tests\tools\test_ns2_motion_packet.py
-python tests\tools\test_ns2_motion_carrier.py
-python tests\tools\test_ns2_motion40_coherence.py
-python tests\tools\test_ns2_motion_hybrid.py
+pwsh -File tests\run_host_tests.ps1 -Group motion   # PDU, DS5 encoder, seam, hybrid, projector
+python tests\run_tool_tests.py motion               # packet, carrier, 0x28 coherence, hybrid, reference
 ```
+
+Never run executables left in `build\host-tests`; only the runner's own
+rebuild-and-run count is evidence (see `AGENTS.md`).
 
 State whether results are offline, build-only, or hardware-confirmed. Record a
 negative hardware result in `docs/experiments/refuted-hypotheses.md`; do not

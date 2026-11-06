@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  firmware:
+    name: Firmware (${{ matrix.board }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Mirrors the standard artifacts of firmware/build.ps1. Keep in step.
+          - board: pico_w
+            flags: -DNS2_DS5_AUDIO=OFF -DNS2_DS5_AUDIO_TEST_TONE=OFF
+          - board: pico2_w
+            flags: -DNS2_DS5_AUDIO=ON -DNS2_DS5_AUDIO_TEST_TONE=OFF -DNS2_PICO2_SYSTEM_CLOCK_MHZ=300
+    env:
+      # Pinned to match firmware/CMakeLists.txt (sdkVersion, toolchainVersion).
+      PICO_SDK_VERSION: 2.3.0
+      ARM_TOOLCHAIN: 15.2.rel1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build libusb-1.0-0-dev
+
+      - name: Cache Pico SDK and Arm toolchain
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/pico-sdk
+            ~/arm-toolchain
+          key: pico-sdk-${{ env.PICO_SDK_VERSION }}-arm-${{ env.ARM_TOOLCHAIN }}
+
+      - name: Fetch Pico SDK and Arm toolchain
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$PICO_SDK_VERSION" --recurse-submodules --shallow-submodules \
+            https://github.com/raspberrypi/pico-sdk.git ~/pico-sdk
+          mkdir -p ~/arm-toolchain
+          curl -fsSL "https://developer.arm.com/-/media/Files/downloads/gnu/${ARM_TOOLCHAIN}/binrel/arm-gnu-toolchain-${ARM_TOOLCHAIN}-x86_64-arm-none-eabi.tar.xz" \
+            | tar -xJ --strip-components=1 -C ~/arm-toolchain
+
+      - name: Configure
+        run: |
+          cmake -S firmware -B firmware/build/${{ matrix.board }} -G Ninja \
+            -DPICO_SDK_PATH="$HOME/pico-sdk" \
+            -DPICO_TOOLCHAIN_PATH="$HOME/arm-toolchain" \
+            -DPICO_BOARD=${{ matrix.board }} \
+            -DNS2_PRO_FIRMWARE_VERSION=2.1.4 -DNS2_PRO_BLUETOOTH_VERSION=12.0.0 -DNS2_PRO_DSP_VERSION=0.2.3 \
+            -DNS2_UART_DIAG=ON -DNS2_MGMT_DEFAULT_ON=ON \
+            ${{ matrix.flags }}
+
+      - name: Build
+        run: cmake --build firmware/build/${{ matrix.board }}
+
+      - name: Verify install-reset marker
+        run: |
+          size=$([ "${{ matrix.board }}" = pico2_w ] && echo 0x400000 || echo 0x200000)
+          python3 tools/verify_install_reset_marker.py \
+            firmware/build/${{ matrix.board }}/PicoSwitchWGA-${{ matrix.board }}.bin --flash-size "$size"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PicoSwitchWGA-${{ matrix.board }}
+          path: firmware/build/${{ matrix.board }}/PicoSwitchWGA-${{ matrix.board }}.uf2
+          if-no-files-found: error
+
+  host-tests:
+    name: Host and tool tests
+    # The host suite has only ever run with MinGW gcc; the Windows image ships it.
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Host C tests
+        shell: pwsh
+        run: ./tests/run_host_tests.ps1
+      - name: Tool tests
+        shell: pwsh
+        run: python tests/run_tool_tests.py
+
+  android:
+    name: Android companion
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Unit tests
+        working-directory: companions/android
+        run: ./gradlew --console=plain :bridge-core:test :management-core:test :app:testDebugUnitTest
+
+  windows:
+    name: Windows companion
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build, test and check descriptor parity
+        shell: pwsh
+        working-directory: companions/windows
+        run: ./build.ps1
+
+  docs:
+    name: Documentation links
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/check_doc_links.py --list

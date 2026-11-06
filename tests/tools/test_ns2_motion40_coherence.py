@@ -36,7 +36,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, Sequence
 
-import _repo  # noqa: F401  -- puts tools/ on sys.path
+import _repo  # puts tools/ on sys.path
+
 ROOT = _repo.ROOT
 TOOLS = _repo.TOOLS
 

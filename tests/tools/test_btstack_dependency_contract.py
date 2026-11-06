@@ -21,7 +21,8 @@ import re
 import sys
 from pathlib import Path
 
-import _repo  # noqa: F401  -- puts tools/ on sys.path
+import _repo  # puts tools/ on sys.path
+
 ROOT = _repo.ROOT
 
 CMAKELISTS = ROOT / "firmware" / "CMakeLists.txt"

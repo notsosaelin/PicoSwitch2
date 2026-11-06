@@ -1,6 +1,7 @@
 # Host-test inventory
 
-Every `tools/test_*.c` in the repository, classified. Established 2026-08-21.
+Every host-test source in the repository (`tests/firmware/test_*.c`, under `tools/` until
+2026-11-06), classified. Established 2026-08-21.
 
 Authoritative runner: `pwsh -File tests/run_host_tests.ps1`. The manifest lives in that script;
 this document explains the classification and the reasoning behind the exclusions.
@@ -44,7 +45,7 @@ Bluetooth reliability work and shipped with its own recipe.
 
 **These totals are the audit's snapshot, not a running count.** Targets added since are listed
 below; the authoritative figure is always what `tests/run_host_tests.ps1` declares, and the runner
-refuses to start if any `tools/test_*.c` is in neither its manifest nor its `$notHostTests` table,
+refuses to start if any `tests/firmware/test_*.c` is in neither its manifest nor its `$notHostTests` table,
 so a new test cannot be quietly forgotten.
 
 | Added | Target | Subsystem |
@@ -53,13 +54,14 @@ so a new test cannot be quietly forgotten.
 | 2026-08-23 | `test_touch_layout_face_goldens` | Touch Gamepad layout goldens |
 | 2026-08-24 | `test_controller_link_face_goldens` | Controller Link face mapping |
 | 2026-08-27 | `test_mgmt_peers` | logical peer inventory (Bluetooth Management 2.0 Phase 3) |
+| 2026-11-06 | `test_gcusb_core` | promoted from category E: it is pure host code (the gcusb lab's Windows-free core) |
 
-73 declared active host-test targets rebuild from current source and pass. The 9 remaining sources
-are declared in `$notHostTests` with a reason, and the runner refuses to start if any
-`tools/test_*.c` is in neither table.
+As of 2026-11-06, 81 declared active host-test targets rebuild from current source and pass. The 5
+remaining sources (category C) are declared in `$notHostTests` with a reason, and the runner
+refuses to start if any `tests/firmware/test_*.c` is in neither table.
 
-This is not the same claim as "all tests pass". Five of the nine excluded sources
-(**category C**) are genuinely uncovered on the host, and three (**category D**) represent coverage
+This is not the same claim as "all tests pass". The five excluded sources (**category C**) are
+genuinely uncovered on the host, and the three deleted **category D** sources represent coverage
 that was lost when the code they exercised changed or was removed — see those sections below.
 
 ## C — not host tests
@@ -83,7 +85,8 @@ to `test_bthid_late_identity`, which reaches code the linker cannot discard.
 
 ## D — obsolete
 
-Left on disk as history; not resurrected, not deleted.
+Kept on disk as history until 2026-11-06, then deleted in the repository cleanup; they remain in
+Git history. Not resurrected.
 
 | Test | Reason |
 |---|---|
@@ -95,7 +98,7 @@ Left on disk as history; not resurrected, not deleted.
 
 | Test | Reason |
 |---|---|
-| `test_gcusb_core` | belongs to the standalone GameCube USB lab tool; built by `tools/gcusb/build.ps1`. Cited by `docs/experiments/gcusb-rumble-lab-2026-07-14.md`. |
+| `test_gcusb_core` | **Promoted to the suite 2026-11-06.** The earlier reason ("built by `tools/gcusb/build.ps1`") was wrong: that script builds only `gcusb.exe`, and the test is pure host code that compiles under the suite's flags. Cited by `docs/experiments/gcusb-rumble-lab-2026-07-14.md`. |
 
 ## Recipes worth knowing about
 

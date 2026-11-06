@@ -1,196 +1,154 @@
 # PicoSwitch2
 
+[![CI](https://github.com/notsosaelin/PicoSwitch2/actions/workflows/ci.yml/badge.svg)](https://github.com/notsosaelin/PicoSwitch2/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/notsosaelin/PicoSwitch2)](https://github.com/notsosaelin/PicoSwitch2/releases)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 PicoSwitch2 turns a Raspberry Pi Pico W or Pico 2 W into a Bluetooth-to-USB
-controller adapter for Nintendo Switch 2. It can present five USB personalities:
+controller adapter for the Nintendo Switch 2. Pair almost any Bluetooth
+controller (or a keyboard and mouse, or an Android or Windows device) and the
+console sees a native Switch 2 controller, with motion, rumble, battery, NFC
+and audio where the source supports them.
 
-1. Switch 2 Pro Controller (`057E:2069`)
-2. Nintendo GameCube Controller (`057E:2073`)
-3. Nintendo Joy-Con 2 (L) (`057E:2067`)
-4. Nintendo Joy-Con 2 (R) (`057E:2066`)
-5. Local configuration device (`CAFE:4012`)
+It is also an open technical reference: the protocol findings behind each
+feature are documented with their evidence under [`docs/`](docs/README.md).
 
-The project is based on
-[PicoSwitch-WirelessGamepadAdapter](https://github.com/juan518munoz/PicoSwitch-WirelessGamepadAdapter),
-with a vendored [joypad-os](https://github.com/joypad-ai/joypad-os) Bluetooth HID stack,
-[BTstack](https://github.com/bluekitchen/btstack), and
-[TinyUSB](https://github.com/hathach/tinyusb). Switch 2 protocol work is informed by this
-project's hardware captures and
-[ndeadly/switch2_controller_research](https://github.com/ndeadly/switch2_controller_research).
+## Features
 
-## Current capabilities
+- **Five USB personalities**, switched at runtime:
 
-- Switch 2 Pro Controller output with buttons, sticks, C/GL/GR, and rumble.
-- Native NSO GameCube output with buttons, sticks, analog triggers, digital trigger
-  detents, and hardware-validated rumble.
-- Experimental Joy-Con 2 Left and Right output personalities.
-- Native Joy-Con 2 mouse mode from a paired Bluetooth HID mouse, including pointer movement,
-  buttons, and wheel-to-stick menu navigation.
-- DualSense and DualSense Edge input, including Edge paddles, Fn and mute buttons,
-  LEDs, and rumble.
-- Live Windows-audio output through a paired DualSense internal speaker on
-  Pico 2 W. Its standard artifact uses the hardware-confirmed
-  floating-point/SRAM codec path at 300 MHz/1.20 V. Pico W remains on its
-  validated non-audio configuration.
-- Xbox-family, Switch-family, 8BitDo, and other supported Bluetooth HID controllers.
-- A local configuration page for independently setting the Pro Controller 2 body and Joy-Con 2
-  Left/Right accent colors. The active personality's appearance is shared with supported
-  DualShock/DualSense lightbars. Firmware uses one locked physical-to-Nintendo base map; button
-  remapping belongs to the emulated controller in the Switch UI, where it survives a change of
-  source controller.
-- Builds for both RP2040 Pico W and RP2350 Pico 2 W.
+  | Personality | USB ID |
+  | --- | --- |
+  | Switch 2 Pro Controller | `057E:2069` |
+  | NSO GameCube Controller | `057E:2073` |
+  | Joy-Con 2 (L) / (R), experimental | `057E:2067` / `057E:2066` |
+  | Configuration device | `CAFE:4012` |
 
-The Pro Controller 2 personality deliberately uses a 1 ms USB interrupt interval
-(1000 Hz); the genuine controller uses 4 ms (250 Hz). The GameCube and Joy-Con 2
-personalities retain their genuine descriptor timing.
+- **Bluetooth input** from DualSense and DualSense Edge (paddles, Fn, mute,
+  lightbar), Xbox, Switch 1 and Switch 2, Wii, 8BitDo, Retro Fighters and other
+  HID controllers, plus Bluetooth keyboards and mice.
+- **Motion**: genuine Pro Controller 2 passthrough, and calibrated DualSense
+  translation.
+- **Rumble and haptics**, including native DualSense haptics and GameCube rumble.
+- **Audio** (Pico 2 W): console audio through a DualSense speaker or headset jack.
+- **Virtual Amiibo**, including the 2048-byte Kirby Air Riders figures.
+- **Companion apps** for [Android](companions/android/) and
+  [Windows](companions/windows/): manage the adapter wirelessly, use the device
+  itself as a controller (Controller Link), and an editable on-screen gamepad.
 
-See [STATUS.md](STATUS.md) for hardware-confirmed behavior and known limitations, and
-[docs/README.md](docs/README.md) for the documentation map. A fresh coding-agent session should
-start with [AGENTS.md](AGENTS.md).
+What has been validated on real hardware, and what has not, is tracked in
+[`STATUS.md`](STATUS.md) and the
+[compatibility matrix](docs/status/compatibility-matrix.md).
 
 ## Hardware
 
-- Raspberry Pi Pico W or Pico 2 W. Non-wireless Pico boards cannot host Bluetooth.
-- A data-capable USB cable, optionally through a powered USB hub.
+- A Raspberry Pi **Pico W** (RP2040) or **Pico 2 W** (RP2350). Boards without
+  wireless cannot host Bluetooth. Audio needs a Pico 2 W.
+- A data-capable USB cable.
 
 ## Install
 
 1. Download the UF2 for your board from
-   [GitHub Releases](https://github.com/notsosaelin/PicoSwitch2/releases):
+   [Releases](https://github.com/notsosaelin/PicoSwitch2/releases):
    `PicoSwitchWGA-pico_w.uf2` or `PicoSwitchWGA-pico2_w.uf2`.
-2. Hold BOOTSEL while plugging the Pico into a PC.
-3. Copy the UF2 to the mounted `RPI-RP2` or `RP2350` drive.
-4. Connect the Pico to the Switch 2 or PC.
+2. Hold BOOTSEL while plugging the Pico into a computer.
+3. Copy the UF2 to the `RPI-RP2` or `RP2350` drive that appears.
+4. Plug the Pico into the Switch 2.
 
-## Pairing and BOOTSEL
+Firmware and companion apps must come from the same release.
+
+## Use
+
+The Pico's BOOTSEL button controls pairing and personalities:
 
 | Gesture | No controller paired | Controller paired | Config mode |
-|---|---|---|---|
-| Single-tap | No action | Cycle Pro2 → GameCube → Joy-Con 2 Left → Joy-Con 2 Right → Pro2 | No action |
-| Double-tap | Open a 30-second pairing window | Disconnect the active controller without deleting its bond, then open a 30-second pairing window | No action |
-| Triple-tap | Erase stored pairings and lock admission | Disconnect, erase stored pairings, and lock admission | Same wipe/disconnect action |
-| Hold for 2 seconds | Enter Config directly | Enter Config directly | Exit directly to Pro Controller 2 |
+| --- | --- | --- | --- |
+| Tap | — | Next personality: Pro 2 → GameCube → Joy-Con 2 L → Joy-Con 2 R | — |
+| Double-tap | Open a 30 s pairing window | Disconnect (keeping the pairing), then open a pairing window | — |
+| Triple-tap | Erase all pairings | Disconnect and erase all pairings | Same |
+| Hold 2 s | Enter Config mode | Enter Config mode | Return to Pro Controller 2 |
 
-Personality selection is volatile and every cold boot begins in Pro Controller 2 mode. Config is
-deliberately excluded from the single-tap controller cycle.
+Every cold boot starts in Pro Controller 2 mode.
 
-| LED pattern | Meaning |
-|---|---|
-| Brief flash about every 2 seconds | Idle and locked to previously admitted controllers. |
-| Fast blink | Pairing window open. |
-| Solid | Controller connected. |
-| Very fast burst | Pairing data is being cleared. |
-| Slow steady blink | Config mode active. |
+| LED | Meaning |
+| --- | --- |
+| Brief flash every ~2 s | Idle, only previously paired controllers may connect |
+| Fast blink | Pairing window open |
+| Solid | Controller connected |
+| Very fast burst | Erasing pairings |
+| Slow blink | Config mode |
 
-BOOTSEL processing is serviced at Bluetooth HID report boundaries as well as during idle
-polling. This is required so a high-rate controller such as DualSense cannot starve button
-gestures or output scheduling.
+### Configuration
 
-## Configuration
-
-Hold BOOTSEL for two seconds from any controller personality. The device re-enumerates directly as
-the **PicoSwitch Config** serial device; firmware no longer exposes a storage drive or embeds the
-web portal.
-
-1. Start the local portal from the repository root:
+Settings (controller colors, input source, amiibo library and more) are managed
+from the web portal or a companion app. To use the portal, hold BOOTSEL for two
+seconds, then from the repository:
 
 ```powershell
-.\tools\run_config_portal.ps1
+./tools/run_config_portal.ps1
 ```
 
-2. In desktop Chrome or Edge, select the PicoSwitch Config serial port.
-3. Inspect live input, set Pro2/Joy-Con appearance colors, and save.
-4. Hold BOOTSEL for two seconds to return directly to Pro Controller 2, or power-cycle to boot
-   directly into Pro Controller 2 mode.
+and select the **PicoSwitch Config** serial port in desktop Chrome or Edge. The
+portal is served locally; nothing is hosted on the microcontroller. It also
+reaches the adapter over Bluetooth without leaving controller mode.
 
-The launcher serves `web/index.html` from localhost, giving browser storage a stable origin for the
-amiibo library while keeping the changing portal entirely off the microcontroller.
-
-The amiibo library remains available when no serial device is connected. The board holds exactly one
-amiibo at a time; Sync pulls console-written data back into the browser copy of that entry, and the
-library exports/imports as a flat `.zip` backup in case browser storage is cleared. Adapter-only
-controls remain disabled offline.
-
-The separate Virtual Amiibo browser diagnostic does not require a Pico or serial port:
+## Build from source
 
 ```powershell
-.\tools\run_amiibo_portal_test.ps1
+git clone --recurse-submodules https://github.com/notsosaelin/PicoSwitch2.git
+cd PicoSwitch2
+./firmware/build.ps1            # both boards
+./firmware/build.ps1 pico2_w    # one board
 ```
 
-It serves `web/diagnostic.html` locally and simulates upload, persistence, console writes,
-cache-first save-back, the recursive browser library, and AmiiboAPI metadata.
+Output: `firmware/build/<board>/PicoSwitchWGA-<board>.uf2`.
 
-## Building
+`build.ps1` uses the toolchain installed by the Raspberry Pi Pico VS Code
+extension (Pico SDK 2.3.0, Arm GCC 15.2.Rel1, CMake 4.3.4, Ninja 1.13.2,
+picotool 2.3.0). `firmware/` is also a standard Pico SDK CMake project for any
+environment with `PICO_SDK_PATH` set. See [`firmware/README.md`](firmware/README.md)
+for the module layout and build variants, and [`tests/README.md`](tests/README.md)
+for the test suites.
 
-On Windows, `build.ps1` uses the toolchain installed by the official Raspberry Pi Pico
-VS Code extension. Its expected versions are Pico SDK 2.2.0, ARM GCC 14_2_Rel1,
-CMake 3.31.5, Ninja 1.12.1, and picotool 2.2.0-a4.
+## Repository layout
 
-```powershell
-firmware/build.ps1            # both boards
-firmware/build.ps1 pico_w     # RP2040 Pico W, validated non-audio build
-firmware/build.ps1 pico2_w    # RP2350 Pico 2 W, live audio at 300 MHz
-firmware/build.ps1 -Clean     # clean, then build both
-firmware/build.ps1 -Tone      # Pico 2 W fixed DualSense diagnostic tone
-firmware/build.ps1 -Audio     # Pico 2 W live-audio 150 MHz comparison
-firmware/build.ps1 -AudioOverclock # Pico 2 W live-audio 200 MHz comparison
+```text
+firmware/      adapter firmware (C, Pico SDK): src/ modules, config, build
+companions/    android/ (Kotlin) and windows/ (C#, WinUI 3) companion apps
+contracts/     wire contracts shared by firmware, companions and tests
+web/           browser configuration portal
+tests/         host tests, tool tests, fixtures and runners
+tools/         UART, capture, lab and analysis tooling
+docs/          architecture, protocol reference, experiments, archive
 ```
-
-Artifacts are written to:
-
-- `build/pico_w/PicoSwitchWGA-pico_w.uf2`
-- `build/pico2_w/PicoSwitchWGA-pico2_w.uf2`
-
-This is also a standard Pico SDK CMake project for environments with `PICO_SDK_PATH` set.
-
-## Architecture
-
-Core 0 owns TinyUSB and the active USB personality. Core 1 owns Bluetooth, controller
-drivers, pairing, LEDs, BOOTSEL sampling, and controller output such as rumble. Shared input
-and output state crosses the cores through `firmware/src/app/report.c` under a hardware critical section.
-
-The architectural overview is in [docs/architecture/overview.md](docs/architecture/overview.md).
-Protocol facts and unresolved research are deliberately kept in `docs/`, while source comments
-retain only wire layouts, invariants, and implementation constraints.
 
 ## Known limitations
 
-- One Bluetooth controller is routed at a time.
-- Genuine Pro Controller 2 native motion passthrough and calibrated DualSense/DualSense Edge
-  translation to the Switch 2 length-`0x1E` carrier are hardware-confirmed. The genuine
-  length-`0x28` form remains only partially decoded and is never synthesized for Sony controllers.
-- Joy-Con 2 Left and Right are separate sideways controller personalities; they are not combined
-  into one paired-controller USB identity.
-- The first-generation 8BitDo Ultimate Bluetooth controller works on its stock firmware, but its
-  P1/P2 back paddles are not available: that firmware does not report them separately.
-- Switch 2 wake-from-sleep is implemented in Pro Controller 2 mode. After the console has entered
-  sleep, the first real controller input sends the wake request automatically. Neutral reconnect
-  reports never trigger wake.
-- Live DualSense speaker output is Pico 2 W-only. A saved DualSense bond is
-  sufficient: every reconnect resets the audio session and resends the
-  controller's audio-enable transaction, so a fresh pair is not required. The
-  bonded HID Host path extends its report length only for the two exact
-  oversized Sony audio shapes; controller and dongle power-cycle reconnects are
-  hardware-confirmed.
-  The Pico W fixed-point/XIP experiment barely produced audio on hardware and
-  was removed from its standard build. On Pico 2 W, the physical DualSense jack
-  conditionally drives Switch 2 headset presence so a bare controller does not
-  capture console audio. Real-console insertion, headphone output, repeated
-  unplug/replug recovery, native haptic rumble, and an eight-hour stability soak are confirmed.
-  The DualSense microphone return remains open.
+- One Bluetooth controller drives the console at a time.
+- Joy-Con 2 L and R are separate sideways controllers, not a combined pair.
+- The Switch 2's length-`0x28` motion form is only partly decoded and is never
+  synthesized for translated sources; the validated length-`0x1E` form is used.
+- DualSense audio is Pico 2 W only, and its microphone is not passed through.
+- The first-generation 8BitDo Ultimate works on its stock firmware, but its
+  P1/P2 back paddles are not available.
 
-See [PLAN.md](PLAN.md) for the prioritized roadmap and
-[docs/status/compatibility-matrix.md](docs/status/compatibility-matrix.md) for the test matrix.
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). Protocol claims need evidence; the
+standards are in [`docs/re-methodology/evidence-standards.md`](docs/re-methodology/evidence-standards.md).
+Report security issues as described in [`SECURITY.md`](SECURITY.md).
 
 ## Acknowledgements
 
-- [juan518munoz](https://github.com/juan518munoz) — original PicoSwitch wireless adapter.
-- [ndeadly](https://github.com/ndeadly) — Switch 2 controller research and captures.
-- [Vicki Pfau](https://github.com/endrift) — Linux HID Nintendo protocol work used as one
-  corroborating source for GameCube rumble framing.
-- [joypad-os](https://github.com/joypad-ai/joypad-os) — Bluetooth HID host stack and drivers.
-- [hathach](https://github.com/hathach) — TinyUSB.
-- [bmelanman](https://github.com/bmelanman) — retro-pico-switch protocol implementation.
+- [juan518munoz](https://github.com/juan518munoz): the original
+  [PicoSwitch wireless adapter](https://github.com/juan518munoz/PicoSwitch-WirelessGamepadAdapter).
+- [ndeadly](https://github.com/ndeadly): [Switch 2 controller research](https://github.com/ndeadly/switch2_controller_research) and captures.
+- [joypad-os](https://github.com/joypad-ai/joypad-os): the vendored Bluetooth HID host stack and drivers.
+- [BTstack](https://github.com/bluekitchen/btstack) and [TinyUSB](https://github.com/hathach/tinyusb) ([hathach](https://github.com/hathach)).
+- [Vicki Pfau](https://github.com/endrift): Linux HID Nintendo work, one corroborating source for GameCube rumble framing.
+- [bmelanman](https://github.com/bmelanman): the retro-pico-switch protocol implementation.
 
 ## License
 
-[Apache License 2.0](LICENSE)
+[Apache License 2.0](LICENSE). Nintendo Switch is a trademark of Nintendo; this
+project is not affiliated with or endorsed by Nintendo.

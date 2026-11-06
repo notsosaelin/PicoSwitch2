@@ -26,8 +26,8 @@ failing test instead of another hardware session.
 from pathlib import Path
 import re
 
+import _repo  # puts tools/ on sys.path
 
-import _repo  # noqa: F401  -- puts tools/ on sys.path
 ROOT = _repo.ROOT
 SEAM = ROOT / "firmware/src/input/ns2_seam.c"
 KBM = ROOT / "firmware/src/input/ns2_kbm_runtime.c"

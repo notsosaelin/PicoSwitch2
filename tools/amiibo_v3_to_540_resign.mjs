@@ -13,18 +13,27 @@
 // block and is NOT represented -- this is rider identity only.
 //
 // Requires: web/index.html (amiitool port) and the user's own key_retail.bin.
-// Run: node tools/amiibo_v3_to_540_resign.mjs
+// Run: node tools/amiibo_v3_to_540_resign.mjs <key_retail.bin> <v3-dump-dir> [<out-dir>]
+//   <v3-dump-dir> is scanned one level deep for .bin images; <out-dir> defaults
+//   to dumps/kirby-resigned-540 under the repository root.
 import {readFileSync, writeFileSync, readdirSync} from "node:fs";
 import {join} from "node:path";
+import {fileURLToPath} from "node:url";
 import {webcrypto} from "node:crypto";
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
-const html = readFileSync("E:/PicoSwitch2/web/index.html","utf8");
+const [keyPath, dir, outArg] = process.argv.slice(2);
+if (!keyPath || !dir) {
+  console.error("usage: node tools/amiibo_v3_to_540_resign.mjs <key_retail.bin> <v3-dump-dir> [<out-dir>]");
+  process.exit(2);
+}
+const repo = fileURLToPath(new URL("..", import.meta.url));
+const html = readFileSync(join(repo, "web", "index.html"), "utf8");
 const b="// === amiibo-decrypt BEGIN", e="// === amiibo-decrypt END ===";
 let blk = html.slice(html.indexOf(b), html.indexOf(e)+e.length);
 blk = "function amiiboConcatBytes(p){let t=0;for(const x of p)t+=x.length;const o=new Uint8Array(t);let n=0;for(const x of p){o.set(x,n);n+=x.length;}return o;}\n"+blk;
 const M = new Function(`${blk}\nreturn {amiiboParseRetailKeys,amiiboDecryptInternal,amiiboTagToInternal,amiiboDeriveKeys,amiiboHmacSha256,amiiboAesCtr};`)();
-const keys = M.amiiboParseRetailKeys(new Uint8Array(readFileSync("C:/Users/notso/Downloads/key_retail.bin")));
+const keys = M.amiiboParseRetailKeys(new Uint8Array(readFileSync(keyPath)));
 
 // internal(0x208) -> 540-byte NTAG215 tag
 function internalToTag(i){const t=new Uint8Array(540);
@@ -33,7 +42,6 @@ function internalToTag(i){const t=new Uint8Array(540);
   t.set(i.subarray(0x1B4,0x1D4),0x034); t.set(i.subarray(0x1D4,0x1DC),0x000);
   t.set(i.subarray(0x1DC,0x208),0x054); return t;}
 
-const dir="C:/Users/notso/Downloads/02.07.26 Kirby Air Riders amiibo";
 const out=[];
 for (const sub of readdirSync(dir)) {
   for (const f of readdirSync(join(dir,sub))) {
@@ -67,7 +75,7 @@ for (const sub of readdirSync(dir)) {
     if(v.ok&&bcc0ok&&bcc1ok) out.push([f,tag]);
   }
 }
-const dest="E:/PicoSwitch2/dumps/kirby-resigned-540";
+const dest = outArg ?? join(repo, "dumps", "kirby-resigned-540");
 try{readdirSync(dest);}catch{ (await import("node:fs")).mkdirSync(dest,{recursive:true}); }
 for(const [f,t] of out) writeFileSync(join(dest,f.replace(".bin"," (540 resigned).bin")),Buffer.from(t));
 console.log(`\nwrote ${out.length} re-signed 540-byte tags to ${dest}`);

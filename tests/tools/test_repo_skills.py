@@ -7,10 +7,11 @@ import re
 import unittest
 from pathlib import Path
 
+import _repo  # puts tools/ on sys.path
 
-import _repo  # noqa: F401  -- puts tools/ on sys.path
 ROOT = _repo.ROOT
 SKILLS_ROOT = ROOT / ".agents" / "skills"
+CLAUDE_SKILLS_ROOT = ROOT / ".claude" / "skills"
 EXPECTED_SKILLS = {
     "picoswitch2-protocol-lab",
     "picoswitch2-motion-lab",
@@ -68,6 +69,23 @@ class RepoSkillTests(unittest.TestCase):
                     self.assertIn(key, metadata)
                 self.assertIn(f"${skill_name}", metadata)
                 self.assertNotIn("TODO", metadata)
+
+    def test_claude_copies_match_the_canonical_skills(self) -> None:
+        # .agents/skills is canonical. .claude/skills carries copies for Claude
+        # Code (plus Claude-only skills). A shared skill edited in one tree only
+        # is how the motion-lab skill kept describing a refuted magnetometer
+        # campaign in one copy after the other had been corrected.
+        for skill_dir in sorted(p for p in SKILLS_ROOT.iterdir() if p.is_dir()):
+            copy = CLAUDE_SKILLS_ROOT / skill_dir.name / "SKILL.md"
+            if not copy.exists():
+                continue
+            with self.subTest(skill=skill_dir.name):
+                self.assertEqual(
+                    copy.read_text(encoding="utf-8"),
+                    (skill_dir / "SKILL.md").read_text(encoding="utf-8"),
+                    f"{copy.relative_to(ROOT)} differs from its canonical "
+                    f".agents copy; edit .agents and copy it across",
+                )
 
 
 if __name__ == "__main__":

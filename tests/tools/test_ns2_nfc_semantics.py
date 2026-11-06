@@ -18,7 +18,7 @@ import json
 import unittest
 from pathlib import Path
 
-import _repo  # noqa: F401  -- puts tools/ on sys.path
+import _repo  # puts tools/ on sys.path
 import ns2_nfc_semantics as nfc
 import ns2_trace
 

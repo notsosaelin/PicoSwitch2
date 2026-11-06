@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-import _repo  # noqa: F401  -- puts tools/ on sys.path
+import _repo  # puts tools/ on sys.path
 from ns2_motion_chart_solver import (
     CarrierSample,
     CarrierTransition,

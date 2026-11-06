@@ -1,0 +1,40 @@
+name: Controller compatibility report
+description: Report how a Bluetooth controller works (or does not) with PicoSwitch2.
+labels: [compatibility]
+body:
+  - type: input
+    id: controller
+    attributes:
+      label: Controller
+      description: Make, model, and firmware version if known.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: PicoSwitch2 firmware version
+    validations:
+      required: true
+  - type: dropdown
+    id: board
+    attributes:
+      label: Board
+      options: [Pico W (RP2040), Pico 2 W (RP2350)]
+    validations:
+      required: true
+  - type: checkboxes
+    id: works
+    attributes:
+      label: What works
+      options:
+        - label: Pairs and reconnects
+        - label: All buttons and sticks
+        - label: Triggers (analog where the controller has them)
+        - label: Rumble
+        - label: Motion
+        - label: Battery level
+  - type: textarea
+    id: notes
+    attributes:
+      label: Details
+      description: Anything that does not work, and the UART `btdev` / `input sources` output if you have it.

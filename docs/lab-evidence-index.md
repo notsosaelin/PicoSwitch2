@@ -67,7 +67,7 @@ If a future experiment record relies on one of these sets, cite it as
 ## Retention
 
 - **Primary** sets: keep indefinitely, or until the same observation is superseded by a better
-  capture recorded under `dumps/experiments/`.
+  capture that is either promoted to a test fixture or indexed here.
 - **Derived** / **Regenerable**: keep while the conclusions they support are still current; safe to
   discard once a maintained experiment record carries the same result.
 - **Disposable**: no retention claim.
@@ -77,7 +77,9 @@ Nothing here has been deleted. The relocation on 2026-08-21 moved `build/_eviden
 
 ## Where new evidence should go
 
-- Small, structured, citable experiment output → `dumps/experiments/<date>-<scenario>/` (**tracked**).
+- Lab-tool output lands in `dumps/experiments/<date>-<scenario>/` (**gitignored** since
+  2026-11-06). A capture a test replays is promoted to `tests/fixtures/captures/` (**tracked**);
+  anything else worth keeping is indexed here.
 - Large captures, recordings, or reference clones → `/lab-evidence/`, `/usbpcaptures/`, or
   `/nso-gc-refs/` (**gitignored**), indexed here.
 - Never `build/`. That directory is disposable by definition.

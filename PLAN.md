@@ -18,7 +18,9 @@ a known technical requirement.
 
 # Current Baseline
 
-PicoSwitch2 v2.0.0 is released.
+PicoSwitch2 v2.5.0 is released (2026-09-04). It extends the v2.0 baseline with the Windows
+companion (management, Controller Link, installer), an editable Touch Gamepad on both companions,
+and Bluetooth keyboard and keyboard + mouse input.
 
 The v2.0 generation established the current product architecture:
 

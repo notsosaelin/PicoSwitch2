@@ -1,0 +1,48 @@
+name: Bug report
+description: Something does not work the way it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Firmware version
+      description: The release you flashed, or the build identity the companion app shows (UART `bridge` also prints it).
+    validations:
+      required: true
+  - type: dropdown
+    id: board
+    attributes:
+      label: Board
+      options: [Pico W (RP2040), Pico 2 W (RP2350)]
+    validations:
+      required: true
+  - type: dropdown
+    id: personality
+    attributes:
+      label: USB personality
+      options: [Pro Controller 2, NSO GameCube, Joy-Con 2 (L), Joy-Con 2 (R), Config, Not relevant]
+    validations:
+      required: true
+  - type: input
+    id: controller
+    attributes:
+      label: Input source
+      description: The controller (model and, if known, firmware), keyboard/mouse, or companion app and its version.
+  - type: input
+    id: host
+    attributes:
+      label: Host
+      description: Switch 2 system version, or PC/Steam.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or captures
+      description: UART output, companion diagnostics, or a capture. Attach large files rather than pasting them.
+      render: text

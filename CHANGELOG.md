@@ -3,6 +3,29 @@
 Release notes describe user-visible behavior. Detailed implementation history remains in
 `docs/archive/` and the experiment records.
 
+## Unreleased
+
+### Fixed
+
+- **Two paired controllers no longer both drive the console.** With, say, a DualSense and an Xbox
+  controller paired at once, both could move the console even though the companion showed only
+  one active. Only the active controller now reaches the console.
+- **Steam and PC gyro timing.** The motion timestamp in the PC-facing report now carries the time
+  the motion sample was taken rather than the time the report was sent, so gyro integration on PC
+  follows the controller's own sample spacing. Console motion is unaffected.
+
+### Removed
+
+- **8BitDo Ultimate paddles through patched controller firmware.** The feature required flashing
+  modified firmware onto the controller. The controller keeps working on its stock firmware, with
+  its P1/P2 back paddles unavailable.
+
+### Project
+
+- The repository is reorganised into `firmware/`, `companions/`, `contracts/`, `tests/`, `tools/`,
+  `web/` and `docs/`, with a CI workflow, contribution and security guides, and a concise
+  `STATUS.md`. Build commands moved with it: `./firmware/build.ps1`.
+
 ## 2.5.0 — 2026-09-04
 
 The Windows companion becomes a real product. 2.0.0 shipped an Android companion and wireless

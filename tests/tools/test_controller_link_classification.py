@@ -12,7 +12,8 @@ import io
 import pathlib
 import sys
 
-import _repo  # noqa: F401  -- puts tools/ on sys.path
+import _repo  # puts tools/ on sys.path
+
 ROOT = _repo.ROOT
 _spec = importlib.util.spec_from_file_location(
     "clc", ROOT / "tools" / "controller_link_cycle.py")

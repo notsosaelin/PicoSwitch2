@@ -3,8 +3,8 @@
 from pathlib import Path
 import re
 
+import _repo  # puts tools/ on sys.path
 
-import _repo  # noqa: F401  -- puts tools/ on sys.path
 ROOT = _repo.ROOT
 HEADER = ROOT / "firmware/src/hid_host/bt/btstack/btstack_host.h"
 UART = ROOT / "firmware/src/diagnostics/ns2_uart_diag.c"

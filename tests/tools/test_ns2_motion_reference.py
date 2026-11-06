@@ -5,7 +5,7 @@ import json
 import tempfile
 from pathlib import Path
 
-import _repo  # noqa: F401  -- puts tools/ on sys.path
+import _repo  # puts tools/ on sys.path
 from ns2_motion_reference import (
     Notification,
     analyze_native,

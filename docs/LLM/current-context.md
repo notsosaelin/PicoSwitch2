@@ -656,4 +656,5 @@ band table), `tools/ns2_motion40_gyro_axes.py` (gyro axis, sign and scale).
 - Do not merge Pico 2 W audio scheduling into Pico W.
 - Do not alter genuine Pro2 audio framing: one 240-byte/20 ms CELT frame is split into ordered
   120-byte `0x04` and `0x02` GATT writes.
-- Do not add large captured media without updating `dumps/README.md` and binary attributes.
+- Do not commit captured media. `dumps/` is git-ignored lab output; a capture a test needs goes
+  to `tests/fixtures/captures/`, and large evidence is indexed in `docs/lab-evidence-index.md`.

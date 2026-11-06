@@ -1,87 +1,72 @@
-# Prerequisites
+# ---------------------------------------------------------------------------
+# Build output. Everything here is regenerated from source.
+# ---------------------------------------------------------------------------
+build
+artifacts/
 *.d
-
-# Compiled Object files
-*.slo
-*.lo
 *.o
 *.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
 *.a
 *.lib
-
-# Executables
+*.so
+*.dll
+*.dylib
 *.exe
 *.out
-*.app
+*.gch
+*.pch
 __pycache__/
 *.py[cod]
 
-build
+# `*.app` also matches the WinUI project directory PicoSwitch.Companion.App;
+# companions/windows/.gitignore re-includes it.
+*.app
 
-# C++/WinRT projection output. Native projects place generated headers beside
-# their sources by default; only the IDL and hand-written implementation belong
-# in Git.
+# C++/WinRT projection output: native projects generate headers beside their
+# sources; only the IDL and hand-written implementation belong in Git.
 **/Generated Files/
 
-# Local reference clones and USB captures (large or independently versioned)
-/nso-gc-refs/
-/usbpcaptures/
+# ---------------------------------------------------------------------------
+# Credentials. External by construction and never committed. The Windows
+# build reads signing.properties or the equivalent environment variables and
+# produces an UNSIGNED package when neither resolves.
+# ---------------------------------------------------------------------------
+companions/windows/signing.properties
+*.pfx
+*.snk
+*.keystore
+*.jks
+*.appinstaller
+key_retail.bin
 
-# Durable laboratory evidence: captures, recordings, and derived analysis that
-# must survive a `build/` wipe. Deliberately OUTSIDE build/, which is disposable
-# and was found holding ~900 MB of irreplaceable capture material on 2026-08-21.
-# Too large for Git; the tracked index is docs/lab-evidence-index.md.
+# ---------------------------------------------------------------------------
+# Release artifacts, rebuilt on demand.
+# ---------------------------------------------------------------------------
+companions/windows/PicoSwitch2-Companion-*.zip
+
+# ---------------------------------------------------------------------------
+# Local evidence and lab output. Indexed, not versioned: see
+# docs/lab-evidence-index.md. Captures a test replays are promoted to
+# tests/fixtures/captures/.
+# ---------------------------------------------------------------------------
+# Lab-tool output (tools/*_lab.ps1, read_uart_diag.ps1, ...). Android
+# bugreports in particular carry account addresses and Wi-Fi SSIDs.
+/dumps/
+# Large captures and recordings; must survive a build/ wipe, so never in build/.
 /lab-evidence/
+/usbpcaptures/
+# Independently versioned reference clones.
+/nso-gc-refs/
 
-# Generated amiibo test artifacts (tools/generate_test_amiibo.py)
+# Generated amiibo test images (tools/generate_test_amiibo.py).
 amiibo-*-test.bin
-tools/amiibo-*-test.bin
-
-# Optional live AmiiboAPI fixture for tests/tools/test_amiibo_games.mjs (1.2 MB, fetch on demand)
+# Optional AmiiboAPI download for tests/tools/test_amiibo_games.mjs (~1.2 MB).
 tests/fixtures/amiibo-showgames.json
 
-# Local-only working prompts and session scratch notes. These are task inputs,
-# not project documentation -- durable guidance belongs in docs/ or AGENTS.md.
+# ---------------------------------------------------------------------------
+# Local working notes: task prompts and session scratch. Durable guidance
+# belongs in docs/ or AGENTS.md.
+# ---------------------------------------------------------------------------
 *_PASS.md
-
-# Local lab output. The capture tools (tools/*_lab.ps1, read_uart_diag.ps1, ...)
-# write recordings here; they are evidence for a working session, not source.
-# Test inputs that must be versioned live in tests/fixtures/captures/.
-# (Android bugreports in particular carry account addresses and Wi-Fi SSIDs.)
-/dumps/
-
-# Local-only task prompts, same rule as *_PASS.md above: these are inputs to a
-# working session, not project documentation.
 /DOUBLE_TAP*.md
 /ANALOG_TRIGGER.md
-
-# MSIX signing credentials, same rule as the Android keystore: external by
-# construction, never committed. build.ps1 reads this file or the equivalent
-# environment variables, and produces an UNSIGNED package when neither resolves.
-windows/companion/signing.properties
-*.pfx
-*.appinstaller
-
-# The distributable archive produced by build.ps1 -Zip. A release artifact,
-# not a source file: it is 60+ MB and is rebuilt from source on demand.
-windows/companion/PicoSwitch2-Companion-*.zip
-
-# Release artifacts: rebuilt from source on demand, never committed.
-artifacts/

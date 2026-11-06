@@ -147,6 +147,8 @@ $tests = @(
     @{ g='usb'; n='test_ns2_locked_mapping';                        src='tests/firmware/test_ns2_locked_mapping.c firmware/src/input/ns2_remap.c';                              flags='' }
     @{ g='usb'; n='test_hid_out_normalize';                         src='tests/firmware/test_hid_out_normalize.c firmware/src/app/hid_out_normalize.c';                       flags='' }
     @{ g='usb'; n='test_rumble_peak';                               src='tests/firmware/test_rumble_peak.c';                                                     flags='' }
+    # The pure, Windows-API-free core of the tools/gcusb PC-side USB protocol lab.
+    @{ g='usb'; n='test_gcusb_core';                              src='tests/firmware/test_gcusb_core.c tools/gcusb/gcusb_core.c';                  flags='-Itools/gcusb' }
 
     # -- Diagnostics ----------------------------------------------------------
     # The protocol trace ring is compiled out unless the UART diagnostic surface
@@ -197,9 +199,6 @@ $notHostTests = @{
     'test_ns2_native_motion'   = 'platform: ds5_motion_pair_capture.c includes pico/critical_section.h'
     'test_ns2_wake_policy'     = 'platform: btstack_host.h includes BTstack bluetooth.h'
     'test_ds5_audio_tone'      = 'platform: needs the vendored Opus library; built by the audio lab tooling'
-
-    # E -- experiment/diagnostic harness with its own builder.
-    'test_gcusb_core'          = 'lab tool: built by tools/gcusb/build.ps1, not part of the product regression suite'
 }
 
 # ---------------------------------------------------------------------------
