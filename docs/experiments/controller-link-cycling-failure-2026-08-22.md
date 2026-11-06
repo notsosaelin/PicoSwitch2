@@ -568,8 +568,8 @@ Scoped deliberately, because it is easy to over-credit:
 
 ```powershell
 .\build.ps1                            # both boards
-pwsh -File tools\run_host_tests.ps1     # firmware host suite (expect 70/70)
-pwsh -File tools\run_android_tests.ps1  # companion unit tests
+pwsh -File tests\run_host_tests.ps1     # firmware host suite (expect 70/70)
+pwsh -File tests\run_android_tests.ps1  # companion unit tests
 pwsh -File tools\uart_query.ps1 -Port COM11 -Command 'btstate'
 ```
 
@@ -655,7 +655,7 @@ adapter for exactly that class.
 **Fix.** Appearance is now `0x0080` (Generic Computer), coherent with the Classic CoD `0x000104`
 (Computer/Desktop) that init already sets and which is deliberately unchanged. Guarded twice: a
 `_Static_assert` on the HID range in `btstack_host.c`, and a source check in
-`tools/test_bluetooth_closeout_wiring.py` verified to fire on `0x03C0`. Two guards because the
+`tests/tools/test_bluetooth_closeout_wiring.py` verified to fire on `0x03C0`. Two guards because the
 constant is easy to "correct" back to a HID value by someone reasoning that the adapter carries HID
 traffic.
 
@@ -721,7 +721,7 @@ That is direct positive evidence, not an inference from a missing line: the adap
 host Appearance, Android derived and stored a host class from it, and its HID Device profile stopped
 refusing us. `check_cod_hid()` accepts `0x000100` because `(0x000100 & 0x1F00) == 0x0100`, not
 `0x0500`. **Do not reintroduce a HID-range Appearance.** Both a firmware `_Static_assert` and
-`tools/test_bluetooth_closeout_wiring.py::check_le_appearance_is_a_host` now guard the constant.
+`tests/tools/test_bluetooth_closeout_wiring.py::check_le_appearance_is_a_host` now guard the constant.
 
 ### Reading the pairing log on a re-run
 
@@ -957,8 +957,8 @@ gained `auth:{deferrals,collisions}` — authentication-side `0x23` was not coun
 so a run watching only `enc.collisions` could report success while the race continued one procedure
 earlier — and `clink:{handle,refused_no_mgmt,mgmt_teardowns}`.
 
-Guarded by `tools/test_bluetooth_closeout_wiring.py::check_controller_link_is_bound_to_management`
-and `tools/test_ns2_bt_lifecycle.c::test_controller_link_requires_management`.
+Guarded by `tests/tools/test_bluetooth_closeout_wiring.py::check_controller_link_is_bound_to_management`
+and `tests/firmware/test_ns2_bt_lifecycle.c::test_controller_link_requires_management`.
 
 ### Soak workloads
 

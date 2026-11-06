@@ -3,7 +3,7 @@
 # APIs directly -- no libusb, no driver replacement. See PROMPT.md and this directory's own
 # gcusb_win.c header comment for the full rationale.
 #
-#   ./build.ps1          # builds tools/gcusb/gcusb.exe
+#   build.ps1          # builds tools/gcusb/gcusb.exe
 #
 # Requires MSYS2 ucrt64 gcc on PATH (this machine has it at C:\msys64\ucrt64\bin).
 param(

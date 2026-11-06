@@ -6,7 +6,7 @@ transport or hardware evidence than was exercised.
 
 ## Shared assets
 
-`tools/fixtures/management/protocol-v1.json` is language-neutral JSON containing:
+`contracts/management/protocol-v1.json` is language-neutral JSON containing:
 
 - protocol limits and BLE UUID constants;
 - command-builder golden values;
@@ -16,8 +16,8 @@ transport or hardware evidence than was exercised.
 - a representative multi-step KB/M mutation/readback trace;
 - a representative transactional Amiibo upload trace.
 
-Vectors are cross-checked against the formatters and parsers in `src/config.c`,
-`src/mgmt_bonds.c`, and `src/config_wireless_bridge.c`. They are examples plus executable drift
+Vectors are cross-checked against the formatters and parsers in `firmware/src/settings/config.c`,
+`firmware/src/management/mgmt_bonds.c`, and `firmware/src/management/config_wireless_bridge.c`. They are examples plus executable drift
 guards; normative required/optional behavior remains in [PROTOCOL.md](PROTOCOL.md).
 
 The reference test locations are:
@@ -31,7 +31,7 @@ The reference test locations are:
 | No-Android boundary | `management-core/.../ArchitectureGuardTest.kt` |
 | Android consumer boundary | `app/.../ManagementProtocolTest.kt` |
 | Android repository/state | `AdapterRepositoryTest.kt`, `KbmRepositoryTest.kt` |
-| Firmware carrier/security | tests invoked by `tools/run_mgmt_tests.ps1` |
+| Firmware carrier/security | tests invoked by `tests/run_mgmt_tests.ps1` |
 
 ## Protocol checklist
 
@@ -131,7 +131,7 @@ normal controller personality with the console awake; do not flash or alter bond
 
 ## Repository commands
 
-From `android/companion` with JDK 21 and an Android SDK available:
+From `companions/android` with JDK 21 and an Android SDK available:
 
 ```powershell
 .\gradlew.bat :management-core:test
@@ -141,7 +141,7 @@ From `android/companion` with JDK 21 and an Android SDK available:
 From the repository root:
 
 ```powershell
-pwsh -File tools\run_mgmt_tests.ps1
+pwsh -File tests\run_mgmt_tests.ps1
 cmake --build build\pico2_w --config Release --parallel
 cmake --build build\pico_w --config Release --parallel
 python tools\verify_install_reset_marker.py build\pico2_w\PicoSwitchWGA-pico2_w.bin --flash-size 0x400000

@@ -1208,7 +1208,7 @@ The upgrade is complete only when:
 - [`../experiments/v3-air-riders-dynamic-allocation-2026-07-28.md`](../experiments/v3-air-riders-dynamic-allocation-2026-07-28.md)
 - `../../dumps/README.md`
 - `../../dumps/amiibo/genuine-kirby-warp-reuse-sub1e-usb-2026-07-28.jsonl`
-- [`../../src/nfc/ns2_amiibo_v3.c`](../../src/nfc/ns2_amiibo_v3.c)
+- [`../../firmware/src/nfc/ns2_amiibo_v3.c`](../../firmware/src/nfc/ns2_amiibo_v3.c)
 - [`CTCaer/jc_toolkit` pinned Switch 1 reader source](https://github.com/CTCaer/jc_toolkit/tree/9d0cc455aebd07930b557840b47cb26df9eb4a1f)
 - [Raspberry Pi Pico W/Pico 2 W official hardware documentation](https://www.raspberrypi.com/documentation/microcontrollers/pico-series.html)
 - [NXP NTAG I²C Plus 2K datasheet](https://www.nxp.com/docs/en/data-sheet/NT3H2111_2211.pdf)

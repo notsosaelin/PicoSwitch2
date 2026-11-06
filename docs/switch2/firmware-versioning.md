@@ -8,7 +8,7 @@
 > This is the durable reference behind the resolved controller-update compatibility work and
 > `usb-spec.md` §"Firmware-version compatibility".
 >
-> Evidence base in this repo: `src/switch_pro2/switch_pro2.c`, `docs/switch2/usb-spec.md`,
+> Evidence base in this repo: `firmware/src/console/pro2/switch_pro2.c`, `docs/switch2/usb-spec.md`,
 > `nso-gc-refs/switch2_controller_research/{commands,memory_layout,hid_reports}.md` (ndeadly), and
 > **one genuine 2 MB PC2 SPI image stored under two byte-identical filenames**
 > (`dumps/SPI/2069_spi_dump_*.bin`) that this revision reads directly. Confidence tags:
@@ -38,7 +38,7 @@
 
 The first deliberately narrow experiment is now implemented:
 
-- `include/ns2_firmware_profile.h` and `src/ns2_firmware_profile.c` are the single source for the
+- `firmware/src/console/common/ns2_firmware_profile.h` and `firmware/src/console/common/ns2_firmware_profile.c` are the single source for the
   controller, Bluetooth and DSP triplets. EP0 request `0x02` and command `0x10/01` are constructed
   from that same profile, so they cannot drift apart.
 - The default is the hardware-queried and console-validated tuple **2.1.4 / 12.0.0 / 0.2.3**.
@@ -441,8 +441,8 @@ the live decision—the console's queries and the genuine controller's native ve
 
 ## 11. References
 
-- `include/ns2_firmware_profile.h` + `src/ns2_firmware_profile.c` (coherent version profile and
-  sparse post-update state); `src/switch_pro2/switch_pro2.c` (`ns2_mem_read`, EP0 and command
+- `firmware/src/console/common/ns2_firmware_profile.h` + `firmware/src/console/common/ns2_firmware_profile.c` (coherent version profile and
+  sparse post-update state); `firmware/src/console/pro2/switch_pro2.c` (`ns2_mem_read`, EP0 and command
   `0x10` integration, plus the dispatcher `default:` that swallows `0x0D`).
 - `nso-gc-refs/switch2_controller_research/commands.md` — `0x02` flash memory, `0x0D` firmware
   update (full subcommand map), `0x10` firmware info, `0x06/03` reboot.

@@ -91,7 +91,7 @@ to (unlike the console-only USB report 0x09, which needs new capture hardware �
 
 ## 1. The blind spot this closes
 
-`switch2_ble_process_report()` (`src/bt_hid/bt/bthid/devices/vendors/nintendo/switch2_ble.c`)
+`switch2_ble_process_report()` (`firmware/src/hid_host/bt/bthid/devices/vendors/nintendo/switch2_ble.c`)
 receives a complete, already-decrypted 63-64 byte BLE input report and reads only:
 - bytes 0-15 (an "Unknown" 4-byte header, then 4 bytes buttons, then 6 bytes of packed stick
   axes — see the function's own layout comment),
@@ -101,7 +101,7 @@ Bytes 16-59 (44 bytes) are received, sit in the callback's `data`/`len` argument
 read by anything — not logged, not stored, not passed anywhere. Per
 `docs/experiments/switch2_native_motion_map_DyCOOL.md` (a third-party decode of this same report
 family), this is exactly the byte range where motion data lives. The BT connection/pairing
-machinery in `src/bt_hid/bt/btstack/btstack_host.c` has the same property one layer up: only one
+machinery in `firmware/src/hid_host/bt/btstack/btstack_host.c` has the same property one layer up: only one
 GATT input-notification handle (`SW2_INPUT_REPORT_HANDLE = 0x000A`) is subscribed to at all, and
 `switch2_ack_notification_handler()`'s own pre-existing debug log implies it sometimes sees
 notifications on handles other than the one it filters for (0x001A) — meaning some traffic may
@@ -116,7 +116,7 @@ transition this code already touches inspectable, unmodified, with a timestamp �
 
 ### 2.1 What it captures
 
-New module `src/bt_hid/sw2_capture.c`/`.h`. Five event kinds, each with an exact timestamp
+New module `firmware/src/diagnostics/sw2_capture.c`/`.h`. Five event kinds, each with an exact timestamp
 (`time_us_64()`), the GATT handle involved, and the **complete, unmodified byte payload** (up to
 64 bytes — the largest Switch 2 BLE payload observed anywhere in this codebase or the reference
 tools, so no truncation is expected in practice; if it ever happens, the exported `orig_len` vs
@@ -249,8 +249,8 @@ what it found, per CLAUDE.md's "documentation over conversation history" princip
 Built in response to §3.6's result: rather than guess which of three untested differences (mask
 value, calibration reads, an extra descriptor write) matters, each is isolated as its own one-shot,
 independently-selectable variant, so a positive result is attributable to a specific cause instead
-of one opaque combined change. Implemented in `src/bt_hid/sw2_capture.h` (public API),
-`src/bt_hid/bt/btstack/btstack_host.c` (the discovery + variant state machines), and wired into
+of one opaque combined change. Implemented in `firmware/src/diagnostics/sw2_capture.h` (public API),
+`firmware/src/hid_host/bt/btstack/btstack_host.c` (the discovery + variant state machines), and wired into
 `config.c`/the web panel.
 
 #### 2.7.1 GATT discovery tool
@@ -382,7 +382,7 @@ not yet checked. **Unknown** = no basis yet either way.
     checks) measured 4092.6 LSB/g and 16.35–16.44 LSB/dps, a timestamp that advances by
     3750/5000 µs per 4 ms frame (whole 1250 µs IMU ticks), and the body frame **+X = player's
     right, +Y = toward the top edge/USB, +Z = out of the face**. That frame is the one our
-    DualSense seam mapping (`[X, −Z, Y]`, `src/bt_hid/ns2_seam.c`) was derived to from a genuine
+    DualSense seam mapping (`[X, −Z, Y]`, `firmware/src/input/ns2_seam.c`) was derived to from a genuine
     capture, so the two were reached independently. ndeadly also lists a magnetometer at `0x19`
     (feature bit 7, 0.15 µT/LSB); on PID `0x2069` our bit-7 probe exposed no such channel
     ([`uart-magprobe.md`](uart-magprobe.md)), so treat that field as Joy-Con 2 (AK09919C) until

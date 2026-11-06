@@ -1683,7 +1683,7 @@ async function amiiboZipEntries(bytes) {
 }
 // === amiibo-zip END ===
 
-// === amiibo-decrypt BEGIN (amiitool-compatible; tools/test_amiibo_decrypt.mjs) ===
+// === amiibo-decrypt BEGIN (amiitool-compatible; tests/tools/test_amiibo_decrypt.mjs) ===
 // Browser-local amiibo decrypt, re-sign, and re-encrypt primitives. They surface
 // save metadata and support explicit initialization of a user-owned dump.
 // Nintendo's retail keys are NEVER shipped: the user imports their own
@@ -3241,7 +3241,7 @@ function renderFirmwareDiagnostics(d) {
     (reads.length ? reads.join("\n") : "No command 0x02 memory reads observed");
 }
 // ---- Switch 2 BLE capture panel ----
-// Firmware side: src/bt_hid/sw2_capture.c + config.c's `sw2cap on|off|stat|drain` commands.
+// Firmware side: firmware/src/diagnostics/sw2_capture.c + config.c's `sw2cap on|off|stat|drain` commands.
 // Pull-based: `sw2cap drain` is polled from the same sequential pollLoop() every other command
 // already uses (see below), never as a separate concurrent loop — sendCmd()'s reply-matching is
 // strict FIFO-by-arrival-order, so interleaving two independent await chains on the same port

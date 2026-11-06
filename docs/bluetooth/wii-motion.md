@@ -979,7 +979,7 @@ that choice.
 
 ### 7.2.1 Implementation status (2026-07-27)
 
-✅ Implemented. `wii_mp_passthrough_restore()` in `src/bt_hid/motion/wii_motionplus.c` applies the
+✅ Implemented. `wii_mp_passthrough_restore()` in `firmware/src/motion/wii_motionplus.c` applies the
 inverse sequence above; `wiimote_bt.c` calls it on every frame where
 `wii_mp_is_motionplus_frame()` is false, then routes the frame to the ordinary Nunchuk or Classic
 decoder.
@@ -996,7 +996,7 @@ Three things this fixed, all of which only appear once a MotionPlus is active:
    in `ext_buttons_held` and re-asserted on MotionPlus frames. Analog axes needed no latch — they
    live in `event.analog[]`, which already persists between reports.
 
-Host tests in `tools/test_wii_motionplus.c` check the restore against a forward-transform fixture:
+Host tests in `tests/firmware/test_wii_motionplus.c` check the restore against a forward-transform fixture:
 Nunchuk stick X/Y and C/Z survive a round trip, the Classic left-stick LSBs land back in byte 5,
 and `WII_MP_PASSTHROUGH_NONE` is a no-op. Accelerometer LSBs are deliberately not checked for
 equality — the MotionPlus destroys them and they are refilled from the next bit up, as Dolphin does.
@@ -1173,7 +1173,7 @@ motion work tracked in
 
 ## 12. PicoSwitch2 current state (audited)
 
-Audited file: `src/bt_hid/bt/bthid/devices/vendors/nintendo/wiimote_bt.c` (975 lines), plus
+Audited file: `firmware/src/hid_host/bt/bthid/devices/vendors/nintendo/wiimote_bt.c` (975 lines), plus
 `wiimote_bt.h`.
 
 ### 12.1 What already exists and works
@@ -1288,7 +1288,7 @@ already in place), §13.15 passthrough bit-reversal for extension frames decoded
 
 **Still unvalidated on hardware**, so §14 Q1–Q7 all remain open — in particular Q2
 (true axis signs). The decode is proven against the documented bit layout by
-`tools/test_wii_motionplus.c`, which is a correctness proof of the parser, not of
+`tests/firmware/test_wii_motionplus.c`, which is a correctness proof of the parser, not of
 the sign conventions.
 
 ### 12.4 Architectural observation
@@ -1315,7 +1315,7 @@ Ordered so that each step is independently testable.
 
 1. Read the button bytes **raw** before the `0x1F`/`0x9F` mask, and assemble 10-bit X/Y/Z per §4.2.
 2. Ensure report mode `0x31` is selected even with no extension — already true (`:227`).
-3. Emit raw counts to the UART diagnostic channel (`src/ns2_uart_diag.c`) and confirm ≈`0x200` at
+3. Emit raw counts to the UART diagnostic channel (`firmware/src/diagnostics/ns2_uart_diag.c`) and confirm ≈`0x200` at
    rest and ≈`0x200 + 1 g` on Z.
 4. Add EEPROM read support: extend `wiimote_read_data()` to take the address-space byte as a
    parameter (`0x00` for EEPROM, `0x04` for registers) rather than hardcoding `0x04`.

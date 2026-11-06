@@ -120,7 +120,7 @@ native Z destination** — GameCube's report `0x0A` has its own real Z bit, dist
 entirely, so there was no need to approximate Z as anything else. The authoritative, current
 mapping now lives in `docs/switch2-gc/mapping.md` "8BitDo NGC Modkit specifically" (implemented in
 `bthid_gamepad.c`/`ns2_seam.c`/`switch_gc_encode.c`, host-tested by
-`tools/test_switch_gc_report.c`) — do not duplicate it here. Summary of what actually shipped,
+`tests/firmware/test_switch_gc_report.c`) — do not duplicate it here. Summary of what actually shipped,
 for quick reference:
 
 - L/R trigger → real continuous analog output (`left_trigger`/`right_trigger`), not the ZL/ZR

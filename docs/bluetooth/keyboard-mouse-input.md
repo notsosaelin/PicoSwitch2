@@ -154,10 +154,10 @@ Active input source
 
 Two layers implement this, and neither loosens the connection limit:
 
-1. **`ns2_kbm_roles_t`** (`src/ns2_kbm.c`) binds peers to roles. It is the only component that
+1. **`ns2_kbm_roles_t`** (`firmware/src/input/ns2_kbm.c`) binds peers to roles. It is the only component that
    knows two peers are halves of one controller. A second keyboard or a second mouse is rejected
    here and counted, before it can reach the source registry.
-2. **The source arbiter** (`src/bt_hid/ns2_input_arbiter.c`) gained a `group_id` on each source.
+2. **The source arbiter** (`firmware/src/input/ns2_input_arbiter.c`) gained a `group_id` on each source.
    Sources sharing a nonzero group are one console owner: any member may publish while the group
    owns the console, and losing one member hands the owning token to a surviving member instead of
    surrendering the console. A source with `group_id == 0` still owns the console alone, which is
@@ -272,16 +272,16 @@ Regression coverage:
 |---|---|
 | `test_xbox_elite_quirk_pipeline` | the real quirk chain: name-only identity with `vid=pid=0` still resolves to `QUIRK_XBOX`; the 20-byte report extracts all four Elite paddles through `quirk->extract_extra`; a 16-byte report keeps normal Xbox Share/Back behavior and never synthesizes paddles; exact Elite PIDs select `QUIRK_XBOX_ELITE2`; ordinary keyboards/mice stay generic |
 | `test_ns2_active_input_lifecycle` | the bthid boundary: a quirk-recognized controller is refused reclassification (keyboard *and* mouse), keeps its source identity and connection generation, and keeps delivering reports — while unresolved peers still classify normally |
-| `test_bthid_keyboard_report` | the structural discriminator against `tools/fixtures/composite_gamepad_keyboard_hid.h` |
+| `test_bthid_keyboard_report` | the structural discriminator against `contracts/composite_gamepad_keyboard_hid.h` |
 
 `test_bthid_gamepad_quirks` (the pre-existing quirk contract suite, including Elite paddle
 extraction) previously could not be linked at all — it needs
 `devices/vendors/microsoft/xbox_rumble.c` for `xbox_rumble_build_payload()`, and the linker
-reported nothing beyond `ld returned 1`. It is now wired into `tools/run_mgmt_tests.ps1` and runs.
+reported nothing beyond `ld returned 1`. It is now wired into `tests/run_mgmt_tests.ps1` and runs.
 
 ### Why the keyboard descriptor has its own parser
 
-`src/bt_hid/bt/bthid/devices/generic/bthid_keyboard_report.c` walks HID report-descriptor items
+`firmware/src/hid_host/bt/bthid/devices/generic/bthid_keyboard_report.c` walks HID report-descriptor items
 directly instead of using the shared LUFA-derived parser. Two concrete reasons, both found while
 implementing this:
 
@@ -350,8 +350,8 @@ Bluetooth HID report -> bthid_keyboard / bthid_mouse   (what is held)
                      -> ns2_kbm_output_t               (normalized controller)
 ```
 
-`src/ns2_kbm.c` is free of Pico SDK, BTstack, bthid, and `report.c` dependencies, so the whole
-contract is host testable. `src/bt_hid/ns2_kbm_runtime.c` is the firmware adapter.
+`firmware/src/input/ns2_kbm.c` is free of Pico SDK, BTstack, bthid, and `report.c` dependencies, so the whole
+contract is host testable. `firmware/src/input/ns2_kbm_runtime.c` is the firmware adapter.
 
 **The output is recomputed from the complete held-source set on every publish.** Nothing is
 incrementally latched. That single decision is what makes duplicate bindings safe, makes report
@@ -371,7 +371,7 @@ and are deliberately not exposed.
 ### Controller destination identifiers
 
 Destinations are the project's existing normalized vocabulary (`NS2_DST_*` in
-`include/ns2_remap.h`), never Switch report bit positions:
+`firmware/src/input/ns2_remap.h`), never Switch report bit positions:
 
 `a b x y l r zl zr l3 r3 minus plus home capture dup ddown dleft dright gl gr c`
 
@@ -707,7 +707,7 @@ translation settings.
 
 ### Schema
 
-Config schema **10 → 11**. `src/config_persist.c` owns the layout, the factory defaults, and the
+Config schema **10 → 11**. `firmware/src/settings/config_persist.c` owns the layout, the factory defaults, and the
 migration, so all three are host testable — the failure this guards against is a schema change
 silently reinterpreting an existing adapter's bytes as different settings, which a firmware build
 cannot catch because both layouts compile fine. `_Static_assert`s pin every v10 field offset and
@@ -901,7 +901,7 @@ off Pico 2 W's audio-sensitive scheduling.
 
 ## Testing
 
-Host tests (`pwsh -File tools/run_mgmt_tests.ps1` builds and runs them into `build/host-tests`):
+Host tests (`pwsh -File tests/run_mgmt_tests.ps1` builds and runs them into `build/host-tests`):
 
 | Test | Covers |
 |---|---|

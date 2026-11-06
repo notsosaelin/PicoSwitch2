@@ -11,7 +11,7 @@ Latest published release: `v2.5.0` (2026-09-04)
 
 Always run `git status`, `git log -1`, and read `STATUS.md` at the start of a new session. This file
 deliberately does not pin the latest commit because it should remain useful after later checkpoints.
-On a new workstation, clone `main` with `--recurse-submodules`; `third_party/opus` is a
+On a new workstation, clone `main` with `--recurse-submodules`; `firmware/third_party/opus` is a
 required Git submodule for Pico 2 W audio builds.
 
 ## Current validated baseline
@@ -156,7 +156,7 @@ enough: a new closed-loop fixture found that the hardware-validated `0x1E` path 
 calibration of `68963 / 65536 = 1.0522918701171875`, while the first corrected `0x28` path used
 gain 1.0. The same acceleration vector therefore jumped by **5.23%** at every representation seam.
 
-`tools/test_ns2_motion40_coherence.py` now compiles the real C translators against an analytic
+`tests/tools/test_ns2_motion40_coherence.py` now compiles the real C translators against an analytic
 800 Hz three-axis trajectory, independently decodes their wire output, and closes every
 `0x1E -> 0x28 -> 0x1E` loop. It checks shared time, carrier and prefix epochs, gyro area, two
 acceleration samples, gravity direction/magnitude, and representation continuity. Six negative
@@ -648,7 +648,7 @@ band table), `tools/ns2_motion40_gyro_axes.py` (gyro axis, sign and scale).
 - If translated `0x28` is ever explicitly reopened, state the predicted console behaviour first,
   then run `python tools/ns2_motion40_validate.py`. Any UNKNOWN is a reason not to flash, while a
   clean run is still only necessary—not sufficient—after the hardware rejection.
-- Run `python tools/test_ns2_motion40_coherence.py` after any scheduler, scale, axis, or carrier
+- Run `python tests/tools/test_ns2_motion40_coherence.py` after any scheduler, scale, axis, or carrier
   change. Its clean analytic source and deliberately corrupted packets catch composition defects
   that byte-exact packer and capture-corpus tests cannot see.
 - Do not assume a controller's VID/PID can be recovered late from every saved bond; fresh pairing

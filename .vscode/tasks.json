@@ -6,7 +6,7 @@
             "type": "process",
             "isBuildCommand": true,
             "command": "${userHome}/.pico-sdk/ninja/v1.13.2/ninja",
-            "args": ["-C", "${workspaceFolder}/build"],
+            "args": ["-C", "${workspaceFolder}/firmware/build"],
             "group": "build",
             "presentation": {
                 "reveal": "always",

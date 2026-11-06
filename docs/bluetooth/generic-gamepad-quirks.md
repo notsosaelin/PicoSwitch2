@@ -60,7 +60,7 @@ parser or unrelated controllers.
 
 ## Validation and rollback
 
-`tools/test_bthid_gamepad_quirks.c` pins registry priority, every button-map variant, M30 trigger
+`tests/firmware/test_bthid_gamepad_quirks.c` pins registry priority, every button-map variant, M30 trigger
 policy, NGC native fields, MG/Elite paddles, Xbox Share/Back handling, per-profile output
 authorization, Xbox rumble dispatch, and NGC Modkit `0xA5` framing/payload.
 The full host matrix contains 14 passing suites after adding it. Pico W, Pico 2 W, and the legacy

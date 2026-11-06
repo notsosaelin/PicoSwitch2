@@ -8,9 +8,9 @@ motion/battery/rumble/LED from ever being recognized. This check makes that
 failure loud and cheap.
 
 Sources compared:
-  tools/fixtures/android_controller_hid.h  -> ANDROID_CONTROLLER_V2_HID_DESCRIPTOR
-  android/companion/bridge-core/.../protocol/BridgeHidDescriptor.kt -> BridgeHidDescriptor.bytes
-  windows/companion/src/PicoSwitch.Bridge.Core/Protocol/BridgeHidDescriptor.cs -> Descriptor
+  contracts/android_controller_hid.h  -> ANDROID_CONTROLLER_V2_HID_DESCRIPTOR
+  companions/android/bridge-core/.../protocol/BridgeHidDescriptor.kt -> BridgeHidDescriptor.bytes
+  companions/windows/src/PicoSwitch.Bridge.Core/Protocol/BridgeHidDescriptor.cs -> Descriptor
 
 The Kotlin and C# sides both live in their platform-neutral bridge core, because
 the descriptor is a BRIDGE artifact rather than any one platform's -- every
@@ -35,12 +35,12 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-C_HEADER = ROOT / "tools" / "fixtures" / "android_controller_hid.h"
-KOTLIN = (ROOT / "android" / "companion" / "bridge-core" / "src" / "main" / "kotlin" /
+C_HEADER = ROOT / "contracts" / "android_controller_hid.h"
+KOTLIN = (ROOT / "companions" / "android" / "bridge-core" / "src" / "main" / "kotlin" /
           "dev" / "picoswitch" / "bridge" / "protocol" / "BridgeHidDescriptor.kt")
-CSHARP = (ROOT / "windows" / "companion" / "src" / "PicoSwitch.Bridge.Core" /
+CSHARP = (ROOT / "companions" / "windows" / "src" / "PicoSwitch.Bridge.Core" /
           "Protocol" / "BridgeHidDescriptor.cs")
-CONTRACT_CSHARP = (ROOT / "windows" / "companion" / "src" / "PicoSwitch.Bridge.Core" /
+CONTRACT_CSHARP = (ROOT / "companions" / "windows" / "src" / "PicoSwitch.Bridge.Core" /
                    "Protocol" / "BridgeContract.cs")
 
 BYTE_RE = re.compile(r"0[xX][0-9a-fA-F]{1,2}")
@@ -98,7 +98,7 @@ def _csharp_bytes() -> list[int] | None:
     return [int(value, 16) for value in BYTE_RE.findall(text[open_index:close_index])]
 
 
-CONTRACT_KOTLIN = (ROOT / "android" / "companion" / "bridge-core" / "src" / "main" /
+CONTRACT_KOTLIN = (ROOT / "companions" / "android" / "bridge-core" / "src" / "main" /
                    "kotlin" / "dev" / "picoswitch" / "bridge" / "protocol" /
                    "BridgeContract.kt")
 

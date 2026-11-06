@@ -210,14 +210,14 @@ No production Android or firmware behavior was changed.
 - activity ownership now matches the companion's full component name instead
   of counting every installed activity named `MainActivity`.
 
-`tools/test_controller_link_classification.py` adds a regression proving that an
+`tests/tools/test_controller_link_classification.py` adds a regression proving that an
 unrelated launcher's `.MainActivity` is not mistaken for a second companion
 owner.
 
 Validation:
 
 - `python -m py_compile tools/controller_link_cycle.py`
-- `python tools/test_controller_link_classification.py`
+- `python tests/tools/test_controller_link_classification.py`
 - live exact-component owner check: one companion owner while an unrelated
   launcher `MainActivity` also existed
 - after the counted cycles and controlled cleanup: BLE management connected,

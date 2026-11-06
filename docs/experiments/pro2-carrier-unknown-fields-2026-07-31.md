@@ -15,13 +15,13 @@ explained are exactly the ones a synthesizer would get wrong.
 
 ## Method
 
-`tools/ns2_motion_packet.py` builds complete PDUs; `tools/test_ns2_motion_packet.py`
+`tools/ns2_motion_packet.py` builds complete PDUs; `tests/tools/test_ns2_motion_packet.py`
 decodes every genuine PDU in the repository corpus, re-encodes it from the
 decoded fields, and compares bytes.
 
 ```powershell
-python tools\test_ns2_motion_packet.py
-python tools\test_ns2_motion_carrier.py
+python tests\tools\test_ns2_motion_packet.py
+python tests\tools\test_ns2_motion_carrier.py
 ```
 
 Corpus: 52 captures under `dumps/BLE CAPTURE/` and `dumps/motion/`.
@@ -496,9 +496,9 @@ changes what a decoder can recover.
 ## Reproduce
 
 ```powershell
-python tools\test_ns2_motion_packet.py    # 14 tests: byte-exact replay, chart
+python tests\tools\test_ns2_motion_packet.py    # 14 tests: byte-exact replay, chart
                                           # hysteresis, scale normalization
-python tools\test_ns2_motion_carrier.py   # 20 tests: codec + firmware parity
+python tests\tools\test_ns2_motion_carrier.py   # 20 tests: codec + firmware parity
 
 # Where in the emit window each IMU slot sits -- the evidence behind the
 # slot-placement policy in ns2_ds5_motion40.c (Decision 2 above).

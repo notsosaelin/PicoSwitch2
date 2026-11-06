@@ -3,7 +3,7 @@
 **Status:** A, B and C **PASSED**. A and B each cost a defect on the first run
 and were confirmed on the retest the same day. D outstanding.
 
-**Build under test:** `windows/companion`. A/B/C were run against `9486c9d`;
+**Build under test:** `companions/windows`. A/B/C were run against `9486c9d`;
 the corrections are in the commit that records this result.
 Run `./build.ps1 -App` and launch
 `src/PicoSwitch.Companion.App/bin/x64/Debug/net9.0-windows10.0.22621.0/win-x64/PicoSwitch.Companion.App.exe`.
@@ -531,7 +531,7 @@ Fill in each **Result** above with what was observed, then update:
 
 - `STATUS.md` § Windows companion — move whatever is settled out of the
   "specifically unproven" list, and keep anything that is not;
-- `windows/companion/docs/README.md` §7 — the same, in the two tables;
+- `companions/windows/docs/README.md` §7 — the same, in the two tables;
 - `AdapterResetSignature`'s doc comment — if A produced different values, the
   Hypothesis marker comes off and the real condition set goes in, with tests.
 

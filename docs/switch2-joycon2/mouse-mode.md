@@ -20,7 +20,7 @@ is Joy-Con 2.
 
 ## Input classification and parsing
 
-`src/bt_hid/bt/bthid/devices/generic/bthid_mouse.c` supports Classic and BLE HID mice. Descriptor
+`firmware/src/hid_host/bt/bthid/devices/generic/bthid_mouse.c` supports Classic and BLE HID mice. Descriptor
 parsing requires relative Generic Desktop X and Y fields in the same report, which prevents
 absolute gamepad sticks from being misclassified. It also discovers the wheel and up to 16
 Button-page inputs. Simple Classic devices can use a three-byte boot-report fallback when no
@@ -71,6 +71,6 @@ vertical menu without hard-coding screen orientation.
 - Hardware: pointer activation, motion, buttons, mouse-only gating, disconnect cleanup, and wheel
   menu navigation.
 - Host: descriptor classification, relative-axis extraction, button count, and gamepad rejection
-  in `tools/test_bthid_mouse_report.c`.
+  in `tests/firmware/test_bthid_mouse_report.c`.
 - Command evidence:
   [`../experiments/2026-07-19-usb-command-ab-diff.md`](../experiments/2026-07-19-usb-command-ab-diff.md).

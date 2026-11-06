@@ -182,7 +182,7 @@ Large captures, recordings, and reference clones live outside Git in `/lab-evide
 
 [`host-test-inventory.md`](host-test-inventory.md) classifies every `tools/test_*.c` and records
 which are outside the active host suite and why. The authoritative runner is
-`tools/run_host_tests.ps1`.
+`tests/run_host_tests.ps1`.
 
 ## Documentation maintenance rules
 

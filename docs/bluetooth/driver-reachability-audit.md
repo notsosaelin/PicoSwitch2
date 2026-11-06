@@ -103,12 +103,12 @@ controller connects.
 
 ```
 # Every driver file has both, exactly once:
-grep -rn "_register(void)" src/bt_hid/bt/bthid/devices/*.c src/bt_hid/bt/bthid/devices/**/*.c
-grep -n "_register();" src/bt_hid/bt/bthid/bthid_registry.c
+grep -rn "_register(void)" firmware/src/hid_host/bt/bthid/devices/*.c firmware/src/hid_host/bt/bthid/devices/**/*.c
+grep -n "_register();" firmware/src/hid_host/bt/bthid/bthid_registry.c
 # Should be the same count, one-to-one.
 
 # Every driver struct declares .transports (grep for its absence = defaults to BOTH, worth a look):
-grep -L "\.transports" src/bt_hid/bt/bthid/devices/**/*.c
+grep -L "\.transports" firmware/src/hid_host/bt/bthid/devices/**/*.c
 ```
 
 ## Remaining Gate 2 work this audit feeds

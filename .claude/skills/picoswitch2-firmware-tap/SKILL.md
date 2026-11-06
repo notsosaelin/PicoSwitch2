@@ -27,7 +27,7 @@ Never:
 Exercise the host state machine:
 
 ```powershell
-python tools/test_ns2_firmware_update.py -v
+python tests/tools/test_ns2_firmware_update.py -v
 ```
 
 Analyze a complete retained trace:

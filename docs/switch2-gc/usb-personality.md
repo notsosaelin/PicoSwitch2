@@ -75,18 +75,18 @@ for GameCube** — flag this for the Stage G real-console validation pass. `tool
 updated to expect the new intentional value, with its own comment explaining the deliberate deviation
 from the raw capture. Re-verified across the full build matrix; not yet re-tested on hardware.
 
-Files: `include/usb.h` (`usb_personality_t` enum, cross-core request/ack state — see "Runtime mode
-cycle" below), `include/usb_mode_cycle.h` + `src/usb_mode_cycle.c` (pure enum-walking logic, no
-pico-sdk dependency, host-testable — `tools/test_usb_mode_cycle.c`), `include/switch_gc.h` +
-`src/switch_gc/switch_gc.c` (the GameCube personality module: Confirmed byte-exact descriptors,
+Files: `firmware/src/app/usb.h` (`usb_personality_t` enum, cross-core request/ack state — see "Runtime mode
+cycle" below), `firmware/src/app/usb_mode_cycle.h` + `firmware/src/app/usb_mode_cycle.c` (pure enum-walking logic, no
+pico-sdk dependency, host-testable — `tests/firmware/test_usb_mode_cycle.c`), `firmware/src/console/gamecube/switch_gc.h` +
+`firmware/src/console/gamecube/switch_gc.c` (the GameCube personality module: Confirmed byte-exact descriptors,
 Stage-B-scope stubs for everything else — see each function's own doc comment for its exact evidence
-tier and Stage boundary), `src/usb.c` (the transition sequence + main-loop dispatch),
-`src/usb_descriptors.c` (centralized TinyUSB callback dispatch — descriptors, EP0 vendor control,
-mount, HID get/set report), `src/switch_pro2/switch_pro2.c` (its own TinyUSB callbacks renamed to
+tier and Stage boundary), `firmware/src/app/usb.c` (the transition sequence + main-loop dispatch),
+`firmware/src/app/usb_descriptors.c` (centralized TinyUSB callback dispatch — descriptors, EP0 vendor control,
+mount, HID get/set report), `firmware/src/console/pro2/switch_pro2.c` (its own TinyUSB callbacks renamed to
 plain functions so they can be dispatched to, plus a personality guard added to the audio-stub driver
-hook and the MS-OS-1.0 WinUSB string), `src/bt_hid/ns2_bt_host.c` (BOOTSEL_HOLD now requests a mode
+hook and the MS-OS-1.0 WinUSB string), `firmware/src/bluetooth/ns2_bt_host.c` (BOOTSEL_HOLD now requests a mode
 cycle instead of unconditionally entering config; new highest-priority LED tier renders the
-transition acknowledgement), `include/bootsel.h` (comment only — the gesture itself needed no code
+transition acknowledgement), `firmware/src/app/bootsel.h` (comment only — the gesture itself needed no code
 change, see "Gesture reuse" below), `tools/verify_gc_descriptors.py` (independent byte-comparison
 tool for the GameCube descriptors).
 
@@ -106,7 +106,7 @@ audit this document's earlier revision already did before any implementation beg
   *not* copied from `switch_gc.c` itself) and diffs them against the actual C source; also checks
   `wTotalLength` self-consistency, interface count, and that the HID report descriptor declares the
   expected report IDs (5, 0x0A, 0x03). All pass.
-- **Mode-cycle logic**: `tools/test_usb_mode_cycle.c`, a host-compilable test (`gcc -DNS2_PRO=1
+- **Mode-cycle logic**: `tests/firmware/test_usb_mode_cycle.c`, a host-compilable test (`gcc -DNS2_PRO=1
   -I include ...`, no pico-sdk needed) exercising the extracted `usb_next_personality()`/
   `usb_personality_available()` functions directly. Confirms: `USB_PERSONALITY_SWITCH2_PRO2` is enum
   value 0 (so plain zero-initialization already yields the correct boot default); the cycle order is
@@ -115,7 +115,7 @@ audit this document's earlier revision already did before any implementation beg
   wraparound). All pass.
 - **`NS2_PRO=OFF` (Switch 1) unchanged behavior**: verified by code inspection, not a host test — the
   `#else` branch of `usb.c`'s main loop (the BOOTSEL-hold-enters-config-directly path) and
-  `include/usb.h`'s `#else` branch (the original `g_usb_enter_config`/`g_usb_config_mode` variable
+  `firmware/src/app/usb.h`'s `#else` branch (the original `g_usb_enter_config`/`g_usb_config_mode` variable
   pair) are both byte-for-byte the pre-existing implementation, untouched by this pass — confirmed via
   diff review, and via a clean `NS2_PRO=OFF` build.
 - **No L3/R3 GameCube output destination / ZL/C/Home/Capture remain real capabilities**: Stage B
@@ -146,15 +146,15 @@ Full detail preserved for reference; summarized by topic:
 
 1. **Descriptor selection is already a clean, mirrorable pattern.** All four TinyUSB descriptor
    callbacks (`tud_descriptor_device_cb`, `tud_descriptor_configuration_cb`,
-   `tud_hid_descriptor_report_cb`, `tud_descriptor_string_cb`, all in `src/usb_descriptors.c`)
+   `tud_hid_descriptor_report_cb`, `tud_descriptor_string_cb`, all in `firmware/src/app/usb_descriptors.c`)
    already branch on a single runtime boolean (`g_usb_config_mode`) plus a compile-time flag
    (`#ifdef NS2_PRO`) to select between static descriptor-byte arrays. The Pro2-specific bytes
-   themselves are already isolated behind accessor functions in `src/switch_pro2/switch_pro2.c`,
-   declared in `include/switch_pro2.h` — this is exactly the shape a new `switch_gc.h`/`switch_gc.c`
+   themselves are already isolated behind accessor functions in `firmware/src/console/pro2/switch_pro2.c`,
+   declared in `firmware/src/console/pro2/switch_pro2.h` — this is exactly the shape a new `switch_gc.h`/`switch_gc.c`
    pair should mirror.
 2. **TinyUSB already proves live re-enumeration works, with no reflash.** `tud_init()` re-queries the
    descriptor callbacks on every enumeration; the existing CDC-config-mode entry path
-   (`src/usb.c`: `tud_disconnect()` → `sleep_ms(100)` → set a selector variable → `tud_connect()`,
+   (`firmware/src/app/usb.c`: `tud_disconnect()` → `sleep_ms(100)` → set a selector variable → `tud_connect()`,
    triggered by a BOOTSEL-hold gesture routed from the Bluetooth core) is direct, working, in-tree
    proof that changing the active descriptor set and forcing a host re-enumeration is sufficient —
    **no reflash required**, and this is the mechanism a Pro2⇄GameCube switch should reuse.
@@ -169,28 +169,28 @@ Full detail preserved for reference; summarized by topic:
    either existing implementation, it gets to be its own from-scratch third implementation, following
    whichever shape its own (still partially unconfirmed) protocol needs.
 5. **Rumble/feedback routing is already fully personality-agnostic below the USB-decode layer.**
-   `report_set_rumble`/`report_get_rumble` (`include/report.h`) and `ns2_seam.c`'s Bluetooth-side
+   `report_set_rumble`/`report_get_rumble` (`firmware/src/app/report.h`) and `ns2_seam.c`'s Bluetooth-side
    feedback bridge don't know or care which USB personality is active. Only the USB-side *decode*
    (Pro2's `ns2_hid_out_report()`) is personality-specific — a GameCube decode function is a small,
    additive, low-risk piece.
-6. **No persisted "USB personality" field exists yet.** `pico_config_t` (`src/config.c`) has a
+6. **No persisted "USB personality" field exists yet.** `pico_config_t` (`firmware/src/settings/config.c`) has a
    versioned migration path already (`CONFIG_VERSION`, graceful old→new upgrade) that a new
    `usb_personality` byte can follow without disruption.
-7. **The Bluetooth/input side (`src/bt_hid/`) has zero coupling to Pro Controller 2 identity** — no
+7. **The Bluetooth/input side (`firmware/src/hid_host/`) has zero coupling to Pro Controller 2 identity** — no
    changes expected there. `NS2_SLOTS` already assumes up to 4 output slots; Pro2 already only uses
    slot 0, so a single-slot GameCube personality introduces no new constraint.
 
 Full audit detail (all ten requested topics, exact file:line citations for every claim above) is
 preserved in this session's working notes; the summary above is sufficient to drive the design below.
-If deeper citation is needed later, re-run the same trace against current `src/usb_descriptors.c`,
-`src/usb.c`, `src/switch_pro2/switch_pro2.c`, `src/switch_pro/switch_pro.c`, `src/config.c` — the
+If deeper citation is needed later, re-run the same trace against current `firmware/src/app/usb_descriptors.c`,
+`firmware/src/app/usb.c`, `firmware/src/console/pro2/switch_pro2.c`, `firmware/src/console/pro/switch_pro.c`, `firmware/src/settings/config.c` — the
 file set is small and stable.
 
 ## Design: a runtime personality selector, reusing the CDC-mode precedent exactly
 
 ### The selector
 
-Replace the two-state `g_usb_config_mode` boolean (`include/usb.h`) with a multi-state enum. Naming
+Replace the two-state `g_usb_config_mode` boolean (`firmware/src/app/usb.h`) with a multi-state enum. Naming
 and ordering per the 2026-07-13 product decision (`USB_PERSONALITY_SWITCH2_PRO2 = 0` so a zero-valued/
 freshly-booted default is correct without any explicit initialization):
 
@@ -251,7 +251,7 @@ headroom for a few extra 64-byte endpoint buffers) and consistent with how Pro2 
 *(Original text preserved for its architecture reasoning; the product conclusions below — reboot-only
 switching, and persisting the selection to flash — are no longer the plan. Do not implement either.)*
 
-> Reuse `src/usb.c`'s existing CDC-mode entry sequence verbatim for Pro2⇄GameCube switching:
+> Reuse `firmware/src/app/usb.c`'s existing CDC-mode entry sequence verbatim for Pro2⇄GameCube switching:
 > `tud_disconnect(); sleep_ms(100); g_usb_personality = new_personality; tud_connect();` — **Open
 > question, not yet decided**: should switching support a live return path, or require a reboot?
 > **Recommendation for Stage F: implement reboot-required switching first**... Add
@@ -406,7 +406,7 @@ Requirements carried over verbatim from NSO-GC.md (not to be diluted in implemen
   section below, nothing Bluetooth-side is touched by a personality change, so this should hold
   naturally; verify it explicitly in the Stage B hardware pass rather than assuming.
 - The **detach delay stays 100ms**, matching the existing, already-proven-reliable CDC-mode-entry
-  precedent (`src/usb.c`) — no evidence was found this session that a different value is needed for
+  precedent (`firmware/src/app/usb.c`) — no evidence was found this session that a different value is needed for
   Pro2⇄GameCube⇄Config, and NSO-GC.md asks for a *documented* bounded value, not a new one invented
   without cause.
 - Personality-specific runtime state (report counters, pending transfers, init-handshake stage,
@@ -421,17 +421,17 @@ Requirements carried over verbatim from NSO-GC.md (not to be diluted in implemen
 
 ## Directory/module layout
 
-Following the existing `src/switch_pro2/` precedent:
+Following the existing `firmware/src/console/pro2/` precedent:
 
 ```
-src/switch_gc/
+firmware/src/console/gamecube/
     switch_gc.c        # descriptor accessors, tud_* callback implementations, ns2_gc_task()-equivalent
     switch_gc.h
-include/switch_gc.h     # or keep the split pattern switch_pro2.h already uses — match whichever
+firmware/src/console/gamecube/switch_gc.h     # or keep the split pattern switch_pro2.h already uses — match whichever
                          # switch_pro2.c/.h actually do once this is implemented, for consistency
 ```
 
-A small shared dispatch layer (new or added to `src/usb.c`/`src/usb_descriptors.c`) owns the
+A small shared dispatch layer (new or added to `firmware/src/app/usb.c`/`firmware/src/app/usb_descriptors.c`) owns the
 `g_usb_personality` switch statements themselves — it is not a new abstraction module, just the
 existing files' existing `#ifdef`/ternary sites widened to a third arm.
 
@@ -451,7 +451,7 @@ existing files' existing `#ifdef`/ternary sites widened to a third arm.
 ## What IS shared, unconditionally, no new work needed
 
 - `report_set_rumble`/`report_get_rumble` and everything in `ns2_seam.c` (audit finding 5).
-- `switch_pro_input_t` (`include/switch_pro.h`) as the cross-core input struct — GameCube's own
+- `switch_pro_input_t` (`firmware/src/console/pro/switch_pro.h`) as the cross-core input struct — GameCube's own
   decode function reads from the same struct Pro2 already reads from; it does not need its own
   parallel Bluetooth-side input pipeline.
 - The disconnect/reconnect re-enumeration mechanism itself (audit finding 2).
@@ -468,15 +468,15 @@ existing files' existing `#ifdef`/ternary sites widened to a third arm.
    STATUS.md "NSO GameCube Controller: Stage B... hardware-validated."
 3. ~~Stage C: implement report `0x0A` construction~~ **Implemented 2026-07-13, second pass.**
    `switch_gc_build_report()`/`switch_gc_encode_report()`
-   (`src/switch_gc/switch_gc.c`, `src/switch_gc/switch_gc_encode.c` — the latter extracted as a
+   (`firmware/src/console/gamecube/switch_gc.c`, `firmware/src/console/gamecube/switch_gc_encode.c` — the latter extracted as a
    pure, host-testable module mirroring `usb_mode_cycle.c`'s pattern) construct the full 63-byte
    body for **every** documented field: counter, power-info default, A/B/X/Y, D-pad,
    Plus/Minus/Home/Capture, C, ZL, both analog sticks, **and** native GameCube Z, independent L/R
    trigger detents, and continuous analog L/R trigger — the shared `switch_pro_input_t` struct was
    extended with dedicated `gc_extra`/`left_trigger`/`right_trigger` fields
-   (`include/switch_pro.h`), populated only for the 8BitDo NGC Modkit (`gc_has_native_layout`-gated,
+   (`firmware/src/console/pro/switch_pro.h`), populated only for the 8BitDo NGC Modkit (`gc_has_native_layout`-gated,
    `bthid_gamepad.c`) and forwarded unconditionally through `ns2_seam.c`'s `router_submit_input()`.
-   Ten golden host tests (`tools/test_switch_gc_report.c`) cover neutral/each-button/native-Z/
+   Ten golden host tests (`tests/firmware/test_switch_gc_report.c`) cover neutral/each-button/native-Z/
    ZL-non-aliasing/analog-range/detent-independence/no-synthesis/simultaneity/L3-R3-unsynthesizable/
    counter cases — all pass. Construction is now **wired into live streaming**, gated behind Stage
    D below (not unconditional). Both boards + `NS2_PRO=OFF` build clean.
@@ -501,7 +501,7 @@ existing files' existing `#ifdef`/ternary sites widened to a third arm.
    parameter and always treated `buffer[0]` as the report ID — correct by coincidence for interrupt
    OUT (the transport this device actually uses) but wrong for control `SET_REPORT` (which strips
    the ID into that parameter instead). Fixed centrally via a new pure `hid_out_normalize()` helper
-   (`src/hid_out_normalize.c`, host-tested), shared by both Pro2's and GameCube's rumble handlers.
+   (`firmware/src/app/hid_out_normalize.c`, host-tested), shared by both Pro2's and GameCube's rumble handlers.
    Remaining semantic questions are tracked in `docs/switch2-gc/open-questions.md`.
 6. Stage F (persistence/selection) is **done** as of the 2026-07-13 product decision (volatile
    runtime cycle, not persisted) — superseding the original Stage F plan referenced elsewhere in this

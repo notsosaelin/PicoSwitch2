@@ -71,7 +71,7 @@ direction (Pico 3.3V TX → cable RX) is always fine.
 
 **Firmware status:** implemented without enabling stdio. `pico_enable_stdio_uart(..., 0)` remains
 unchanged, so the project's many existing `printf` calls cannot flood or block the controller run
-loops. `src/ns2_uart_diag.c` owns UART0 directly and performs only bounded FIFO reads/writes from
+loops. `firmware/src/diagnostics/ns2_uart_diag.c` owns UART0 directly and performs only bounded FIFO reads/writes from
 core 0. Standard NS2 builds enable it with `NS2_UART_DIAG=ON`; `build.ps1 -NoUartDiag` provides an
 explicit opt-out.
 
@@ -369,10 +369,10 @@ between guessing from captures and *watching the console think*.
 
 - PLAN.md "Console-side capture infrastructure" (🟡 recommended next investment), "Console-native
   motion", "NFC / amiibo" (both 🔴 blocked on genuine console-side captures).
-- `src/usb.c:177` — config mode re-enumerates the single USB-C port (the §0 exclusivity).
+- `firmware/src/app/usb.c:177` — config mode re-enumerates the single USB-C port (the §0 exclusivity).
 - `CMakeLists.txt:16-20,216-219` — Pico W / Pico 2 W board + CYW43 (WiFi telemetry option),
   `:227-228` — stdio compiled out (clean slate for a trace channel).
-- `src/bt_hid/bt/bthid/devices/vendors/nintendo/switch2_ble.c:231-242` — the printf-flood-starves-
+- `firmware/src/hid_host/bt/bthid/devices/vendors/nintendo/switch2_ble.c:231-242` — the printf-flood-starves-
   core1 lesson (why 1.1 must be binary/rate-limited).
 - `JOYCON2-AUDIT.md` §5/§9 — the rotation question that 1.1 + 2.1 would settle;
   `../switch2/command-surface.md` — the command surface 1.1 would trace.

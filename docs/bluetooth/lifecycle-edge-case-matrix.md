@@ -34,7 +34,7 @@ These are the load-bearing rules. Each one makes a whole group of rows unreachab
 
 - **INV** — impossible by an invariant above; no per-case test needed.
 - **UNIT** — covered by an existing pure/unit/host test.
-- **MODEL** — reached by the seeded lifecycle model (`tools/test_ns2_lifecycle_model.c`), invariants checked after every transition.
+- **MODEL** — reached by the seeded lifecycle model (`tests/firmware/test_ns2_lifecycle_model.c`), invariants checked after every transition.
 - **STRUCT** — covered by a source-level structural guard.
 - **HW** — genuinely needs hardware; listed in the acceptance matrix or as a remaining gap.
 - **UNSUP** — intentionally unsupported; must fail or recover cleanly, never wedge.

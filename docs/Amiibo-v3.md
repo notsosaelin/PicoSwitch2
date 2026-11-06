@@ -40,7 +40,7 @@ The `0x40` crypto shift is why rider data runs to `~0x247` instead of ending at 
 (`0x34`), identity (`0x54`), and the UID mirror (`0x000`) are unchanged.
 
 The console's own NFC sysmodule has backwards-compatibility handling that skips the inserted chunk
-and reads standard amiibo data from the shifted offsets. `tools/test_ns2_v3_compat_view.mjs` proves
+and reads standard amiibo data from the shifted offsets. `tests/tools/test_ns2_v3_compat_view.mjs` proves
 over all 16 dumps that removing the inserted block yields a 540-byte image whose
 `tag_to_internal(compat, v3=false)` is **byte-identical** to `tag_to_internal(full_v3, v3=true)`.
 
@@ -498,8 +498,8 @@ uploads the complete 2048-byte image immediately; offline **Select amiibo** only
 | `amiibo journal` (UART) | inspect the alternating persistence banks |
 | `nfcmirror` + `tools/nfc_probe.ps1` | initiator mode: UART originates NFC commands at a paired genuine controller with **no console attached** (§11.1) |
 | `tools/rebuild_v3_from_capture.py` | reassemble a tested tag from its own capture; must copy the full 64-byte device response |
-| `tools/test_ns2_amiibo_v3_write.c`, `tools/test_ns2_amiibo_v3.c` | captured-layout and failure-mode coverage |
-| `tools/test_ns2_v3_compat_view.mjs` | crypto-equivalence and SRAM CRC across all 16 dumps |
+| `tests/firmware/test_ns2_amiibo_v3_write.c`, `tests/firmware/test_ns2_amiibo_v3.c` | captured-layout and failure-mode coverage |
+| `tests/tools/test_ns2_v3_compat_view.mjs` | crypto-equivalence and SRAM CRC across all 16 dumps |
 
 ### 11.1 Initiator mode
 

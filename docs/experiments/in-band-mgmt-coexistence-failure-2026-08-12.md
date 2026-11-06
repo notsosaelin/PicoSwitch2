@@ -106,7 +106,7 @@ proves the code analysis below on hardware — no gameplay required.
 `btstack_host_start_scan()` early-returns whenever the config/management BLE service is armed:
 
 ```c
-// src/bt_hid/bt/btstack/btstack_host.c  (btstack_host_start_scan)
+// firmware/src/hid_host/bt/btstack/btstack_host.c  (btstack_host_start_scan)
 if (g_usb_config_mode || config_ble.mode_active) {
     return;  // Config/management owns LE advertising; suppresses discovery
 }

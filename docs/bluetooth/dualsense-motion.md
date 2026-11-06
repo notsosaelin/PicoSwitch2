@@ -234,7 +234,7 @@ Evidence — standard practice.)
 
 **Switch 2 translation:**
 
-- `src/bt_hid/motion/ns2_ds5_motion.c` uses the physical sensor timestamp when plausible and a
+- `firmware/src/motion/ns2_ds5_motion.c` uses the physical sensor timestamp when plausible and a
   bounded host-time fallback otherwise.
 - Startup requires 32 consecutive still samples before orientation integration begins, preventing
   the first full-report transient from becoming a permanent false bias.
@@ -287,6 +287,6 @@ See [`../switch2/report-0x09-motion.md`](../switch2/report-0x09-motion.md) and
   <https://github.com/JibbSmart/GamepadMotionHelpers>
 - DualSense axis-orientation notes (inverted first gyro axis, accel ordering):
   <https://github.com/v1993/evdevhook/issues/3>
-- This repo: `src/bt_hid/bt/bthid/devices/vendors/sony/ds5_bt.c` (struct `ds5_input_report_t`,
+- This repo: `firmware/src/hid_host/bt/bthid/devices/vendors/sony/ds5_bt.c` (struct `ds5_input_report_t`,
   parser, activation), `ds4_bt.c` / `ds3_bt.c` (sibling IMU parsers, normalization convention),
-  `src/bt_hid/core/input_event.h:249-253` (motion carrier fields).
+  `firmware/src/hid_host/core/input_event.h:249-253` (motion carrier fields).

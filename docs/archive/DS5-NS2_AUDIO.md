@@ -386,8 +386,8 @@ therefore locked to Pico 2 W builds.
 - `AUDIO-INVESTIGATION.md` — full history, protocol, reference-implementation and DSP-blob study.
 - `nso-gc-refs/DS5Dongle/` @ `750bde8` — `src/{main,audio,bt}.cpp`, `cmake/relocate_to_ram.cmake`,
   `CMakeLists.txt` (RAM relocation; separate clock configurations by board).
-- `src/ds5_audio_bridge.c`, `src/bt_hid/ns2_bt_host.c`,
-  `src/bt_hid/bt/bthid/devices/vendors/sony/ds5_bt.c` — the live bridge, timer, and transport.
+- `firmware/src/audio/ds5_audio_bridge.c`, `firmware/src/bluetooth/ns2_bt_host.c`,
+  `firmware/src/hid_host/bt/bthid/devices/vendors/sony/ds5_bt.c` — the live bridge, timer, and transport.
 - Raspberry Pi RP2350 datasheet: <https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf>.
 - Raspberry Pi RP2040 datasheet: <https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf>.
 - Raspberry Pi Pico SDK releases (RP2040 200 MHz certification):

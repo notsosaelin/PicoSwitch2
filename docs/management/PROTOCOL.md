@@ -14,10 +14,10 @@ This document specifies logical commands and replies. It does not specify how a 
 pairs with, or reconnects to an adapter. BLE UUIDs, security, fragmentation, and session ownership
 are in [TRANSPORTS.md](TRANSPORTS.md).
 
-Firmware `src/config.c` is the current command/formatter authority. The BLE subset is the allowlist
-in `config_wireless_command_allowed`; bond cursor formatting is in `src/mgmt_bonds.c`. The portable
-reference is `android/companion/management-core`, and representative wire values are in
-`tools/fixtures/management/protocol-v1.json`.
+Firmware `firmware/src/settings/config.c` is the current command/formatter authority. The BLE subset is the allowlist
+in `config_wireless_command_allowed`; bond cursor formatting is in `firmware/src/management/mgmt_bonds.c`. The portable
+reference is `companions/android/management-core`, and representative wire values are in
+`contracts/management/protocol-v1.json`.
 
 ## Common wire rules
 
@@ -359,5 +359,5 @@ surface shares KB/M parsers/formatters but is not the connected management trans
 
 ## Non-normative examples
 
-The JSON objects in `tools/fixtures/management/protocol-v1.json` are representative firmware-shaped
+The JSON objects in `contracts/management/protocol-v1.json` are representative firmware-shaped
 examples. They are executable conformance vectors but do not replace required-field rules above.

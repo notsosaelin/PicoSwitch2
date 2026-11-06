@@ -12,7 +12,7 @@
 > [`../agents/MOTION.md`](../agents/MOTION.md).
 
 
-Status: implemented under `android/companion/`; AYN Thor app-side input, public HID Device
+Status: implemented under `companions/android/`; AYN Thor app-side input, public HID Device
 registration, Pico receipt, and in-game console control were hardware-validated 2026-08-13. The
 new single-relationship pairing/reconnect UX and corrected face-label mapping are host/build
 validated and await one focused hardware pass.
@@ -129,12 +129,12 @@ gates, including repeated physical → Android → physical switching and Androi
 
 ### Android project shape
 
-The independent Gradle project lives under `android/companion/` so the descriptor and Pico parser
+The independent Gradle project lives under `companions/android/` so the descriptor and Pico parser
 contract stay versioned together. Since 2026-08-15 it is **two** modules, splitting the bridge
 definition from the Android implementation of it:
 
 ```text
-android/companion/
+companions/android/
   bridge-core/                 PLATFORM-NEUTRAL. Plain Kotlin/JVM, no Android dependency.
     dev/picoswitch/bridge/core/       normalized ControllerState, buttons, capabilities,
                                       canonical motion convention, layout resolver,
@@ -250,7 +250,7 @@ independently confirms the design against a different OEM and API level. Full ev
   is reached through its on-screen button instead. Unknown or additional physical buttons stay
   unassigned as candidates for future custom mapping.
 - **No firmware/parser change required** — the Thor fits the already-checked-in descriptor + wire
-  contract that `tools/test_bthid_android_controller.c` validates.
+  contract that `tests/firmware/test_bthid_android_controller.c` validates.
 
 Two different handhelds now map cleanly onto the single fixed HID contract, which strengthens the
 case for keeping one narrow descriptor rather than per-device profiles.
@@ -420,7 +420,7 @@ audio, but only because its client link is UDP over WiFi — not applicable here
 ## Fixed HID contract
 
 The canonical descriptor, wire layout, and sensor scale live in one file shared by the firmware, the
-host tests, and (mirrored) the Kotlin encoder: [`tools/fixtures/android_controller_hid.h`](../../tools/fixtures/android_controller_hid.h).
+host tests, and (mirrored) the Kotlin encoder: [`contracts/android_controller_hid.h`](../../contracts/android_controller_hid.h).
 `tools/check_android_descriptor_parity.py` fails loudly if the languages ever drift — C, Kotlin and,
 since the Windows companion, C# — because a one-sided edit would not break a build, it would silently
 stop the host being recognized.
@@ -471,8 +471,8 @@ therefore observe report ID at wire byte 0, axes at bytes 1..6, buttons at bytes
 at byte 9.
 
 The canonical 81-byte descriptor and neutral wire report are checked into
-[`tools/fixtures/android_controller_hid.h`](../../tools/fixtures/android_controller_hid.h).
-`tools/test_bthid_android_controller.c` compiles that fixture against the production HID parser and
+[`contracts/android_controller_hid.h`](../../contracts/android_controller_hid.h).
+`tests/firmware/test_bthid_android_controller.c` compiles that fixture against the production HID parser and
 generic Bluetooth gamepad driver; the Android encoder must reproduce the same nine payload bytes.
 
 Keep all six axes unsigned. PicoSwitch2's current generic parser scales a raw field against its
@@ -667,12 +667,12 @@ compatibility substantially harder.
 - [x] Source/host fixture: PicoSwitch2 accepts an Android-initiated Classic HID connection with a
       phone Class of Device and selects `bthid_gamepad`; Android/Pico/console receipt is physical-
       hardware confirmed.
-      Verified green in `tools/test_bthid_late_identity.c`; the phone binds generic via the
+      Verified green in `tests/firmware/test_bthid_late_identity.c`; the phone binds generic via the
       no-match fallback even though `gamepad_match()` (correctly) rejects a phone major class.
 - [x] Phone-CoD generic binding survives late Classic SDP VID/PID re-evaluation: no disconnect/
       rebind churn, only a VID-flag refresh, and input keeps flowing (`test_bthid_late_identity.c`).
 - [x] The production parser fixture reports X/Y/Z/Rz/Rx/Ry, hat, report ID 1, and 14 buttons at the
-      expected offsets (`tools/test_bthid_android_controller.c`, verified green).
+      expected offsets (`tests/firmware/test_bthid_android_controller.c`, verified green).
 - [x] Canonical reports round-trip through the production generic parser to the expected `input_event_t`.
 - [x] Two independent handhelds (Retroid Pocket Classic API 34, AYN Thor API 33) pass the HID Device
       profile feasibility gate and map onto the fixed 14-button contract with no firmware change.

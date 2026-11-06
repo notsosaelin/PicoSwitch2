@@ -6,7 +6,7 @@ Definitive per-controller Bluetooth decoding reference for the
 open-source controller-decoding project, cross-checked against ndeadly's Switch 2 research.
 
 > **Attribution.** Button model, driver architecture, and per-vendor mappings below are from
-> joypad-os `src/bt/bthid/` and `src/core/`. When the drivers are vendored into `src/bt_hid/` they
+> joypad-os `src/bt/bthid/` and `src/core/`. When the drivers are vendored into `firmware/src/hid_host/` they
 > carry the upstream Apache-2.0 `LICENSE` + provenance headers.
 
 ---
@@ -126,7 +126,7 @@ joypad-os/src/bt/bthid/bthid.{c,h}                     → src/bt_hid/bthid.{c,h
 joypad-os/src/bt/bthid/bthid_registry.{c,h}            → src/bt_hid/bthid_registry.{c,h}
 joypad-os/src/bt/bthid/devices/generic/*               → src/bt_hid/devices/generic/
 joypad-os/src/bt/bthid/devices/vendors/{microsoft,sony,nintendo,google}/*
-joypad-os/src/core/{buttons.h,input_event.h}           → src/bt_hid/core/
+joypad-os/src/core/{buttons.h,input_event.h}           → firmware/src/hid_host/core/
 joypad-os/src/bt/transport/bt_transport_cyw43.*        → src/bt_hid/transport/ (adapt to pico_cyw43_arch)
 + joypad-os LICENSE + a THIRD_PARTY note; per-file "Ported from joypad-os @<commit>" headers.
 ```

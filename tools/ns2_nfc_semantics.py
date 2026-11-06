@@ -21,11 +21,11 @@ imported by ns2_trace.py so the decoder, the differ, and any future dissector
 report identical field names.
 
 Layout authority (keep in sync, do not re-derive):
-  include/ns2_virtual_nfc.h        status payload, read-chunk framing
-  include/ns2_amiibo_v3.h          sector-read descriptor and result prefix
-  include/ns2_amiibo_v3_write.h    staged write envelopes
-  src/nfc/ns2_virtual_nfc.c        operation-buffer prefix
-  src/switch_pro2/switch_pro2.c    ns2_v3_serve() dispatch and status edges
+  firmware/src/nfc/ns2_virtual_nfc.h        status payload, read-chunk framing
+  firmware/src/nfc/ns2_amiibo_v3.h          sector-read descriptor and result prefix
+  firmware/src/nfc/ns2_amiibo_v3_write.h    staged write envelopes
+  firmware/src/nfc/ns2_virtual_nfc.c        operation-buffer prefix
+  firmware/src/console/pro2/switch_pro2.c    ns2_v3_serve() dispatch and status edges
 
 Not covered: the controller's report NFC-state field. It travels in device
 input reports, which the protocol tracer does not retain, so a state edge is

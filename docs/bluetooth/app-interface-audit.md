@@ -42,7 +42,7 @@ CDC/UART-only and stay off the wireless path.
 |---|---|---|---|
 | **G1 — current output personality is not queryable** | App can't show the mode, gate amiibo controls to Pro2, or know the switch target | add `personality` query (read `g_usb_personality`) | **low — read-only** |
 | **G2 — output personality switch is not a command** | App can't change output type | `personality <pro2\|gc\|jcl\|jcr>` → target-request flag (mechanism de-risked & owner-hardware-confirmed; §9 of plan) | medium — re-enumeration |
-| **G3 — saved-pairing enumeration must stay bounded** | A large LE bond database could otherwise look like a complete but silently truncated list | `bonds list` v2 envelope plus `bonds list v2 [cursor]`; legacy spelling fails closed with compact `response_too_large` (grammar/serializer covered by `tools/test_bonds_command.c` and `tools/test_mgmt_bonds.c`) | medium — flash + le_device_db |
+| **G3 — saved-pairing enumeration must stay bounded** | A large LE bond database could otherwise look like a complete but silently truncated list | `bonds list` v2 envelope plus `bonds list v2 [cursor]`; legacy spelling fails closed with compact `response_too_large` (grammar/serializer covered by `tests/firmware/test_bonds_command.c` and `tests/firmware/test_mgmt_bonds.c`) | medium — flash + le_device_db |
 | **G4 — real physical amiibo backup is UART-only** | App **cannot back up a real amiibo** — the NFC mirror/initiator (`ns2_nfc_mirror`, incl. `set_initiator`/`initiator_submit`) is reachable only from `ns2_uart_diag.c`, not `config.c` | bridge the mirror to config commands (`amiibo mirror status`/`export`, allowlisted, bonded-only) | **higher — NFC path, real controller timing; validate on HW** |
 
 ---

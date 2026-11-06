@@ -11,7 +11,7 @@
 > `case 0x11`/`0x18` (streaming-phase gap, same class GC hit); (2) the EP0 identity block's
 > fictitious serial was 2 bytes short (9 digits instead of the Confirmed 11), shifting VID/PID off
 > their real offsets and blocking "Paired" entirely — see `STATUS.md` for the full account of both.
-> `src/switch_joycon2/`, `include/switch_joycon2.h`/`switch_joycon2_encode.h`. This document
+> `firmware/src/console/joycon2/`, `firmware/src/console/joycon2/switch_joycon2.h`/`switch_joycon2_encode.h`. This document
 > remains the evidence base implementation work cites against; do not write further personality
 > code from memory of it without re-checking the citation. Button mapping is reported "off" on
 > real hardware — active investigation, see `docs/switch2-joycon2/mapping.md`. Rumble byte

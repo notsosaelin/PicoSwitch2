@@ -1,12 +1,12 @@
 # Switch 2 Pro Controller — Exact USB Emulation Spec
 
 > **⚠️ Historical bootstrap spec — the shipped code is now the source of truth.** This was the
-> pre-implementation spec; the firmware in `src/switch_pro2/` has since shipped and *legitimately
+> pre-implementation spec; the firmware in `firmware/src/console/pro2/` has since shipped and *legitimately
 > deviates* from parts of it. Where this doc and the code disagree, **the code + `STATUS.md` win.**
 > Known drifts corrected inline below; do not "fix" working code back toward this doc. Current
 > deviations of record: bcdDevice ships **0x0210** (not `00 02` — 0x0200 collides with a retail
 > unit's WinUSB cache; see the branch memory); input maps via the **joypad-os seam**
-> (`src/bt_hid/ns2_seam.c`), **not** bluepad32 (retired); **GL/GR/C are exposed** and confirmed
+> (`firmware/src/input/ns2_seam.c`), **not** bluepad32 (retired); **GL/GR/C are exposed** and confirmed
 > on-console; report-0x09 **motion is decoded** (int32 phase + Q16.16 — see
 > [report-0x09-motion.md](report-0x09-motion.md)); **IF0 HID `bInterval` ships `0x01` (1000 Hz)**,
 > not the genuine `0x04` (250 Hz). A 2026-07-21 isolated restoration killed the current native
@@ -271,7 +271,7 @@ Left/Right accent colors; those belong to the separate Joy-Con identity blocks a
 
 ## 10. Mapping controller input → report `0x09`
 Input arrives from the joypad-os bthid stack as `input_event_t` and is mapped in
-`src/bt_hid/ns2_seam.c` (locked base map) → `switch_pro_input_t` → §7 packing.
+`firmware/src/input/ns2_seam.c` (locked base map) → `switch_pro_input_t` → §7 packing.
 - Buttons: A/B/X/Y, L/R/ZL/ZR, Plus/Minus/Home/Capture, L3/R3, dpad → §7 bitmap.
 - **C, GL, GR are exposed** by the per-vendor drivers (DualSense Edge paddles/Fn and Xbox Elite
   paddles → GL/GR/Capture/C through the locked base map) and confirmed on-console.

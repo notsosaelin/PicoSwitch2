@@ -16,7 +16,7 @@ amiitool, AmiiboAPI), [amiitool `amiibo.c`](https://github.com/socram8888/amiito
 ## 1. Our current model (what we do today)
 
 **We are a passthrough amiibo emulator, not a crypto tool.** Confirmed from our source:
-- `virtual_amiibo_validate_raw()` (`src/nfc/virtual_amiibo.c`) checks **only structure**: the two
+- `virtual_amiibo_validate_raw()` (`firmware/src/nfc/virtual_amiibo.c`) checks **only structure**: the two
   NTAG215 UID check-bytes — `raw[3] == BCC0` and `raw[8] == BCC1` — nothing cryptographic.
 - Storage integrity is a **CRC32** over the stored record (`virtual_amiibo_crc32`), unrelated to
   amiibo crypto.

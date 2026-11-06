@@ -5,7 +5,7 @@ Read [COMMON.md](COMMON.md) first. Protocol detail:
 
 ## The single most important fact
 
-**There is exactly ONE Switch 2 motion encoder, and it is `src/bt_hid/motion/ns2_ds5_motion.c`.**
+**There is exactly ONE Switch 2 motion encoder, and it is `firmware/src/motion/ns2_ds5_motion.c`.**
 
 The file is named for the DualSense for historical reasons only. It is not DualSense-specific: it
 consumes the shared interchange scale every driver publishes and carries an explicit host-clock
@@ -73,7 +73,7 @@ byte — they are not aligned 32-bit words:
 Scales: `G0 = (c/√2 + 0.5) × 2^26` (all 26 bits), `G1 × 2^25` (bit 25 always 0), `G2 × 2^24`
 (bits 25:24 hold the state instead). So the chart state is the **low 2 bits of byte `0x04`**.
 State numbers components in wire order `w/x/y/z`, so identity is state 0.
-`src/bt_hid/motion/ns2_motion_pdu.c` is the authority.
+`firmware/src/motion/ns2_motion_pdu.c` is the authority.
 
 Motion is a **negotiated feature**: emit length 0 until the console enables the IMU via `0x0C/0x04`.
 
@@ -94,7 +94,7 @@ rotation; determinant −1 is a reflection and cannot describe any real mounting
 cannot reveal the error — a single vector looks correct reflected — so an improper row passes every
 static check and misbehaves only under rotation. This exact bug cost the SWITCH1 row a week
 (det −1 until 2026-07-27: accelerometer matched genuine hardware to 1% while the gyro produced no
-horizontal aim at all). `tools/test_ns2_motion_seam.c` enforces it.
+horizontal aim at all). `tests/firmware/test_ns2_motion_seam.c` enforces it.
 
 ## Traps already encountered
 
@@ -140,7 +140,7 @@ horizontal aim at all). `tools/test_ns2_motion_seam.c` enforces it.
 
 ## Axis mapping — CONFIRMED exact in software
 
-`tools/test_ns2_motion_quality.c` drives the production encoder with synthetic pure yaw, pure
+`tests/firmware/test_ns2_motion_quality.c` drives the production encoder with synthetic pure yaw, pure
 pitch and pure roll and decodes the wire output back to a rotation axis. Leakage into each
 unintended axis is **0.00000** and the driven-axis magnitude is **1.00000**, with the integrated
 angle within 0.005% of the analytic value, on all three axes. So an axis complaint is NOT an axis
@@ -153,7 +153,7 @@ console's own interpretation instead. Do not reshuffle seam rows to chase a smoo
 host clock, which measures packet ARRIVAL, and Bluetooth delivers a steady sender in bursts.
 Pairing a rate sample with an interval it did not occur over costs real trajectory accuracy.
 
-Measured with `tools/test_ns2_motion_quality.c` on a 2 Hz / 120 dps sweep (realistic aiming),
+Measured with `tests/firmware/test_ns2_motion_quality.c` on a 2 Hz / 120 dps sweep (realistic aiming),
 same mean cadence, only the arrival pattern differing:
 
 | clock | arrival | worst trajectory error |
@@ -190,7 +190,7 @@ this "5.2% high, open" used the wrong reference and are corrected.
 
 ## Chart / state transitions — CONFIRMED CONTINUOUS, not a defect source
 
-Measured 2026-08-14 by `tools/test_ns2_motion_quality.c`, which decodes the encoder's own wire
+Measured 2026-08-14 by `tests/firmware/test_ns2_motion_quality.c`, which decodes the encoder's own wire
 output back to an orientation and compares consecutive samples with a **sign-invariant** angular
 metric (`2·acos|dot|`) — necessary because the encoder canonicalizes the omitted component
 positive, so every zero crossing of the omitted lane flips all three transmitted lanes and a naive

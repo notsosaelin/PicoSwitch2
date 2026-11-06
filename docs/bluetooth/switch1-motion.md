@@ -187,7 +187,7 @@ Status: ✅ **Implemented and hardware-validated** for the Switch 1 Pro Controll
 Controller 2 personality. Joy-Con halves stream motion but their axis signs are 🟡 unverified
 (§8).
 
-All of it lives in `src/bt_hid/bt/bthid/devices/vendors/nintendo/switch_pro_bt.c`:
+All of it lives in `firmware/src/hid_host/bt/bthid/devices/vendors/nintendo/switch_pro_bt.c`:
 
 | Piece | Where | Status |
 |---|---|---|
@@ -272,7 +272,7 @@ gravity-correction model does not predict. See
 
 Both rules are enforced by construction rather than by comment: `ns2_motion_seam_apply()` is a
 single loop over the three slots writing accel and gyro together, so a sign cannot reach one without
-the other, and `tools/test_ns2_motion_seam.c` fails the test suite if any row's determinant is not
+the other, and `tests/firmware/test_ns2_motion_seam.c` fails the test suite if any row's determinant is not
 +1.
 
 ### 10.2 Resolved on hardware (2026-07-27) — 🟢 at parity with genuine hardware
@@ -372,8 +372,8 @@ would cost idle power and compatibility), and any prediction or extrapolation be
 - **Linux `hid-nintendo`** — a working driver implementing IMU enable, SPI calibration read, and
   the normalization math (cross-check for signs/scale):
   <https://raw.githubusercontent.com/torvalds/linux/master/drivers/hid/hid-nintendo.c>
-- This repo: `src/bt_hid/bt/bthid/devices/vendors/nintendo/switch_pro_bt.c` (Switch-1 driver: `0x30`
+- This repo: `firmware/src/hid_host/bt/bthid/devices/vendors/nintendo/switch_pro_bt.c` (Switch-1 driver: `0x30`
   parse, init state machine, `SWITCH_SUBCMD_ENABLE_IMU` define),
-  `src/bt_hid/core/input_event.h:249-253` (motion carrier fields).
+  `firmware/src/hid_host/core/input_event.h:249-253` (motion carrier fields).
 - Sibling: [`dualsense-motion.md`](dualsense-motion.md) (DualSense equivalent — same `input_event_t` carrier,
   same calibrate-then-scale pattern, and the drift-correction note).

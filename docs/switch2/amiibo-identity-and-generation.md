@@ -21,7 +21,7 @@ Answer three questions the Virtual Amiibo Manager depends on:
 The board stores **one** amiibo identity at a time. The flash journal's "Save 1 / Save 2" (clean /
 used) pair is **not** two user amiibo: it is one identity's internal baseline plus its
 latest-console-written recovery copy, kept in alternating banks for power-loss safety. See
-[`../../src/nfc/virtual_amiibo_store.c`](../../src/nfc/virtual_amiibo_store.c) and
+[`../../firmware/src/nfc/virtual_amiibo_store.c`](../../firmware/src/nfc/virtual_amiibo_store.c) and
 [`nfc-implementation.md`](nfc-implementation.md). The browser previously exposed two *quick-slot
 pointers* into its local library; that was a browser-side convenience, retired in favor of a single
 loaded-amiibo model to match the hardware and reduce confusion.

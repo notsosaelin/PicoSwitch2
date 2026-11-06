@@ -158,7 +158,7 @@ This is the safe building block.
    owner; **not implemented** pending that call.
 
 **Tests to prepare (host-side, no hardware):** the flag is edge-consumed like the existing
-`g_usb_personality_request_pending` (already covered by `tools/test_usb_mode_cycle.c`); a small unit
+`g_usb_personality_request_pending` (already covered by `tests/firmware/test_usb_mode_cycle.c`); a small unit
 around "save with host-visible change raises the flag; save without does not" can be added once the
 which-fields-are-dirty predicate exists.
 

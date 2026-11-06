@@ -10,7 +10,7 @@
   the tracked tree (not a cached checkout)
 - Upstream `VERSION`: `2.2.0` (CHANGELOG's `[2.2.0]` entry dated 2026-06-23; HEAD is newer,
   unreleased commits on top)
-- This project vendors only `src/bt/` (as `src/bt_hid/bt/`) from a much larger monorepo — upstream
+- This project vendors only `src/bt/` (as `firmware/src/hid_host/bt/`) from a much larger monorepo — upstream
   is a multi-platform (RP2040/RP2350/ESP32/nRF/WCH), multi-app (30+ output targets: GameCube, N64,
   3DO, PCEngine, Nuon, Casio Loopy, USB HID, …) firmware project. PicoSwitch2 only needs the BT HID
   host + drivers; do not chase parity on anything outside that scope.

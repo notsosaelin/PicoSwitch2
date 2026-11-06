@@ -429,7 +429,7 @@ commit onto a fresh branch and hardware-validate it alone.
   live-Opus debugging narrative that preceded this summary.
 - `nso-gc-refs/DS5Dongle/src/{audio,bt,btstack_config}.*` — the working reference
   implementation (MIT).
-- `src/ds5_audio_bridge.c`, `src/bt_hid/bt/bthid/devices/vendors/sony/ds5_bt.c`,
+- `firmware/src/audio/ds5_audio_bridge.c`, `firmware/src/hid_host/bt/bthid/devices/vendors/sony/ds5_bt.c`,
   `.../sony/ds5_audio_packet.c` — the bridge, transport, and report builder (at
   `7d9d47d` / reverted commits).
 

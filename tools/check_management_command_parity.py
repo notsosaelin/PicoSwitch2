@@ -3,9 +3,9 @@
 
 WHY THIS EXISTS
 ---------------
-A command reaches the firmware's dispatcher (`handle_line()` in src/config.c) and,
+A command reaches the firmware's dispatcher (`handle_line()` in firmware/src/settings/config.c) and,
 independently, must be accepted by the wireless allowlist
-(`config_wireless_command_allowed()` in src/config_wireless_bridge.c). Those are two
+(`config_wireless_command_allowed()` in firmware/src/management/config_wireless_bridge.c). Those are two
 separate lists, and only the second one gates the BLE transport.
 
 A verb added to the dispatcher but not the allowlist compiles, passes every unit test,
@@ -38,12 +38,12 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-KOTLIN = (ROOT / "android" / "companion" / "management-core" / "src" / "main" / "kotlin" /
+KOTLIN = (ROOT / "companions" / "android" / "management-core" / "src" / "main" / "kotlin" /
           "dev" / "picoswitch" / "management" / "ManagementProtocol.kt")
-DOMAIN = (ROOT / "android" / "companion" / "management-core" / "src" / "main" / "kotlin" /
+DOMAIN = (ROOT / "companions" / "android" / "management-core" / "src" / "main" / "kotlin" /
           "dev" / "picoswitch" / "management" / "Domain.kt")
-ALLOWLIST_C = ROOT / "src" / "config_wireless_bridge.c"
-DISPATCH_C = ROOT / "src" / "config.c"
+ALLOWLIST_C = ROOT / "firmware" / "src" / "management" / "config_wireless_bridge.c"
+DISPATCH_C = ROOT / "firmware" / "src" / "settings" / "config.c"
 
 # Commands whose verb is not a literal in ManagementCommands.
 #
@@ -289,7 +289,7 @@ def main() -> int:
         shown = command + ("..." if is_prefix else "")
         if not handled:
             failures.append(
-                f"companion sends {shown!r} but handle_line() in src/config.c does not "
+                f"companion sends {shown!r} but handle_line() in firmware/src/settings/config.c does not "
                 f"dispatch it")
         elif not ble:
             failures.append(

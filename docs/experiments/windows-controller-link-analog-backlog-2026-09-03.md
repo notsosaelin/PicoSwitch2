@@ -133,7 +133,7 @@ path is correct.
 
 With the face-layout setting on **Nintendo**, every face button on the on-screen
 controller transmits the OPPOSITE letter to the one drawn on it. On **Xbox** they
-agree. Measured against `include/switch_pro.h`
+agree. Measured against `firmware/src/console/pro/switch_pro.h`
 (`Y=0x01 X=0x02 B=0x04 A=0x08`), reading the adapter's decoded `mapped[0]`:
 
 | drawn | screen slot | Xbox setting | Nintendo setting |

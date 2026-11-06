@@ -3,7 +3,7 @@
 Status: 🔵 corroborated by an independent working implementation; **not yet measured on our hardware**
 Date: 2026-08-13
 Related: [`android-controller-bridge.md`](android-controller-bridge.md),
-[`../../src/bt_hid/motion/ns2_motion_seam.c`](../../src/bt_hid/motion/ns2_motion_seam.c)
+[`../../firmware/src/motion/ns2_motion_seam.c`](../../firmware/src/motion/ns2_motion_seam.c)
 
 ## Question
 
@@ -47,7 +47,7 @@ reasoned independently from the frame conventions, then found to agree). Two ind
 landing on the same proper rotation is meaningfully stronger than either alone.
 
 Determinant check: permutation `(0,2,1)` is one transposition (odd, parity −1); sign product is
-`+1 · −1 · +1 = −1`; total `+1` — a proper rotation, as `tools/test_ns2_motion_seam.c` requires.
+`+1 · −1 · +1 = −1`; total `+1` — a proper rotation, as `tests/firmware/test_ns2_motion_seam.c` requires.
 
 ## Scale corroboration
 
@@ -93,7 +93,7 @@ malformed angles falling back to identity rather than scrambling axes, and int16
   | Aim rotated 90° only on some devices | screen-orientation remap, not this row | `ScreenOrientation` (bridge core, driven by the platform backend) |
 
   Any correction must keep the row a proper rotation (determinant +1), which
-  `tools/test_ns2_motion_seam.c` enforces.
+  `tests/firmware/test_ns2_motion_seam.c` enforces.
 - The row lives in firmware precisely so a correction is a flash, not a new APK.
 
 ## Future work

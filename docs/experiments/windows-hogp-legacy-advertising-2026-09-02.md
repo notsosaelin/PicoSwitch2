@@ -40,7 +40,7 @@ advertising, but the adapter never links and
 
 ## Background
 
-`src/btstack_config.h` defines `ENABLE_LE_CENTRAL`, `ENABLE_LE_PERIPHERAL` and
+`firmware/config/btstack_config.h` defines `ENABLE_LE_CENTRAL`, `ENABLE_LE_PERIPHERAL` and
 `ENABLE_LE_PRIVACY_ADDRESS_RESOLUTION`. It does **not** define
 `ENABLE_LE_EXTENDED_ADVERTISING`.
 

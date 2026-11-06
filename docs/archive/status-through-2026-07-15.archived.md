@@ -92,7 +92,7 @@ pending hardware validation.**
 - The work was never uploaded to remote Git, but Claude's local JSONL transcript preserved every
   edit and timestamp. The owner's 20:40 hardware report explicitly confirmed NSO GameCube rumble
   working for non-Sony controllers after the 13:13 Xbox envelope fix and 14:13 GC decoder edit.
-- Restored `src/switch_gc/switch_gc.c` byte-for-byte to that confirmed decoder: report `0x03`
+- Restored `firmware/src/console/gamecube/switch_gc.c` byte-for-byte to that confirmed decoder: report `0x03`
   byte 1 is OFF/ON/STOP, ON maps to fixed `0xB0`, OFF/STOP/ZLP stop, and the 500 ms watchdog remains
   the stuck-motor backstop. The next real-hardware test produced no rumble, so this restoration was
   not retained as the final decoder.
@@ -139,7 +139,7 @@ pending hardware validation.**
   explicit update state; setup is sent once and spaced from LED programming, Edge uses the v2 flag,
   rumble STOP keeps the vibration selectors while writing zero magnitudes, and failed commands are
   retried. This is source- and host-test-validated but still requires physical DualSense/Edge tests.
-- New host tests `tools/test_xbox_rumble.c` and `tools/test_ds5_output.c` pass, as do the complete
+- New host tests `tests/firmware/test_xbox_rumble.c` and `tests/firmware/test_ds5_output.c` pass, as do the complete
   existing host-test set and both `pico_w` and `pico2_w` release builds. Physical GameCube gameplay,
   Xbox stop, DualSense/Edge rumble, and controller re-pairing tests remain required.
 
@@ -175,7 +175,7 @@ testing the Joy-Con2/mapping/mode-cycle work above, all found and fixed same-day
 
 1. **BOOTSEL gestures (mode-cycle, pairing window, wipe) stopped registering while a controller
    was actively connected and being used, only working again after powering the controller off.**
-   Root cause: `src/bt_hid/bt/bthid/devices/vendors/nintendo/switch2_ble.c`'s "print when buttons
+   Root cause: `firmware/src/hid_host/bt/bthid/devices/vendors/nintendo/switch2_ble.c`'s "print when buttons
    change" debug block had no rate limit or one-time gate (unlike every sibling driver's own debug
    prints), so it fired on essentially every button edge during active use — the exact printf-flood
    failure class this project already root-caused once before (see the "Same day, earlier pass"
@@ -330,7 +330,7 @@ only for Elite Series 2, which both dedicated files explicitly exclude by PID, p
 where a standard Xbox device fails to match them). Also found and fixed one more instance of the
 same underlying staleness: `bthid_registry.c`'s own top comment still described a "Phase 0, vendor
 drivers not compiled yet" bring-up state that hasn't matched the real build since `NS2_BT_ALL_DRIVERS`
-was defined — rewritten to describe the current state. Swept the wider `src/bt_hid` tree and
+was defined — rewritten to describe the current state. Swept the wider `firmware/src/hid_host` tree and
 `docs/bluetooth/` for the same class of claim (dead code / never registered / "the only X in the
 tree") — the docs already correctly historicize the original bug and its fix; no other stale
 instances found. Both boards build clean.
@@ -537,7 +537,7 @@ Switch 2 anyway (it never creates a BTstack bond to delete) and remains the trac
 
 ## Bluetooth stack audit (2026-07-15) — findings kept, code REVERTED
 
-Full read-only audit of `src/bt_hid/**`. **The six rate-limits described below were reverted along
+Full read-only audit of `firmware/src/hid_host/**`. **The six rate-limits described below were reverted along
 with everything else; the tree does not contain them.** They are recorded as findings, not fixes.
 
 ⚠️ **Read the stdio correction in the BOOTSEL entry above first.** This audit was framed around
@@ -712,13 +712,13 @@ stream) is not designed yet; flagged as the next real design question, not block
 gathering. See `docs/switch2-joycon2/protocol.md` "Open questions."
 
 **Update, same day — Joy-Con 2 Stage B+C implemented, both boards build clean, 32/32 host-side
-golden tests pass.** New `include/switch_joycon2.h`/`switch_joycon2_encode.h` +
-`src/switch_joycon2/switch_joycon2.c`/`switch_joycon2_encode.c`, templated closely from
+golden tests pass.** New `firmware/src/console/joycon2/switch_joycon2.h`/`switch_joycon2_encode.h` +
+`firmware/src/console/joycon2/switch_joycon2.c`/`switch_joycon2_encode.c`, templated closely from
 `switch_gc.h`/`.c`. `USB_PERSONALITY_JOYCON2_L`/`_R` are now `true` in `usb_mode_cycle.c` — the BOOTSEL
 mode-cycle is Pro2 → GameCube → Joy-Con2 Left → Joy-Con2 Right → Config. What's solid: USB device/config/HID Report
 descriptors for both sides are the real Confirmed bytes from this session's captures; the input
 report encoders (report `0x07`/`0x08` structured, report `0x05` shared) implement the full
-Confirmed field/button layout from `ndeadly`'s docs, verified by `tools/test_switch_joycon2_report.c`
+Confirmed field/button layout from `ndeadly`'s docs, verified by `tests/firmware/test_switch_joycon2_report.c`
 (32 checks, all passing) the same way `switch_gc_encode.c` has its own golden tests. What's
 Hypothesis, matching exactly the evidence tier GameCube's own Stage D started at before hardware
 testing corrected it: the EP0 identity handshake bytes, the vendor bulk command responses beyond
@@ -757,7 +757,7 @@ Capture, and C all already worked correctly with zero new code — Joy-Con2's en
 pipeline (`ns2_seam.c`'s `router_submit_input()`), just side-gated. The one genuine gap: **SL/SR**,
 real physical rail buttons on both Joy-Con units with no Pro2/GameCube equivalent, hardcoded to 0
 and explicitly marked "not sourced" in the encoder. Fixed: new `SWITCH_EXTRA_SL`/`SR` bits
-(`include/switch_pro.h`), wired into both the structured report 7/8 encoder and the shared report
+(`firmware/src/console/pro/switch_pro.h`), wired into both the structured report 7/8 encoder and the shared report
 `0x05` encoder (`switch_joycon2_encode.c`), sourced by reinterpreting the existing
 `NS2_DST_GL`/`NS2_DST_GR` destinations as SL/SR whenever a Joy-Con2 personality is active
 (`ns2_seam.c`'s `ns2_apply_dst()`, gated the same way GameCube's own `gc_active` analog-fold
@@ -768,7 +768,7 @@ instead drive a real Joy-Con control here. Pro2/GameCube mode unaffected (gated 
 Switch's "sideways" single-Joy-Con reinterpretation is entirely console-side software — this
 project only needs to report physical button positions correctly, exactly as a genuine Joy-Con
 does, with no rotation/remap layer of its own. Full writeup:
-`docs/switch2-joycon2/mapping.md`. Host-tested: `tools/test_switch_joycon2_report.c`, 43/43 checks
+`docs/switch2-joycon2/mapping.md`. Host-tested: `tests/firmware/test_switch_joycon2_report.c`, 43/43 checks
 (8 new SL/SR cases added). Both boards build clean. **Not yet hardware-tested.**
 
 **Update, same day — Config mode is no longer terminal; BOOTSEL hold now exits it live back to
@@ -782,7 +782,7 @@ BOOTSEL_HOLD detection while `g_usb_config_mode` is true — only the pairing/wi
 `!NS2_PRO` (Switch-1-only) builds are unaffected — no cycle exists there, so this doesn't change
 that build's behavior at all. Full cycle is now `Pro2 → GameCube → Joy-Con2 Left → Joy-Con2 Right →
 Config → (BOOTSEL hold) → Pro2`, a closed loop; power-cycle/reset still also returns to Pro2
-unconditionally, as an independent recovery path. Host-tested: `tools/test_usb_mode_cycle.c`,
+unconditionally, as an independent recovery path. Host-tested: `tests/firmware/test_usb_mode_cycle.c`,
 11/11 checks (wrap assertion rewritten). Both boards build clean. **Not yet hardware-tested.**
 
 **Update, same day — first hardware test, and a real bug found + fixed.** The Joy-Con2(L)
@@ -967,7 +967,7 @@ computation has a local defect, but it does **not** validate this repo's report-
 semantics (accumulator vs. bounded sample, still open). Per explicit direction: stopped treating
 report 0x09 as a mostly-understood encoder needing another mathematical fix. **New work this
 pass:** a non-invasive, timestamped raw-capture facility for the genuine controller's **BLE**
-traffic (`src/bt_hid/sw2_capture.c`, config-mode `sw2cap on/off/stat` commands) — closes a
+traffic (`firmware/src/diagnostics/sw2_capture.c`, config-mode `sw2cap on/off/stat` commands) — closes a
 concrete, named blind spot (`switch2_ble.c` receives but never reads report bytes 16-59, where
 motion data lives per third-party decodes) without changing any parsing/routing behavior. Full
 field-level inventory (confirmed/strong-evidence/hypothesis/unknown), a controlled experiment
@@ -1159,7 +1159,7 @@ controller; no real amiibo tag transaction observed in any capture this project 
 **Stub-driver polish pass, 2026-07-12 — NFC `dir` fix, audio-stub hardening, poll-rate bump.**
 Gyro/report-0x09 stays paused (unchanged); this pass swept other documented "unknown/stub"
 surfaces instead of leaving them idle. Three independent, build-clean changes to
-`src/switch_pro2/switch_pro2.c`:
+`firmware/src/console/pro2/switch_pro2.c`:
 1. **NFC response `dir` byte fixed for bare acks** — closes the validation target identified
    2026-07-10 (`nfc-protocol-inventory.md` §2.3): `ns2_dispatch()` now sends `dir=0x04` (not the
    previous unconditional `0x01`) for NFC (`cmd=0x01`) responses with no payload, matching the
@@ -1229,7 +1229,7 @@ objective** — see `docs/switch2/audio-passthrough-research.md`.
 
 **Stereo HD-rumble amplitude, same day, next — real capability gap closed, no new hardware
 needed.** Surveying `unmapped-features.md` for the next bounded polish item after the audio
-research found that joypad-os's `feedback_rumble_t` (`src/bt_hid/core/services/players/feedback.h`)
+research found that joypad-os's `feedback_rumble_t` (`firmware/src/hid_host/core/services/players/feedback.h`)
 already carries independent `left`/`right` motor amplitudes — and even adaptive-trigger fields —
 but this repo's cross-core `report.c` seam collapsed HD rumble to one shared scalar before it ever
 reached that richer API, so every joypad-os driver with true per-motor output (DualSense, Xbox)
@@ -1250,7 +1250,7 @@ two-day-old **link failure**: `config.c`'s gyro debug commands (`cmd_imu`/`cmd_i
 2026-07-10) call `switch_pro2.c`'s `ns2_dbg_*` functions with no `#ifdef NS2_PRO` guard anywhere —
 harmless under the default `NS2_PRO=ON` build (those functions exist), but `-DNS2_PRO=OFF` links
 against nothing, since `switch_pro2.c`'s entire body is `#ifdef NS2_PRO`. Confirmed via
-`git show HEAD:src/config.c` that this predates this session by two days — `build.ps1` never
+`git show HEAD:firmware/src/settings/config.c` that this predates this session by two days — `build.ps1` never
 exercises `NS2_PRO=OFF`, so it went unnoticed. Fixed with matching guards on the two command
 functions and their dispatch-table entries; both configurations now verified building clean.
 
@@ -1630,7 +1630,7 @@ since `bootsel.c`'s existing `hold_fired` latch already satisfied every "fires o
 tap" requirement. **Product decision, correcting Stage A's own earlier recommendation**: personality
 selection is volatile (not persisted to flash, no `CONFIG_VERSION` bump) — every boot starts as Pro
 Controller 2, and a ~5s BOOTSEL hold live-cycles Pro2 → GameCube → CDC config (terminal), reusing the
-existing disconnect/reconnect re-enumeration mechanism verbatim. New `src/switch_gc/switch_gc.c`
+existing disconnect/reconnect re-enumeration mechanism verbatim. New `firmware/src/console/gamecube/switch_gc.c`
 module: Confirmed byte-exact device/config descriptors (promoted from Strong to Confirmed this same
 pass — see below), Stage-B-scope stubs everywhere else, each explicitly documented with its own
 evidence tier so nothing Strong-or-weaker gets silently treated as Confirmed. Centralized every
@@ -1639,7 +1639,7 @@ control, mount, HID get/set report) into a personality dispatcher in `usb_descri
 fixed a real latent bug in the process (the MS-OS-1.0 WinUSB string was gated only on "not config
 mode," so it would have incorrectly handed GameCube mode Pro2's WinUSB compat-ID binding). Two new
 pure-logic modules (`usb_mode_cycle.c`, no pico-sdk dependency) are host-compilable and
-host-tested (`tools/test_usb_mode_cycle.c`, `gcc -DNS2_PRO=1`) — confirms the cycle order, that the
+host-tested (`tests/firmware/test_usb_mode_cycle.c`, `gcc -DNS2_PRO=1`) — confirms the cycle order, that the
 reserved Joy-Con 2 slot is transparently skipped, and that config mode is a genuine fixed point.
 `tools/verify_gc_descriptors.py` independently re-transcribes the expected descriptor bytes (not
 copied from the C source) and diffs them against `switch_gc.c` — passes. Also this pass: decoding
@@ -1703,7 +1703,7 @@ accepting the existing "opaque intensity, fixed safe default" Stage E recommenda
 **2026-07-13, same day — Stage C started (report `0x0A` construction); Stage E given a provisional,
 explicitly-non-final implementation.** Per explicit project-owner direction ("proceed with Stage B
 [i.e. treat it as closed] now; further rumble research would be premature"): `switch_gc_build_report()`
-(new, `src/switch_gc/switch_gc.c`) constructs the full 63-byte report `0x0A` body for every field the
+(new, `firmware/src/console/gamecube/switch_gc.c`) constructs the full 63-byte report `0x0A` body for every field the
 shared `switch_pro_input_t` struct already carries — mirrors `switch_pro2.c`'s own `ns2_build_report()`
 conventions exactly (same source struct, same packed-12-bit stick passthrough, same
 `tud_hid_n_report(instance, id, buf, 63)` call shape). Correctly hardcodes the Right/Left-Stick-click
@@ -1728,11 +1728,11 @@ evidence, not fabricated.** Five phases, all host-tested and build-verified, **n
 hardware-validated**:
 
 - **Encoder extracted + completed.** `switch_gc_encode_report()` moved to its own zero-dependency
-  file (`src/switch_gc/switch_gc_encode.c`, mirroring `usb_mode_cycle.c`'s pattern) and now encodes
+  file (`firmware/src/console/gamecube/switch_gc_encode.c`, mirroring `usb_mode_cycle.c`'s pattern) and now encodes
   native Z, independent L/R trigger detents, and continuous analog L/R trigger — closing every gap
   the previous pass had left. Report counter is now module-static and reset by
   `switch_gc_init()/reset()/mount()` instead of living forever as a function-static. Ten golden
-  tests (`tools/test_switch_gc_report.c`) all pass.
+  tests (`tests/firmware/test_switch_gc_report.c`) all pass.
 - **Shared input model extended**: `switch_pro_input_t` gained `left_trigger`/`right_trigger`
   (continuous 0-255) and `gc_extra` (`GC_MASK_Z`/`L_DETENT`/`R_DETENT`) — always present (not
   `#ifdef NS2_PRO`-gated) so the struct layout is identical across build configs; Pro2/Switch 1
@@ -1760,7 +1760,7 @@ hardware-validated**:
   always 0, real ID inline at buffer[0] — the transport this device's descriptors actually declare
   an endpoint for) but wrong for control `SET_REPORT` (report_id carries the real value separately,
   with a matching leading buffer byte already stripped). Fixed via a new pure `hid_out_normalize()`
-  helper (`src/hid_out_normalize.c`, 7 host tests, all pass), shared by both Pro2's and GameCube's
+  helper (`firmware/src/app/hid_out_normalize.c`, 7 host tests, all pass), shared by both Pro2's and GameCube's
   rumble handlers — both `ns2_hid_out_report()`'s and `switch_gc_hid_out_report()`'s signatures
   changed to take an already-normalized `(report_id, data, len)` triple.
 - **Minimum Stage D streaming gate implemented, Confirmed (not Strong) evidence.** Re-mining this
@@ -1830,7 +1830,7 @@ a real Switch 2. Read `switch_pro2.c`'s complete `ns2_dispatch()` for comparison
 vibration, and anything else"), whereas GC's dispatcher stayed completely silent for anything
 outside the 0x03 family. Hypothesis: a real console may wait for a response to every command
 before treating a device as recognized, while Steam (which sends a much smaller subset) doesn't
-care. **Fixed**: `switch_gc_vendor_dispatch()` (`src/switch_gc/switch_gc.c`) extended to cover the
+care. **Fixed**: `switch_gc_vendor_dispatch()` (`firmware/src/console/gamecube/switch_gc.c`) extended to cover the
 same command families Pro2 handles — SPI/memory reads (`0x02`, sourced from a new
 `switch_gc_mem_read()` using the same identity bytes already served over EP0, 0xFF elsewhere),
 feature flags (`0x0C`, GC's own documented value `0x27`), Bluetooth-pairing-shaped commands
@@ -1876,7 +1876,7 @@ wouldn't need it. This is very likely the actual reason the console's handshake 
 ~9+ commands including this exact family: pairing fails silently, so the console never proceeds
 to select an input report. **Fixed**: extracted `switch_pro2.c`'s already-hardware-validated
 AES-128/LTK-derivation pairing crypto (previously private/static) into a shared, host-tested
-module (`src/ns2_pairing_crypto.c`, `include/ns2_pairing_crypto.h` — verified against the
+module (`firmware/src/bluetooth/ns2_pairing_crypto.c`, `firmware/src/bluetooth/ns2_pairing_crypto.h` — verified against the
 standard FIPS-197 AES test vector, independent of anything Nintendo-specific), refactored Pro2 to
 use it (byte-for-byte identical behavior, zero risk to its own proven pairing), and wired real
 crypto into GC's `0x15` dispatch. GC's own "public device key" constant is an explicit
@@ -1936,7 +1936,7 @@ ndeadly's documented report-`0x0A` button table, which this encoder had followed
 **Fixed** by applying the inverse rotation: Z now written to byte0 `0x20` (was `0x10`), L-detent
 to byte0 `0x10` (was byte1 `0x20`), R-detent to byte1 `0x10` (was byte0 `0x20`), and
 `SWITCH_MASK_ZL` to byte1 `0x20` (was byte1 `0x10`) — see the comment block in
-`src/switch_gc/switch_gc_encode.c` for the full derivation. All 12 golden-test assertions touching
+`firmware/src/console/gamecube/switch_gc_encode.c` for the full derivation. All 12 golden-test assertions touching
 these four bits updated to match (76/76 checks still pass); report `0x05`'s encoder is untouched
 (it has no bit position for these GC-native controls at all, so it was never in scope). Both boards
 rebuilt clean, only `switch_gc_encode.c` recompiled. **Not yet re-tested against a real console** —
@@ -1964,7 +1964,7 @@ D-pad, and sticks worked (shared generic code path), but shoulder buttons and tr
 — **Confirmed** the Pro2-style pairing (shoulders→plain L/R, trigger analog fold→ZL/ZR) is exactly
 backwards for GameCube mode, which has no plain-L/R output bit at all (dead) and no ZR bit either
 (only Z, which displays as "ZR"). **Fixed** in `router_submit_input()`
-(`src/bt_hid/ns2_seam.c`): for any device *without* `gc_has_native_layout` (i.e. every controller
+(`firmware/src/input/ns2_seam.c`): for any device *without* `gc_has_native_layout` (i.e. every controller
 except the Modkit, whose own real per-button signals are untouched), shoulder LB/RB now map to
 `SWITCH_MASK_ZL`/`GC_MASK_Z`, and analog trigger passthrough (already unconditional) gets a new
 digital-detent synthesis at a high press threshold (`>224/255`, flagged Hypothesis — no real
@@ -2057,7 +2057,7 @@ design (resend only on detected change, arm a ~10-minute hardware sustain per tr
 xpadneo's own convention), a skipped "off" observation leaves the physical motor coasting on
 whatever "on" trigger was last actually observed — a well-evidenced explanation for "fires
 nonstop, then randomly stops" that has nothing to do with the rumble byte decode itself. **Fixed**
-by adding a dedicated, much faster timer (`RUMBLE_TICK_MS = 3`, `src/bt_hid/ns2_bt_host.c`) purely
+by adding a dedicated, much faster timer (`RUMBLE_TICK_MS = 3`, `firmware/src/bluetooth/ns2_bt_host.c`) purely
 to poll `bthid_task()` more often — deliberately not by shortening `CONTROL_TICK_MS` itself, since
 `control_tick`'s value is baked into every LED blink-rate calculation in that same handler; a
 separate timer avoids any risk of regressing LED behavior for a fix that's specific to rumble
@@ -2171,8 +2171,8 @@ since `PROMPT.md` itself separately requires these invariants "regardless of roo
    only zeroing the motor magnitude while leaving `pulse_sustain_10ms=0xFF`/`loop_count=0xEB`
    armed — directly mirroring xpadneo's own fix for the same bug class. Costs nothing and is
    strictly more correct regardless of whether it's confirmed to be *this* project's exact trigger.
-2. **A monotonic rumble generation counter** (`report_get_rumble_gen()`, `include/report.h`/
-   `src/report.c`; consumed in `ns2_seam.c`'s `feedback_get_state()`) replaces plain left/right
+2. **A monotonic rumble generation counter** (`report_get_rumble_gen()`, `firmware/src/app/report.h`/
+   `firmware/src/app/report.c`; consumed in `ns2_seam.c`'s `feedback_get_state()`) replaces plain left/right
    value comparison for dirty-flag detection — this is the exact mechanism `PROMPT.md` itself
    names ("a monotonic rumble generation counter consumed exactly once per change") for its
    explicitly-flagged concern that faster polling alone (the seventeenth pass's fix) cannot
@@ -2241,7 +2241,7 @@ small gameplay rumbles becoming one continuous buzz). The nineteenth/twentieth p
 fixes (Xbox stop-bit clearing, generation counter, shortened envelope) remain independently correct
 and necessary — they govern how the *trigger* is delivered and held once identified, which matters
 regardless of which upstream byte the trigger comes from — but the trigger itself was being
-misidentified this whole time. **Fixed**: `switch_gc_hid_out_report()` (`src/switch_gc/switch_gc.c`)
+misidentified this whole time. **Fixed**: `switch_gc_hid_out_report()` (`firmware/src/console/gamecube/switch_gc.c`)
 now reads `data[1]` as a proper state enum (`gc_rumble_state_t`) instead of `data[0]` as amplitude;
 `tools/gcusb`'s `gcusb_build_rumble_data()` updated to emit the corrected wire format, and
 `rumble-sweep` repurposed from a meaningless "amplitude sweep" into a toggle-cadence test (the
@@ -2369,7 +2369,7 @@ capture instead. See `docs/switch2/ble-controller-protocol-inventory.md`.
 | Area | Status | Notes |
 |---|---|---|
 | Build system | ✅ | Both boards build clean from one tree; `build.ps1`. bluepad32 removed from CMake. **2026-07-12:** the `-DNS2_PRO=OFF` (plain Switch-1) configuration had silently failed to *link* since 2026-07-10 (`config.c`'s gyro debug commands called NS2-only functions with no guard) — `build.ps1` only exercises the default `NS2_PRO=ON` config, so this went unnoticed for two days. Fixed (guarded); now explicitly re-verified alongside every default build going forward. |
-| Bluetooth stack | ✅ | Vendored joypad-os bthid (`src/bt_hid`) + BTstack/CYW43. All vendor drivers enabled. |
+| Bluetooth stack | ✅ | Vendored joypad-os bthid (`firmware/src/hid_host`) + BTstack/CYW43. All vendor drivers enabled. |
 | Switch 2 USB identity | ✅ | Composite IAD device; EP0 vendor handshake byte-exact vs a real PC2; console accepts it. |
 | Button/stick output | ✅ | report 0x09 (console) + report 0x05 (PC). GL/GR/C confirmed on-console. 1000 Hz poll (bInterval 1, 2026-07-12 — 🔵 deviation from genuine 250 Hz, untested on console). |
 | Controllers | ✅ | DualSense/DualSense Edge, Xbox Series/Elite 2, Switch/8BitDo/etc. via joypad-os drivers. |
@@ -2416,7 +2416,7 @@ capture instead. See `docs/switch2/ble-controller-protocol-inventory.md`.
   2026-07-10 to systematic BLE reverse-engineering of the genuine controller**, closing the
   concrete blind spot where `switch2_ble.c` receives but never reads report bytes 16-59 (where
   third-party decodes place motion data): a new non-invasive, timestamped raw-capture facility
-  (`src/bt_hid/sw2_capture.c`, config-mode `sw2cap on/off/stat`) plus a full field-level inventory,
+  (`firmware/src/diagnostics/sw2_capture.c`, config-mode `sw2cap on/off/stat`) plus a full field-level inventory,
   controlled experiment matrix, and BLE-vs-USB evidence comparison — see
   `docs/switch2/ble-controller-protocol-inventory.md`. **No BLE capture has been run yet.**
   A promising but unproven (v0) USB relay tool, `Dycool/Usb-relay-for-NS`, remains the best

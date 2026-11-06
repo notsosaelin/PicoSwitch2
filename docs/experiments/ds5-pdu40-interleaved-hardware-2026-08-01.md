@@ -202,7 +202,7 @@ acceleration vector by 5.23% at every `0x1E`/`0x28` boundary. The earlier text
 above correctly identified and removed the second divide-by-two, but its
 `input * 256` endpoint was not yet cross-representation coherent.
 
-`tools/test_ns2_motion40_coherence.py` now compiles the actual C translators,
+`tests/tools/test_ns2_motion40_coherence.py` now compiles the actual C translators,
 drives them with a deterministic 800 Hz physical trajectory, and independently
 decodes the resulting mixed stream in Python. It checks one shared PDU clock,
 the prefix at its claimed epoch, gyro area against the source and carrier

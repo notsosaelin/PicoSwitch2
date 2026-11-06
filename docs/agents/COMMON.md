@@ -16,16 +16,16 @@ real hardware, plus documentation good enough to be the reference implementation
 
 ```
 physical controller / Android handheld
-        ↓  vendored joypad-os bthid driver (src/bt_hid/bt/bthid/devices/…)
+        ↓  vendored joypad-os bthid driver (firmware/src/hid_host/bt/bthid/devices/…)
    input_event_t                     unified, shared interchange units
-        ↓  src/bt_hid/ns2_seam.c     the ONE bridge into this project's own state
-   switch_pro_input_t                cross-core seam (src/report.c seqlock)
-        ↓  src/switch_pro2/          console-facing personality, USB core0
+        ↓  firmware/src/input/ns2_seam.c     the ONE bridge into this project's own state
+   switch_pro_input_t                cross-core seam (firmware/src/app/report.c seqlock)
+        ↓  firmware/src/console/pro2/          console-facing personality, USB core0
    Switch 2 report
 ```
 
 - Controller-specific knowledge belongs in the driver and in `ns2_motion_seam.c`.
-- Console-protocol knowledge belongs in `src/switch_pro2/` and `src/bt_hid/motion/`.
+- Console-protocol knowledge belongs in `firmware/src/console/pro2/` and `firmware/src/motion/`.
 - Anything that needs a `switch (controller_family)` inside the console-facing encoder is almost
   certainly in the wrong layer.
 
@@ -55,9 +55,9 @@ conclusion. If a hardware fact is documented, cite the document rather than rest
 ## Build and validation
 
 ```powershell
-cmake --build build\pico2_w --config Release --parallel
-cmake --build build\pico_w  --config Release --parallel
-pwsh -File tools\run_mgmt_tests.ps1        # management + Android HID contract host tests
+cmake --build firmware\build\pico2_w --config Release --parallel
+cmake --build firmware\build\pico_w  --config Release --parallel
+pwsh -File tests\run_mgmt_tests.ps1        # management + Android HID contract host tests
 ```
 
 Android companion (needs JDK 21 — Android Studio's bundled JBR is 25 and AGP rejects it):
@@ -65,11 +65,11 @@ Android companion (needs JDK 21 — Android Studio's bundled JBR is 25 and AGP r
 ```powershell
 $env:JAVA_HOME="C:\Program Files\Eclipse Adoptium\jdk-21.0.12.8-hotspot"
 $env:ANDROID_HOME="$env:LOCALAPPDATA\Android\Sdk"
-cd android\companion; .\gradlew.bat --offline testDebugUnitTest
+cd companions\android; .\gradlew.bat --offline testDebugUnitTest
 ```
 
 Known pre-existing break: the `build\pico_w_switch1` configuration (`NS2_PRO=OFF`) does not
-compile — `src/config.c` references `g_usb_reenumerate_request_pending` outside an `NS2_PRO`
+compile — `firmware/src/settings/config.c` references `g_usb_reenumerate_request_pending` outside an `NS2_PRO`
 guard. It fails identically at `HEAD` and is unrelated to motion or rumble.
 
 Always separate **LOCALLY VERIFIED** from **REQUIRES HARDWARE TEST** in any report. Never claim

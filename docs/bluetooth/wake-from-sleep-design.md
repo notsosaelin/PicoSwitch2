@@ -64,8 +64,8 @@ redacted in both docs, but the *field* is fully understood). PDU type is plain `
 structure is `0x06` (`GeneralDiscovery | BrEdrNotSupported`) — both standard, already
 straightforward for BTstack to construct.
 
-The implementation in `src/ns2_wake_protocol.c` constructs this byte-exact 31-byte advertising
-payload. `tools/test_ns2_wake_protocol.c` locks the output to the independently hardware-tested
+The implementation in `firmware/src/bluetooth/ns2_wake_protocol.c` constructs this byte-exact 31-byte advertising
+payload. `tests/firmware/test_ns2_wake_protocol.c` locks the output to the independently hardware-tested
 Joy-Con 2 example and also validates malformed pairing-data rejection.
 
 ## 3. How a genuine controller triggers this itself

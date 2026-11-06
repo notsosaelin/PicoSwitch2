@@ -38,7 +38,7 @@ Touch profiles, control catalogs, authored default layouts, instance documents, 
 libraries, composition, editor operations, undo/redo, toolbar placement, alignment/snapping, audit
 rules, schema metadata and the storage interfaces belong to `:bridge-core`. Android owns only Canvas
 rendering, Compose pointer/editor UI, lifecycle integration and the `SharedPreferences` backend. The
-module's path under `android/companion/` is historical; do not create a duplicate shared layout
+module's path under `companions/android/` is historical; do not create a duplicate shared layout
 module. `TouchProfileLibraryJsonCodec` names the Kotlin JSON implementation explicitly—the document
 schema is portable, kotlinx.serialization is not a cross-platform API.
 
@@ -67,7 +67,7 @@ key. Do not add a schema-1 writer.
 
 ## What it is
 
-An ordinary no-root Android app (`android/companion/`) that registers as a Bluetooth HID **device**
+An ordinary no-root Android app (`companions/android/`) that registers as a Bluetooth HID **device**
 using the public API-28+ `BluetoothHidDevice` profile and streams the handheld's built-in controls,
 IMU and battery to PicoSwitch2, which remains the console-facing protocol owner. Reference hardware
 is an **AYN Thor** (Android 13 / API 33, Qualcomm stack, built-in controls exposed as
@@ -109,7 +109,7 @@ Rule and history: [`../bridge/PROTOCOL.md`](../bridge/PROTOCOL.md) §1.
 
 ## Wire contract
 
-Single source of truth: `tools/fixtures/android_controller_hid.h`. The Kotlin encoder mirrors it and
+Single source of truth: `contracts/android_controller_hid.h`. The Kotlin encoder mirrors it and
 is pinned by golden tests; the firmware identifies the bridge by an **exact** match on the
 descriptor bytes, never by VID/PID (a handheld reports its phone identity).
 

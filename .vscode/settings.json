@@ -1,4 +1,6 @@
 {
+    "cmake.sourceDirectory": "${workspaceFolder}/firmware",
+    "cmake.buildDirectory": "${workspaceFolder}/firmware/build",
     "cmake.showSystemKits": false,
     "cmake.options.statusBarVisibility": "hidden",
     "cmake.options.advanced": {
@@ -42,9 +44,5 @@
     "raspberry-pi-pico.cmakeAutoConfigure": false,
     "raspberry-pi-pico.useCmakeTools": true,
     "raspberry-pi-pico.cmakePath": "${HOME}/.pico-sdk/cmake/v4.3.4/bin/cmake",
-    "raspberry-pi-pico.ninjaPath": "${HOME}/.pico-sdk/ninja/v1.13.2/ninja",
-    "python.analysis.extraPaths": [
-        "c:\\Users\\notso\\.vscode\\extensions\\benpaddlejones.pico-bridge-2.3.46\\emulator\\mock\\typings",
-        "c:\\Users\\notso\\.vscode\\extensions\\benpaddlejones.pico-bridge-2.3.46\\emulator\\mock\\micropython"
-    ]
+    "raspberry-pi-pico.ninjaPath": "${HOME}/.pico-sdk/ninja/v1.13.2/ninja"
 }

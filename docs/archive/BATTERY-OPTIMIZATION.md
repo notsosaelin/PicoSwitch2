@@ -176,8 +176,8 @@ slightly under-scales vs `*12.5`. Legacy path, low priority.
 - **Charging fidelity:** plug/unplug each pad; confirm the console's charging indicator follows.
 
 ## 9. Sources
-- `src/controller_battery.c`, `include/controller_battery.h`; decoders' call sites in
-  `src/bt_hid/bt/bthid/devices/vendors/{sony,nintendo}/*.c`; encoder in `src/switch_pro2/switch_pro2.c`
+- `firmware/src/input/controller_battery.c`, `firmware/src/input/controller_battery.h`; decoders' call sites in
+  `firmware/src/hid_host/bt/bthid/devices/vendors/{sony,nintendo}/*.c`; encoder in `firmware/src/console/pro2/switch_pro2.c`
   (incl. `0x0B` at ~L744) and the per-personality encoders.
 - Linux: `drivers/hid/hid-playstation.c` (DS4/DS5), `hid-sony` (`sixaxis_battery_capacity`),
   `hid-wiimote-modules.c` (Wiimote + Wii U Pro).

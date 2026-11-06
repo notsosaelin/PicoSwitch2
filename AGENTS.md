@@ -233,14 +233,17 @@ When a subsystem has already survived hardware validation, require evidence befo
 
 Important locations include:
 
-- `src/` — firmware implementation
-- `src/bt_hid/` — Bluetooth HID controller handling and translation
-- `src/bt_hid/motion/` — translated/native Switch 2 motion implementation
-- `src/switch_pro2/` — Pro Controller 2 console-facing behavior
-- `android/companion/` — Android companion and platform-neutral bridge modules
-- `windows/companion/` — Windows companion (C#/WinUI 3); see `WINDOWS_PASS.md` for the design
+- `firmware/` — adapter firmware; module map in `firmware/README.md`
+- `firmware/src/hid_host/` — vendored joypad-os Bluetooth HID host and controller drivers
+- `firmware/src/input/` — source-controller seam into the shared Switch input state
+- `firmware/src/motion/` — translated/native Switch 2 motion implementation
+- `firmware/src/console/pro2/` — Pro Controller 2 console-facing behavior
+- `companions/android/` — Android companion and platform-neutral bridge modules
+- `companions/windows/` — Windows companion (C#/WinUI 3); see `companions/windows/docs/README.md`
 - `web/` — browser management interface
-- `tools/` — host tests, UART tooling, capture tooling, fixtures, and analysis
+- `contracts/` — wire contracts shared verbatim by firmware, companions and tests
+- `tests/` — host tests (`tests/firmware/`), tool tests (`tests/tools/`), fixtures; see `tests/README.md`
+- `tools/` — UART, capture, lab and analysis tooling
 - `docs/architecture/` — architecture documentation
 - `docs/bluetooth/` — Bluetooth/controller documentation
 - `docs/bridge/` — companion bridge protocol/backend documentation
@@ -252,7 +255,7 @@ Important locations include:
 - `docs/status/` — compatibility/current validation matrices
 - `docs/agents/` — short specialist briefs
 - `docs/archive/` — historical documentation
-- `dumps/` — captures and derived research artifacts
+- `dumps/` — git-ignored local lab output; captures a test needs are promoted to `tests/fixtures/captures/`
 
 Read `docs/README.md` before inventing a new documentation location.
 
@@ -309,15 +312,15 @@ The Windows build helper uses the Raspberry Pi Pico SDK/toolchain documented by 
 On a fresh workstation, initialize build directories with:
 
 ```powershell
-.\build.ps1 pico2_w
-.\build.ps1 pico_w
+.\firmware\build.ps1 pico2_w
+.\firmware\build.ps1 pico_w
 ```
 
 When configured build directories already exist, prefer incremental builds:
 
 ```powershell
-cmake --build build\pico2_w --config Release --parallel
-cmake --build build\pico_w --config Release --parallel
+cmake --build firmware\build\pico2_w --config Release --parallel
+cmake --build firmware\build\pico_w --config Release --parallel
 ```
 
 Do not delete or reconfigure known-good build directories without a reason.
@@ -331,13 +334,13 @@ For significant shared firmware changes, both supported production board builds 
 Run compiled host tests with:
 
 ```powershell
-pwsh -File tools\run_host_tests.ps1
+pwsh -File tests\run_host_tests.ps1
 ```
 
 That is the authoritative command. It recreates `build/host-tests` empty, builds every declared host
 test from current source, runs only what it just built, and reports a total derived from that run.
-`tools/run_host_tests.ps1` owns the single build manifest; `-Group` and `-Filter` select a subset
-(`tools/run_mgmt_tests.ps1` is the `management` group plus its Python suites).
+`tests/run_host_tests.ps1` owns the single build manifest; `-Group` and `-Filter` select a subset
+(`tests/run_mgmt_tests.ps1` is the `management` group plus its Python suites).
 
 Do NOT enumerate `build\host-tests\*.exe` and run whatever is present. That was the previous
 instruction here, and it was wrong: only 23 of the repository's 79 host-test sources had a build
@@ -345,11 +348,11 @@ recipe, so the directory accumulated executables from ad-hoc `gcc` invocations o
 Totals derived that way described the directory, not the source tree. **A stale executable must
 never count as a passing test.**
 
-Every `tools/test_*.c` must appear either in the manifest or in the runner's `$notHostTests` table
+Every `tests/firmware/test_*.c` must appear either in the manifest or in the runner's `$notHostTests` table
 with a reason. An unlisted source fails the run, so a test cannot silently stop being built.
 
 `build/host-tests` is owned by whichever runner last executed, and each one recreates it empty. So
-after a scoped run — `-Group`, `-Filter`, or `tools/run_mgmt_tests.ps1` — the directory holds only
+after a scoped run — `-Group`, `-Filter`, or `tests/run_mgmt_tests.ps1` — the directory holds only
 that subset. **Its contents are never an authoritative count.** Only the total printed by the run
 that built them is. Re-run the full suite before quoting a number.
 
@@ -357,14 +360,11 @@ Report the result as "N/N declared active host-test targets rebuilt from current
 with the count of sources classified outside the suite. Do not write "all tests pass": the excluded
 sources include genuinely uncovered code — see [`docs/host-test-inventory.md`](docs/host-test-inventory.md).
 
-Run relevant Python test suites as required by the changed subsystem.
-
-Useful general suites include:
+Run the tool tests (Python, JavaScript and PowerShell, under `tests/tools/`) with:
 
 ```powershell
-python tools\test_ns2_trace.py
-python tools\test_ns2_nfc_semantics.py
-python tools\test_amiibo_corpus.py
+python tests\run_tool_tests.py            # all
+python tests\run_tool_tests.py nfc        # only files whose name contains "nfc"
 ```
 
 Run this one for any change to the build system, `btstack_config.h`, the HID Host
@@ -372,7 +372,7 @@ shim, or Bluetooth security/disconnect wiring. It guards the Pico SDK 2.3.0 /
 BTstack 1.8.2 dependency contract, where every wrong answer still compiles:
 
 ```powershell
-python tools\test_btstack_dependency_contract.py
+python tests\tools\test_btstack_dependency_contract.py
 ```
 
 Do not rely on this short list as the complete subsystem test inventory.
@@ -393,8 +393,8 @@ For releaseable firmware artifacts, preserve the install-reset marker.
 Current verification tooling:
 
 ```powershell
-python tools\verify_install_reset_marker.py build\pico2_w\PicoSwitchWGA-pico2_w.bin --flash-size 0x400000
-python tools\verify_install_reset_marker.py build\pico_w\PicoSwitchWGA-pico_w.bin --flash-size 0x200000
+python tools\verify_install_reset_marker.py firmware\build\pico2_w\PicoSwitchWGA-pico2_w.bin --flash-size 0x400000
+python tools\verify_install_reset_marker.py firmware\build\pico_w\PicoSwitchWGA-pico_w.bin --flash-size 0x200000
 ```
 
 Failure here is a release blocker unless the current task deliberately changes the install/reset design.
@@ -465,20 +465,20 @@ Do not interpret a firmware/application contract mismatch as evidence of a bridg
 
 # Windows Companion Validation
 
-If the task changes the Windows companion under `windows/companion/`:
+If the task changes the Windows companion under `companions/windows/`:
 
-- run `windows/companion/build.ps1`, which builds and tests every project except the WinUI shell and then runs the descriptor parity check
+- run `companions/windows/build.ps1`, which builds and tests every project except the WinUI shell and then runs the descriptor parity check
 - keep the two Core projects on `net9.0`; that target framework IS the guard that a Windows API cannot reach the platform-neutral layer
 - the C# side is a Level 1 reimplementation of the documented contracts, never a translation of Android repository or ViewModel code
 - UI rules live in `PicoSwitch.Companion.Services/Presentation/` as pure projections, never in a page: a rule in a
   code-behind cannot be tested, and every state the UI can reach must be reachable from a unit test
-- a protocol change must move the shared fixture and BOTH languages in the same commit; the fixtures under `tools/fixtures/` are the only anti-drift mechanism this duplication has
+- a protocol change must move the shared fixture and BOTH languages in the same commit; the fixtures under `contracts/` are the only anti-drift mechanism this duplication has
 - if `XamlCompiler.exe` fails with a bare `MSB3073 ... exited with code 1` and no message, rebuild with `-p:UseXamlCompilerExecutable=false` to get the real XAML error; a silent exit is a REPORTING failure and usually still means a genuine authoring mistake
-- MSIX packaging (`build.ps1 -Msix`) needs .NET Framework MSBuild; `windows/companion/docs/README.md` §4 records why, so it is not rediagnosed
+- MSIX packaging (`build.ps1 -Msix`) needs .NET Framework MSBuild; `companions/windows/docs/README.md` §4 records why, so it is not rediagnosed
 
 Current implementation state and the design it implements:
 
-- `windows/companion/docs/README.md`
+- `companions/windows/docs/README.md`
 - `WINDOWS_PASS.md`
 
 # Web / Management Validation
@@ -493,8 +493,8 @@ If the task changes the web portal or management protocol:
 - run `python tools/check_management_command_parity.py` whenever a command verb is added,
   renamed, or removed on either side
 
-A command reaches `handle_line()` in `src/config.c` and, separately, must be accepted by
-`config_wireless_command_allowed()` in `src/config_wireless_bridge.c`. Only the second gates BLE.
+A command reaches `handle_line()` in `firmware/src/settings/config.c` and, separately, must be accepted by
+`config_wireless_command_allowed()` in `firmware/src/management/config_wireless_bridge.c`. Only the second gates BLE.
 A verb added to the dispatcher alone compiles, passes every test, and works over USB CDC and UART
 while answering `unknown command` over BLE — so the companion, which probes capabilities by
 looking for exactly that reply, reports the feature missing and asks the user to update firmware

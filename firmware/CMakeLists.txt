@@ -1,0 +1,405 @@
+# == DO NOT EDIT THE FOLLOWING LINES for the Raspberry Pi Pico VS Code Extension to work ==
+if(WIN32)
+    set(USERHOME $ENV{USERPROFILE})
+else()
+    set(USERHOME $ENV{HOME})
+endif()
+set(sdkVersion 2.3.0)
+set(toolchainVersion 15_2_Rel1)
+set(picotoolVersion 2.3.0)
+set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
+if (EXISTS ${picoVscode})
+    include(${picoVscode})
+endif()
+# ====================================================================================
+# Target board:
+#   - Pico W   (RP2040):  -DPICO_BOARD=pico_w   (default)
+#   - Pico 2 W (RP2350):  -DPICO_BOARD=pico2_w
+# Build each board in its own build directory; the artifact is named after the
+# board (OUTPUT_NAME below) so both .uf2 files can coexist.
+set(PICO_BOARD pico_w CACHE STRING "Board type")
+
+cmake_minimum_required(VERSION 3.13)
+
+# BTSTACK_ROOT is resolved after pico_sdk_init(), where it can be checked
+# against the tree the SDK's own pico_btstack targets compile. See
+# "Canonical BTstack root" below.
+
+# initialize the SDK based on PICO_SDK_PATH
+# note: this must happen before project()
+include(pico_sdk_import.cmake)
+
+project(PicoSwitchWGA C CXX ASM)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
+
+# initialize the Raspberry Pi Pico SDK
+pico_sdk_init()
+
+# ---------------------------------------------------------------------------
+# Canonical BTstack root
+# ---------------------------------------------------------------------------
+# PicoSwitch reaches into BTstack directly in three ways: private include paths
+# (bluedroid codec headers and ${BTSTACK_ROOT}/src), the HID Host translation
+# unit it substitutes for live DualSense audio, and the BTstack internals that
+# substituted file depends on. Those must resolve the SAME tree the SDK's
+# pico_btstack_* targets compile, or headers and sources silently skew -- a
+# header/ABI mismatch that links cleanly and then misbehaves on the radio.
+#
+# The SDK resolves PICO_BTSTACK_PATH inside src/rp2_common/pico_btstack, a
+# subdirectory scope, so its value is not visible here. Reproduce its precedence
+# exactly (CMake variable, then environment, then the SDK's bundled copy) and
+# then verify the result against a source the SDK target actually builds, so a
+# future PICO_BTSTACK_PATH override cannot split the build in two silently.
+if(NOT PICO_BTSTACK_PATH)
+    if(DEFINED ENV{PICO_BTSTACK_PATH})
+        set(PICO_BTSTACK_PATH $ENV{PICO_BTSTACK_PATH})
+    else()
+        set(PICO_BTSTACK_PATH ${PICO_SDK_PATH}/lib/btstack)
+    endif()
+endif()
+file(TO_CMAKE_PATH "${PICO_BTSTACK_PATH}" BTSTACK_ROOT)
+
+get_target_property(_ps2_btstack_base_sources pico_btstack_base INTERFACE_SOURCES)
+set(_ps2_btstack_witness "${BTSTACK_ROOT}/src/hci.c")
+file(TO_CMAKE_PATH "${_ps2_btstack_witness}" _ps2_btstack_witness)
+if(NOT "${_ps2_btstack_witness}" IN_LIST _ps2_btstack_base_sources)
+    message(FATAL_ERROR
+            "BTstack root skew: PicoSwitch resolved BTSTACK_ROOT=${BTSTACK_ROOT}, "
+            "but pico_btstack_base does not compile ${_ps2_btstack_witness}. "
+            "PicoSwitch's direct BTstack includes and its hid_host.c substitution "
+            "would use a different BTstack tree than the SDK targets.")
+endif()
+message(STATUS "PicoSwitch BTstack root: ${BTSTACK_ROOT}")
+
+# Re-run configuration when a source file is added or removed. Without
+# CONFIGURE_DEPENDS, an existing build directory silently omits new modules.
+file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.c")
+add_executable(PicoSwitchWGA ${SOURCES})
+
+# Name the binary after the board so pico_w / pico2_w outputs don't clobber.
+set_target_properties(PicoSwitchWGA PROPERTIES OUTPUT_NAME "PicoSwitchWGA-${PICO_BOARD}")
+
+# Number of emulated Pro Controllers (= USB HID interfaces). Single knob shared
+# by the descriptors (usb_descriptors.c), the protocol (switch_pro.*) and TinyUSB
+# (CFG_TUD_HID in tusb_config.h). Max 4 (the Switch supports 4 players).
+target_compile_definitions(PicoSwitchWGA PRIVATE SWITCH_PRO_MAX_CONTROLLERS=4)
+
+# ---------------------------------------------------------------------------
+# Firmware build identity
+# ---------------------------------------------------------------------------
+# "What is actually flashed on this adapter?" must be answerable without
+# guessing from file modification times. A version skew between the flashed
+# firmware and the installed companion once cost a long debugging session
+# (see ../contracts/android_controller_hid.h).
+#
+# Deliberately cheap: the git short hash plus a dirty marker, resolved at
+# configure time. No timestamp -- a timestamp would make every reconfigure
+# produce a different binary for identical sources, which is a worse trade than
+# the small chance of a stale hash after a commit without reconfiguring.
+find_package(Git QUIET)
+set(PICOSWITCH_BUILD_ID "unknown")
+if(GIT_FOUND)
+    execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --short=8 HEAD
+                    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                    OUTPUT_VARIABLE PICOSWITCH_GIT_HASH
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET)
+    execute_process(COMMAND ${GIT_EXECUTABLE} status --porcelain --untracked-files=no
+                    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                    OUTPUT_VARIABLE PICOSWITCH_GIT_DIRTY
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET)
+    if(PICOSWITCH_GIT_HASH)
+        set(PICOSWITCH_BUILD_ID "${PICOSWITCH_GIT_HASH}")
+        if(NOT PICOSWITCH_GIT_DIRTY STREQUAL "")
+            # The working tree had uncommitted changes at configure time. This
+            # matters: the incident above happened while the tree was dirty, and
+            # a bare hash would have implied a clean, reproducible build.
+            set(PICOSWITCH_BUILD_ID "${PICOSWITCH_GIT_HASH}+dirty")
+        endif()
+    endif()
+endif()
+message(STATUS "PicoSwitch build identity: ${PICOSWITCH_BUILD_ID}")
+target_compile_definitions(PicoSwitchWGA PRIVATE
+    PICOSWITCH_BUILD_ID="${PICOSWITCH_BUILD_ID}")
+
+# Build target: emulate the Switch 2 Pro Controller (VID 057E / PID 2069) instead
+# of the Switch 1 Pro Controller. Adds a vendor-bulk command interface (IF1) and
+# the switch_pro2 protocol module (src/console/pro2). See docs/switch2/usb-spec.md.
+# Default ON; configure -DNS2_PRO=OFF for Switch 1 (currently broken, see STATUS.md).
+option(NS2_PRO "Emulate the Switch 2 Pro Controller (PID 0x2069)" ON)
+if(NS2_PRO)
+    target_compile_definitions(PicoSwitchWGA PRIVATE NS2_PRO=1)
+
+    # One authoritative, maintainer-selected Pro Controller 2 firmware tuple.
+    # All version-bearing protocol replies are built from these values. This
+    # makes an exact known console expectation selectable without editing C or
+    # allowing EP0 and command 0x10 to drift apart.
+    set(NS2_PRO_FIRMWARE_VERSION "2.1.4" CACHE STRING
+        "Reported Pro Controller 2 firmware version (major.minor.micro)")
+    set(NS2_PRO_BLUETOOTH_VERSION "12.0.0" CACHE STRING
+        "Reported Pro Controller 2 Bluetooth firmware version")
+    set(NS2_PRO_DSP_VERSION "0.2.3" CACHE STRING
+        "Reported Pro Controller 2 DSP firmware version")
+    option(NS2_PRO_UPDATED_STATE
+           "Expose the observed post-update flash state at 0x1FD010" ON)
+    option(NS2_UART_DIAG
+           "NS2: nonblocking UART0 diagnostics on GP0/GP1 at 115200 8N1" ON)
+    # Production builds boot with bonded/encrypted in-band BLE management
+    # available. The runtime `mgmt off` escape hatch remains RAM-only, so an
+    # ordinary reboot restores the production-on state.
+    option(NS2_MGMT_DEFAULT_ON
+           "NS2: enable bonded in-band BLE management at boot" ON)
+
+    function(ns2_parse_version version prefix)
+        string(REPLACE "." ";" parts "${version}")
+        list(LENGTH parts part_count)
+        if(NOT part_count EQUAL 3)
+            message(FATAL_ERROR "${prefix} must be major.minor.micro, got '${version}'")
+        endif()
+        foreach(index RANGE 0 2)
+            list(GET parts ${index} part)
+            if(NOT part MATCHES "^[0-9]+$")
+                message(FATAL_ERROR "${prefix} contains a non-decimal component: '${version}'")
+            endif()
+            if(part GREATER 255)
+                message(FATAL_ERROR "${prefix} components must be from 0 through 255: '${version}'")
+            endif()
+            if(index EQUAL 0)
+                set(suffix MAJOR)
+            elseif(index EQUAL 1)
+                set(suffix MINOR)
+            else()
+                set(suffix MICRO)
+            endif()
+            set(${prefix}_${suffix} ${part} PARENT_SCOPE)
+        endforeach()
+    endfunction()
+
+    ns2_parse_version("${NS2_PRO_FIRMWARE_VERSION}" NS2_PRO_FW)
+    ns2_parse_version("${NS2_PRO_BLUETOOTH_VERSION}" NS2_PRO_BT)
+    ns2_parse_version("${NS2_PRO_DSP_VERSION}" NS2_PRO_DSP)
+    target_compile_definitions(PicoSwitchWGA PRIVATE
+        NS2_PRO_FW_MAJOR=${NS2_PRO_FW_MAJOR}
+        NS2_PRO_FW_MINOR=${NS2_PRO_FW_MINOR}
+        NS2_PRO_FW_MICRO=${NS2_PRO_FW_MICRO}
+        NS2_PRO_BT_MAJOR=${NS2_PRO_BT_MAJOR}
+        NS2_PRO_BT_MINOR=${NS2_PRO_BT_MINOR}
+        NS2_PRO_BT_MICRO=${NS2_PRO_BT_MICRO}
+        NS2_PRO_DSP_MAJOR=${NS2_PRO_DSP_MAJOR}
+        NS2_PRO_DSP_MINOR=${NS2_PRO_DSP_MINOR}
+        NS2_PRO_DSP_MICRO=${NS2_PRO_DSP_MICRO})
+    if(NS2_PRO_UPDATED_STATE)
+        target_compile_definitions(PicoSwitchWGA PRIVATE NS2_PRO_UPDATED_STATE=1)
+    else()
+        target_compile_definitions(PicoSwitchWGA PRIVATE NS2_PRO_UPDATED_STATE=0)
+    endif()
+    if(NS2_UART_DIAG)
+        target_compile_definitions(PicoSwitchWGA PRIVATE NS2_UART_DIAG=1)
+    endif()
+    if(NS2_MGMT_DEFAULT_ON)
+        target_compile_definitions(PicoSwitchWGA PRIVATE NS2_MGMT_DEFAULT_ON=1)
+    endif()
+endif()
+
+# NS2 Option A: present the full retail descriptor including the 3 USB audio
+# interfaces. A PC2-specific UAC1 driver owns the two isochronous streams and
+# Feature Unit controls. Only meaningful with NS2_PRO. -DNS2_AUDIO=OFF falls
+# back to the 2-interface Option B.
+option(NS2_AUDIO "NS2: include the audio interfaces (Option A, full descriptor)" ON)
+if(NS2_PRO AND NS2_AUDIO)
+    target_compile_definitions(PicoSwitchWGA PRIVATE NS2_AUDIO=1)
+endif()
+
+# Audible DualSense Bluetooth audio requires the RP2350 memory/CPU budget and
+# is standard only on Pico 2 W. Pico W retains its validated non-audio clock,
+# memory layout, and Bluetooth scheduling.
+# The USB endpoint delivers exact 48 kHz stereo. DualSense Bluetooth consumes
+# nominal 480-sample Opus frames at an effective 45 kHz clock, so the live
+# bridge accumulates 512 real input frames and resamples them to 480 before
+# encoding, matching both DS5Dongle and daidr/dualsense-tester.
+set(NS2_DS5_AUDIO_DEFAULT OFF)
+if(PICO_PLATFORM MATCHES "^rp2350")
+    set(NS2_DS5_AUDIO_DEFAULT ON)
+endif()
+option(NS2_DS5_AUDIO
+       "NS2: Pico 2 W live USB-to-DualSense Opus bridge"
+       ${NS2_DS5_AUDIO_DEFAULT})
+set(NS2_PICO2_SYSTEM_CLOCK_MHZ "300" CACHE STRING
+    "Pico 2 W system clock in MHz; the validated standard build uses 300")
+option(NS2_DS5_AUDIO_TEST_TONE
+       "NS2: diagnostic fixed DualSense tone (no live Opus encoder)" OFF)
+if(NS2_PRO AND NS2_AUDIO AND
+   (NS2_DS5_AUDIO OR NS2_DS5_AUDIO_TEST_TONE) AND
+   PICO_PLATFORM MATCHES "^rp2350")
+    target_compile_definitions(PicoSwitchWGA PRIVATE NS2_DS5_AUDIO=1)
+
+    # Bonded DualSense reconnects are owned by BTstack's HID Host, and the live
+    # audio path needs two things that translation unit does not expose: a send
+    # entry point that refuses to overwrite a report already pending in
+    # W2_SEND_REPORT, and observation of the actual L2CAP submission. Both need
+    # private HID Host state, so build the upstream source inside our own file
+    # and remove it from pico_btstack_classic here. See
+    # cmake/btstack_hid_host_long_report.c for exactly what remains patched.
+    #
+    # (BTstack 1.8.2 widened hid_host_send_report() to a uint16_t report length
+    # upstream, so the original 547-byte-report reason for this file is gone;
+    # the pending-send guard is not.)
+    get_target_property(_ns2_btstack_classic_sources
+                        pico_btstack_classic INTERFACE_SOURCES)
+    set(_ns2_btstack_hid_host_source
+        "${BTSTACK_ROOT}/src/classic/hid_host.c")
+    file(TO_CMAKE_PATH "${_ns2_btstack_hid_host_source}"
+         _ns2_btstack_hid_host_source)
+    list(FIND _ns2_btstack_classic_sources
+         "${_ns2_btstack_hid_host_source}" _ns2_btstack_hid_host_index)
+    if(_ns2_btstack_hid_host_index EQUAL -1)
+        message(FATAL_ERROR
+                "Cannot locate ${_ns2_btstack_hid_host_source} in pico_btstack_classic. "
+                "Without the removal, upstream hid_host.c and the NS2 substitution "
+                "would both be compiled and collide at link time.")
+    endif()
+    list(REMOVE_ITEM _ns2_btstack_classic_sources
+         "${_ns2_btstack_hid_host_source}")
+    set_property(TARGET pico_btstack_classic PROPERTY INTERFACE_SOURCES
+                 "${_ns2_btstack_classic_sources}")
+    target_sources(PicoSwitchWGA PRIVATE
+                   cmake/btstack_hid_host_long_report.c)
+endif()
+
+if(PICO_PLATFORM MATCHES "^rp2350")
+    if(NS2_PICO2_SYSTEM_CLOCK_MHZ LESS 150 OR
+       NS2_PICO2_SYSTEM_CLOCK_MHZ GREATER 350)
+        message(FATAL_ERROR
+                "Pico 2 W system clock must be from 150 through 350 MHz")
+    endif()
+    if(NS2_PICO2_SYSTEM_CLOCK_MHZ GREATER 150)
+        math(EXPR NS2_PICO2_SYSTEM_CLOCK_KHZ
+             "${NS2_PICO2_SYSTEM_CLOCK_MHZ} * 1000")
+        # Keep the CYW43 PIO bus at or below its normal 75 MHz rate:
+        # 200/3 = 66.7 MHz and 300/4 = 75 MHz.
+        math(EXPR NS2_PICO2_CYW43_DIV
+             "(${NS2_PICO2_SYSTEM_CLOCK_MHZ} + 74) / 75")
+        target_compile_definitions(PicoSwitchWGA PRIVATE
+            NS2_PICO2_SYSTEM_CLOCK_KHZ=${NS2_PICO2_SYSTEM_CLOCK_KHZ}
+            CYW43_PIO_CLOCK_DIV_INT=${NS2_PICO2_CYW43_DIV})
+    endif()
+endif()
+
+if(NS2_PRO AND NS2_AUDIO AND NS2_DS5_AUDIO AND
+   PICO_PLATFORM MATCHES "^rp2350")
+    set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+    set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+    set(OPUS_FIXED_POINT OFF CACHE BOOL "" FORCE)
+    set(OPUS_ENABLE_FLOAT_API ON CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/opus EXCLUDE_FROM_ALL)
+    target_compile_definitions(PicoSwitchWGA PRIVATE NS2_DS5_AUDIO_LIVE_OPUS=1)
+    # Both controller audio formats use Opus's lower-stack CELT encoder
+    # directly. Keep these internal headers local to the firmware target.
+    target_include_directories(PicoSwitchWGA PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/opus/celt
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/opus/src)
+    # DS5Dongle's current RP2350 implementation relocates libopus code and
+    # read-only tables into SRAM. Running the encoder from XIP flash caused
+    # enough cache stalls to miss its real-time deadline even when the codec
+    # had a dedicated core. The archive is about 220 KiB in RAM; Pico 2 W has
+    # enough headroom after its codec stack and queues.
+    add_custom_command(
+        OUTPUT ${CMAKE_BINARY_DIR}/opus_ram_relocate.stamp
+        COMMAND ${CMAKE_OBJCOPY}
+                --rename-section .text=.time_critical.opus_text
+                --rename-section .rodata=.time_critical.opus_rodata
+                --rename-section .rodata.str1.4=.time_critical.opus_strings
+                $<TARGET_FILE:opus>
+        COMMAND ${CMAKE_COMMAND} -E touch
+                ${CMAKE_BINARY_DIR}/opus_ram_relocate.stamp
+        DEPENDS $<TARGET_FILE:opus>
+        COMMENT "Relocating libopus hot code and tables to SRAM"
+        VERBATIM
+    )
+    add_custom_target(opus_ram_relocate ALL
+                      DEPENDS ${CMAKE_BINARY_DIR}/opus_ram_relocate.stamp)
+    add_dependencies(PicoSwitchWGA opus_ram_relocate)
+    target_compile_definitions(PicoSwitchWGA PRIVATE
+                               NS2_DS5_AUDIO_RAM_MEM=1
+                               NS2_AUDIO_CORE1_STACK_BYTES=49152)
+    set_source_files_properties(src/audio/ds5_audio_ram_mem.c PROPERTIES
+        COMPILE_OPTIONS "-fno-builtin;-fno-tree-loop-distribute-patterns")
+    # The SDK's automatic core1 stack is too small for Opus. Disable that
+    # allocation; main.c supplies the hardware-validated 48 KiB stack from
+    # ordinary SRAM. Do not grow this statically: doing so starves BT/BOOTSEL.
+    target_compile_definitions(PicoSwitchWGA PRIVATE PICO_CORE1_STACK_SIZE=0)
+    target_link_libraries(PicoSwitchWGA opus)
+endif()
+
+if(NS2_PRO AND NS2_AUDIO AND NS2_DS5_AUDIO_TEST_TONE AND
+   PICO_PLATFORM MATCHES "^rp2350")
+    target_compile_definitions(PicoSwitchWGA PRIVATE
+                               NS2_DS5_AUDIO_TEST_TONE=1)
+endif()
+
+# NS2 diagnostic: blink the onboard LED to report how far the console's init
+# handshake progressed (see switch_pro2.c g_ns2_stage). Off by default.
+option(NS2_DIAG "NS2: LED handshake-progress diagnostic" OFF)
+if(NS2_PRO AND NS2_DIAG)
+    target_compile_definitions(PicoSwitchWGA PRIVATE NS2_DIAG=1)
+endif()
+
+# joypad-os bthid Bluetooth stack.
+target_include_directories(PicoSwitchWGA PRIVATE src/hid_host src/hid_host/bt/bthid)
+# BTSTACK_USE_CYW43 selects the async_context run loop path in the vendored
+# btstack_host/transport (matches the Pico W radio; compiles out the embedded
+# run-loop calls). NS2_BT_ALL_DRIVERS compiles + registers every vendor driver.
+target_compile_definitions(PicoSwitchWGA PRIVATE BTSTACK_USE_CYW43=1 NS2_BT_ALL_DRIVERS=1)
+
+# Firmware modules (see firmware/README.md). Each module directory holds its
+# sources and headers side by side; headers are included by basename, so every
+# module directory is on the include path.
+set(PICOSWITCH_MODULE_DIRS
+    src/app src/audio src/bluetooth src/diagnostics src/input src/management
+    src/motion src/nfc src/settings
+    src/console/common src/console/gamecube src/console/joycon2
+    src/console/pro src/console/pro2)
+target_include_directories(PicoSwitchWGA PRIVATE
+    ${PICOSWITCH_MODULE_DIRS}
+    # The repository root, so cross-language wire contracts are included as
+    # "contracts/<name>.h". contracts/android_controller_hid.h is the canonical
+    # Android-bridge HID contract (descriptor + wire layout + sensor scale),
+    # shared verbatim by the firmware parser, the host tests, and the mirrored
+    # Kotlin encoder so the two ends cannot drift.
+    ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+# `config` holds tusb_config.h and btstack_config.h. It must be on the global
+# include path so the SDK's TinyUSB and BTstack can find them.
+include_directories(config)
+
+# Needed when using BTstack from the SDK (bluedroid codecs + btstack headers).
+include_directories(${BTSTACK_ROOT}/3rd-party/bluedroid/encoder/include)
+include_directories(${BTSTACK_ROOT}/3rd-party/bluedroid/decoder/include)
+include_directories(${BTSTACK_ROOT}/src)
+
+target_link_libraries(PicoSwitchWGA
+    pico_stdlib
+    pico_cyw43_arch_none
+    pico_btstack_classic
+    pico_btstack_ble
+    pico_btstack_cyw43
+    tinyusb_device
+    tinyusb_board
+    pico_multicore
+    hardware_flash
+    hardware_watchdog
+)
+if(NS2_PRO AND NS2_UART_DIAG)
+    target_link_libraries(PicoSwitchWGA hardware_uart)
+endif()
+
+# USB is used as the HID device to the console, so it cannot be a stdio CDC.
+pico_enable_stdio_usb(PicoSwitchWGA 0)
+pico_enable_stdio_uart(PicoSwitchWGA 0)
+
+# create map/bin/hex/uf2 file in addition to ELF.
+pico_add_extra_outputs(PicoSwitchWGA)

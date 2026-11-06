@@ -118,13 +118,13 @@ one small firmware diagnostic away (§5.4).
 
 | Stage | Source of truth |
 |---|---|
-| Registration, SDP, one-HID-slot-per-system rule | `android/companion/app/src/main/java/dev/picoswitch/companion/bridge/AndroidHidTransport.kt` |
+| Registration, SDP, one-HID-slot-per-system rule | `companions/android/app/src/main/java/dev/picoswitch/companion/bridge/AndroidHidTransport.kt` |
 | Management trust gating of Classic admission | `ns2_bt_companion_classic_admission_allowed()`; teardown in `classic_companion_release_on_mgmt_loss()` (`btstack_host.c`) |
 | Report composition, cadence, motion, battery, rumble, neutralisation | `bridge-core/.../session/BridgeSession.kt` — **platform-neutral**, shared by every backend |
 | Input cadence | `BridgeSession.REPORT_INTERVAL_MS = 8` gives a **125 Hz ceiling**, conflated mailbox, newest state retained |
 | Battery poll | `BATTERY_POLL_MS = 30_000` |
 | Output watchdog | `OUTPUT_WATCHDOG_TICK_MS = 250` |
-| Wire contract | `tools/fixtures/android_controller_hid.h`, 161-byte descriptor, sha256-pinned per contract version |
+| Wire contract | `contracts/android_controller_hid.h`, 161-byte descriptor, sha256-pinned per contract version |
 | Identity | **exact 161-byte descriptor match**, never VID/PID (`docs/bridge/PROTOCOL.md` §2) |
 
 Three Android-stack facts already recorded in `AndroidHidTransport.kt` and worth
@@ -185,7 +185,7 @@ write is refused and gameplay cannot serialise behind a round trip. CL-OUT is
 
 | Property | Value | Source |
 |---|---|---|
-| Frame | `[version][opcode][seq_lo][seq_hi]` + 26-byte canonical payload = **30 B** | `include/ns2_companion_link.h` |
+| Frame | `[version][opcode][seq_lo][seq_hi]` + 26-byte canonical payload = **30 B** | `firmware/src/management/ns2_companion_link.h` |
 | Minimum ATT MTU | 33 (30 + 3 ATT Write Command overhead) — **measured, refuses to start below it** | same |
 | Output frame | `[version][opcode][report id]` + 4 B feedback = **7 B** | same |
 | Sequence semantics | signed 16-bit delta, wrap-safe, advances only on accept | `ns2_companion_link_parse()` |
@@ -403,7 +403,7 @@ not.
 |---|---|---|
 | **A. One outbound scheduler** | A single owner of the `BluetoothGatt` token. Gameplay is the default holder; management commands take an explicit priority window and are deferred, not dropped, while a frame is outstanding. | Management latency during gameplay grows. Cheapest and most predictable. |
 | **B. Two `BluetoothGatt` objects to the same device** | `connectGatt` twice from one app registers two client interfaces over **one ACL and one bond**; each `BluetoothGatt` has its **own** `mDeviceBusy`, so the framework head-of-line block disappears. | **Unverified.** Both still share one ATT bearer and one `cl_cmd_q` in the native stack, so this removes framework serialisation, not link serialisation. OEM behaviour unknown. |
-| **C. LE L2CAP CoC for the data plane** | `BluetoothDevice.createL2capChannel(psm)` (API 29+, LE only) gives a real credit-based channel, independent of ATT and of `mDeviceBusy`, on the same bond. BTstack already has `ENABLE_L2CAP_LE_CREDIT_BASED_FLOW_CONTROL_MODE` compiled in (`src/btstack_config.h`). | **No Windows equivalent** (§8). Would make the two companions structurally different at the transport layer — which §23 argues may be acceptable. |
+| **C. LE L2CAP CoC for the data plane** | `BluetoothDevice.createL2capChannel(psm)` (API 29+, LE only) gives a real credit-based channel, independent of ATT and of `mDeviceBusy`, on the same bond. BTstack already has `ENABLE_L2CAP_LE_CREDIT_BASED_FLOW_CONTROL_MODE` compiled in (`firmware/config/btstack_config.h`). | **No Windows equivalent** (§8). Would make the two companions structurally different at the transport layer — which §23 argues may be acceptable. |
 
 **Option A needs no new platform assumption and should be the first prototype.**
 B and C are measurable improvements to try afterwards, in that order.
@@ -421,7 +421,7 @@ reading.**
 - one LE connection and one Link Layer schedule (one interval, one event budget);
 - one ATT bearer and one L2CAP channel, unless EATT is negotiated (§8);
 - the controller's ACL buffer pool (`MAX_NR_CONTROLLER_ACL_BUFFERS 3` in
-  `src/btstack_config.h`);
+  `firmware/config/btstack_config.h`);
 - on the adapter, the **CYW43 radio that is also carrying BR/EDR HID to the
   source controller**;
 - on Android additionally, `mDeviceBusy` for everything outbound (§6.2).
@@ -507,7 +507,7 @@ there is *amplitude-change latency*, because only the console can command it.
 ### 9.4 Audio downlink (console, adapter, companion playback)
 
 **The console-facing half already exists and is validated (REPO).**
-`src/switch_pro2/switch_pro2.c` implements the byte-verified retail PC2 **UAC1**
+`firmware/src/console/pro2/switch_pro2.c` implements the byte-verified retail PC2 **UAC1**
 function: EP `0x03` isochronous OUT and EP `0x83` isochronous IN,
 `NS2_AUDIO_PACKET_SIZE = 192` at 1 ms, that is **48 kHz, 16-bit, stereo =
 192,000 B/s** in each direction. The Pico SDK generic `tud_audio_*` driver could
@@ -740,7 +740,7 @@ Four things, none of which is a compile flag anyone would guess:
    encoder from XIP flash caused enough cache stalls to miss its real-time
    deadline even when the codec had a dedicated core."*
 2. **`memcpy` / `memset` / `memmove` are re-implemented in SRAM**
-   (`src/ds5_audio_ram_mem.c`, `NS2_DS5_AUDIO_RAM_MEM=1`), compiled with
+   (`firmware/src/audio/ds5_audio_ram_mem.c`, `NS2_DS5_AUDIO_RAM_MEM=1`), compiled with
    `-fno-builtin -fno-tree-loop-distribute-patterns` so the compiler cannot lower
    the loops back into recursive calls. The RP2350 has no equivalent of the
    RP2040 boot-ROM memory operations, and Pico W deliberately keeps its
@@ -1144,7 +1144,7 @@ Do not add a capability entry for a plane that does not exist.
 | Discoverability | Best — each plane is visible in a capture and in a GATT browser | Worst — opaque bytes | Good |
 | Independent subscription | Yes; a companion can take feedback without audio | No; all-or-nothing CCC | Yes for the realtime planes |
 | Versioning | Per plane, naturally | One version for everything, or a nested one | Per plane |
-| CCC count and ATT DB size | Grows. `MAX_ATT_DB_SIZE 512` in `src/btstack_config.h` is **a real ceiling to check** | Minimal | Moderate |
+| CCC count and ATT DB size | Grows. `MAX_ATT_DB_SIZE 512` in `firmware/config/btstack_config.h` is **a real ceiling to check** | Minimal | Moderate |
 | ATT scheduling | **No difference** — same bearer either way (§7) | Same | Same |
 | Code complexity | Lower: no demux, no plane-ID validation | Higher: a demux is a new place to be wrong | Middle |
 | Diagnostics | Best: per-characteristic counters, exactly how `clink` reads today | Needs per-plane counters invented on top | Good |
@@ -1415,7 +1415,7 @@ authorised by it and must be requested separately:
 - Any audio work of any kind: no capture path, no codec, no transport, no host
   playback, no microphone.
 - Any change to the Windows Controller Link implementation.
-- Any change to `tools/fixtures/management/protocol-v1.json`, the bridge
+- Any change to `contracts/management/protocol-v1.json`, the bridge
   contract, or the descriptor.
 - Any capability-negotiation field (§18) — the shape is a proposal.
 - The one-line correction to

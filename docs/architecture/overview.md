@@ -44,7 +44,7 @@ that snapshot only when output slot 0 still identifies as `057E:2069`, then copi
 back through the ordinary input path because the controller stops sending `0x000A` after native
 motion is enabled.
 
-DualSense and DualSense Edge motion follows a separate translated path in `src/bt_hid/motion/`:
+DualSense and DualSense Edge motion follows a separate translated path in `firmware/src/motion/`:
 the Sony driver loads and CRC-validates factory calibration, propagates calibrated IMU samples and
 sensor timestamps, and the translator emits the hardware-confirmed length-`0x1E` quaternion
 carrier. It never fabricates the unresolved length-`0x28` form. Other controllers remain on the
@@ -90,7 +90,7 @@ connection cache already held the same IDs. Vendor name fallbacks remain valid w
 unknown, but known contradictory identity invalidates the Xbox BLE, Stadia, and MouthPad provisional
 matches and triggers the existing disconnect/init rebind at the consuming layer.
 
-`tools/test_bthid_late_identity.c` links the production BTHID state machine to mock drivers and
+`tests/firmware/test_bthid_late_identity.c` links the production BTHID state machine to mock drivers and
 transport state. It pins reports before DIS, corrective provisional-to-specific and
 generic-to-specific rebinds, fallback to generic, transport gating, repeated-DIS idempotence, and
 delivery of the next input notification after a rebind. GATT serialization itself remains covered
@@ -111,7 +111,7 @@ This invariant was hardware-confirmed with DualSense and DualSense Edge after ti
 caused output and gestures to disappear.
 
 Gesture recognition itself is isolated in the pure `bootsel_gesture_update()` state machine; the
-Pico wrapper only supplies the latest sampled state. `tools/test_bootsel_gesture.c` drives that same
+Pico wrapper only supplies the latest sampled state. `tests/firmware/test_bootsel_gesture.c` drives that same
 production recognizer with timer-only calls, a sustained report-only stream with zero timer calls,
 and mixed calls. This pins starvation resistance and prevents either servicing path from emitting a
 completed gesture twice. Physical QSPI sampling and the cross-core SRAM park remain hardware-only

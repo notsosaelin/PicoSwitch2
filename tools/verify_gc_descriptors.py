@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify src/switch_gc/switch_gc.c's descriptor byte arrays against the
+"""Verify firmware/src/console/gamecube/switch_gc.c's descriptor byte arrays against the
 independently-captured evidence, so future edits to that file cannot silently
 drift from what was actually confirmed on real hardware.
 
@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SWITCH_GC_C = REPO_ROOT / "src" / "switch_gc" / "switch_gc.c"
+SWITCH_GC_C = REPO_ROOT / "firmware" / "src" / "console" / "gamecube" / "switch_gc.c"
 
 # --- Independently-transcribed expected bytes -------------------------------
 #

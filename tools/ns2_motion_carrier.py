@@ -56,7 +56,7 @@ layout is always high-rate, so only five slow-cadence packets in the whole
 corpus have a carrier to compare against. It also does not matter -- one LSB is
 2.4e-06 deg on lane 0 and 9.7e-06 deg after the two-bit drop, against a
 0.000968 deg median decode error we already accept. Nintendo's Switch 1 packer floors, but this project's shipping
-DualSense encoder (`encode_switch2_g0/g1/g2` in `src/bt_hid/motion/ns2_ds5_motion.c`)
+DualSense encoder (`encode_switch2_g0/g1/g2` in `firmware/src/motion/ns2_ds5_motion.c`)
 rounds to nearest and is hardware-validated. `nearest` is therefore the default,
 so anything built on this codec is byte-identical to the path already proven on
 a console; the mode stays selectable so the choice is visible rather than buried.

@@ -125,7 +125,7 @@ The three IMU frames are **not** treated alike (`switch_pro_bt.c:507-521`):
 - Resulting **Pro2 carrier frame**: `index 0 = pitch, 1 = roll, 2 = yaw`.
 
 **Every row must have determinant +1.** See §6.5 — this is enforced by
-`tools/test_ns2_motion_seam.c`, not by comment.
+`tests/firmware/test_ns2_motion_seam.c`, not by comment.
 
 ### Stage 3 — `switch_pro2.c:1343` (SHARED)
 
@@ -259,7 +259,7 @@ static check and every resting measurement, then behaves wrongly only under rota
 row shipped at det −1 and produced exactly that: an accelerometer matching genuine hardware to
 within 1 % while the gyro delivered no horizontal aim at all.
 
-`tools/test_ns2_motion_seam.c:211-235` computes the determinant of every accel and gyro row in the
+`tests/firmware/test_ns2_motion_seam.c:211-235` computes the determinant of every accel and gyro row in the
 table and fails the build-time test suite on anything but +1. It is verified against the shipped bug.
 
 ## 7. Adding a motion source — the contract
@@ -323,7 +323,7 @@ the remaining search space to two.
 | SPI calibration formulas and precedence | ✅ Confirmed |
 | Gyro newest-frame, accel three-frame mean | ✅ Confirmed on hardware |
 | Seam applies one signed permutation to accel and gyro | ✅ Confirmed (code; single loop) |
-| Every seam row has determinant +1 | ✅ Enforced (`tools/test_ns2_motion_seam.c`) |
+| Every seam row has determinant +1 | ✅ Enforced (`tests/firmware/test_ns2_motion_seam.c`) |
 | Translator never fuses accel; accel is passthrough | ✅ Confirmed (code) |
 | Switch 1 sensor frame; Pro gets no transform in Linux | ✅ Confirmed (`hid-nintendo`) |
 | Pro seam row `src {1,0,2}`, `sign {-1,1,1}` | ✅ Confirmed on hardware (A/B, 2026-07-27) |
@@ -345,8 +345,8 @@ the remaining search space to two.
   [`wii-motion.md`](wii-motion.md),
   [`../switch2/report-0x09-motion.md`](../switch2/report-0x09-motion.md),
   [`../experiments/gyro-hardware-validation-2026-07-10.md`](../experiments/gyro-hardware-validation-2026-07-10.md)
-- `src/bt_hid/motion/ns2_motion_seam.c`, `src/bt_hid/ns2_seam.c:255-280`,
-  `src/bt_hid/motion/ns2_ds5_motion.c:322-523`,
-  `src/bt_hid/bt/bthid/devices/vendors/nintendo/switch_pro_bt.c:395-626`,
-  `src/bt_hid/bt/bthid/devices/vendors/sony/ds5_motion_calibration.c:6-11`,
-  `tools/test_ns2_motion_seam.c`
+- `firmware/src/motion/ns2_motion_seam.c`, `firmware/src/input/ns2_seam.c:255-280`,
+  `firmware/src/motion/ns2_ds5_motion.c:322-523`,
+  `firmware/src/hid_host/bt/bthid/devices/vendors/nintendo/switch_pro_bt.c:395-626`,
+  `firmware/src/hid_host/bt/bthid/devices/vendors/sony/ds5_motion_calibration.c:6-11`,
+  `tests/firmware/test_ns2_motion_seam.c`

@@ -409,7 +409,7 @@ before comparing different physical controller units.
 ## Automated coverage
 
 ```powershell
-python tools/test_ns2_magprobe.py -v
+python tests/tools/test_ns2_magprobe.py -v
 ```
 
 Coverage includes exact genuine `0x1E` carrier decoding, exact historical `0x28` bit-range and raw

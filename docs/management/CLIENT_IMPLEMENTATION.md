@@ -9,11 +9,11 @@ JVM clients can depend on the plain Kotlin/JVM `:management-core` module and imp
 `ManagementChannel`. It provides domain types, command/reply handling, paging, and workflows.
 
 Non-JVM clients implement the language-neutral protocol and verify it against
-`tools/fixtures/management/protocol-v1.json`. Do not translate Android repository or ViewModel code;
+`contracts/management/protocol-v1.json`. Do not translate Android repository or ViewModel code;
 those are consumers, not authorities.
 
 There is now a worked example of the second path: `PicoSwitch.Management.Core` under
-`windows/companion/` is a C# reimplementation whose `ProtocolConformanceTests` runs the same cases
+`companions/windows/` is a C# reimplementation whose `ProtocolConformanceTests` runs the same cases
 as the Kotlin `ProtocolConformanceTest` against that same fixture file. Two details from it are
 worth copying rather than rediscovering:
 
@@ -231,7 +231,7 @@ After any terminal carrier failure:
 
 ## 13. Validate the implementation
 
-Run every vector in `tools/fixtures/management/protocol-v1.json` through the client parser/builder.
+Run every vector in `contracts/management/protocol-v1.json` through the client parser/builder.
 Then exercise the behaviors in [CONFORMANCE.md](CONFORMANCE.md), especially malformed/oversize
 replies, bond and KB/M paging inconsistencies, `none` versus `default`, queued saves, Amiibo failure
 cancel, concurrent callers, cancellation after transmit, timeout invalidation, and disconnect state

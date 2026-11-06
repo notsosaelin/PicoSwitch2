@@ -161,14 +161,14 @@ dumps/experiments/<timestamp>-<slug>/
   comparison.md            first semantic divergence from the baseline
 ```
 
-### `src/nfc/ns2_amiibo_v3_runtime.c` — host-replayable v3 state machine
+### `firmware/src/nfc/ns2_amiibo_v3_runtime.c` — host-replayable v3 state machine
 
 Status: ✅ extracted 2026-07-29. Behavior unchanged; verified static, build, and on hardware
 (`dumps/experiments/20260729-101834-v3-post-extraction/`: scan → in-game save → remove → rescan,
 firmware `errors:0`).
 
 The figure-v3 command state machine used to be `ns2_v3_serve()` plus twenty
-file-scope statics inside `src/switch_pro2/switch_pro2.c`, where it could not run
+file-scope statics inside `firmware/src/console/pro2/switch_pro2.c`, where it could not run
 without USB, flash, BTstack, and physical time. The 540-byte path had been
 replayable through `ns2_virtual_nfc_runtime_dispatch()` since it was written; v3
 now has the same shape:
@@ -187,7 +187,7 @@ the response. The command flow itself is byte-for-byte what it was, which is why
 the interface was chosen over a pure effects-queue design that would have had to
 restructure the commit path.
 
-`tools/test_ns2_amiibo_v3_runtime.c` replays the sequences a real console sends,
+`tests/firmware/test_ns2_amiibo_v3_runtime.c` replays the sequences a real console sends,
 reconstructed from the captures in `dumps/`:
 
 | Scenario | What it pins |

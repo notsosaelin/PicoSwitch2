@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE_PATH = ROOT / "src" / "switch_pro2" / "switch_pro2.c"
+SOURCE_PATH = ROOT / "firmware" / "src" / "console" / "pro2" / "switch_pro2.c"
 
 
 def check(condition: bool, message: str) -> None:

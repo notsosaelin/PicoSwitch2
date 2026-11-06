@@ -6,9 +6,9 @@
 > the board's own hardware ID instead of the shared placeholder.
 >
 > **Documentation only — no code changed.** Companion to the per-personality identity blocks in
-> `src/switch_pro2/switch_pro2.c`, `src/switch_gc/switch_gc.c`, `src/ns2_joycon2_identity.c`, and the
+> `firmware/src/console/pro2/switch_pro2.c`, `firmware/src/console/gamecube/switch_gc.c`, `firmware/src/console/joycon2/ns2_joycon2_identity.c`, and the
 > unused `platform_get_serial` / `platform_get_unique_id` seam in
-> `src/bt_hid/platform/platform.h`.
+> `firmware/src/hid_host/platform/platform.h`.
 >
 > Evidence: genuine SPI flash dumps (`dumps/SWITCH2_JOYCON_L_1.bin`, `_R_1.bin`, **decoded here**),
 > live USB capture (`usbpcaptures/genuine_procon_2.pcapng`, serial `HEW70001504982`), ndeadly's
@@ -273,12 +273,12 @@ inject at 0x13002 of each identity block:
   lot code, exclusion-policy reasoning.
 - `nso-gc-refs/switch2_controller_research/descriptors.md` "Serial String Descriptor" → `00`
   (genuine USB `iSerialNumber`, all types).
-- `src/switch_pro2/switch_pro2.c:252` (Pro2 `0x13002` = `HEJ71001121247`),
-  `src/switch_gc/switch_gc.c:308-315` (GC fictitious `…9999999`),
-  `src/ns2_joycon2_identity.c:5-32` (Joy-Con placeholder `…99999999999`).
-- `src/bt_hid/platform/platform.h:33,36` — `platform_get_serial` / `platform_get_unique_id`
+- `firmware/src/console/pro2/switch_pro2.c:252` (Pro2 `0x13002` = `HEJ71001121247`),
+  `firmware/src/console/gamecube/switch_gc.c:308-315` (GC fictitious `…9999999`),
+  `firmware/src/console/joycon2/ns2_joycon2_identity.c:5-32` (Joy-Con placeholder `…99999999999`).
+- `firmware/src/hid_host/platform/platform.h:33,36` — `platform_get_serial` / `platform_get_unique_id`
   (declared, unimplemented, unused — the intended seam).
-- `src/switch_gc/switch_gc.c:59-76` — `bcdDevice` WinUSB-cache collision precedent (why identity
+- `firmware/src/console/gamecube/switch_gc.c:59-76` — `bcdDevice` WinUSB-cache collision precedent (why identity
   uniqueness matters host-side).
 - `docs/experiments/2026-07-19-usb-command-ab-diff.md:46,121` — firmware Pro2 serial vs owner's
   genuine unit.

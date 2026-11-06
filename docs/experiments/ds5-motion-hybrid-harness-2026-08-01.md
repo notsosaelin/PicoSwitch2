@@ -59,7 +59,7 @@ unselected bit remains identical to the genuine base. It explicitly reports
 `physical_alignment_proven=false`: structural fit alone cannot establish that
 two controllers describe the same instant and pose.
 
-`src/bt_hid/motion/ns2_motion_hybrid.c` is the matching transport-independent
+`firmware/src/motion/ns2_motion_hybrid.c` is the matching transport-independent
 firmware primitive. On any bad length, mode, layout, status, or group it leaves
 the destination untouched.
 

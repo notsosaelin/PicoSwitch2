@@ -45,7 +45,7 @@ python tools\ns2_motion_reference.py `
 Run the decoder regression:
 
 ```powershell
-python tools\test_ns2_motion_reference.py
+python tests\tools\test_ns2_motion_reference.py
 ```
 
 ## Corrected prefix layout

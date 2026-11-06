@@ -1,0 +1,1062 @@
+/*
+ * Host coverage for the logical peer inventory: role ordering, cross-transport
+ * merging, name sanitisation, address-stable pagination, and the absence of any
+ * secret material on the wire.
+ *
+ * Independent of BTstack on purpose. The firmware glue reads the two security
+ * databases and hands this module non-secret identity; everything that can be
+ * got wrong after that point is decided here, so it can be pinned without a
+ * radio.
+ *
+ * gcc -std=c11 -Wall -Wextra -Werror -Isrc -Iinclude \
+ *   tests/firmware/test_mgmt_peers.c firmware/src/management/mgmt_peers.c \
+ *   -o build/host-tests/test_mgmt_peers.exe
+ */
+#include <assert.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "mgmt_peers.h"
+
+static mgmt_peer_bond_t classic_bond(uint8_t last, uint8_t key_type)
+{
+    mgmt_peer_bond_t bond;
+    memset(&bond, 0, sizeof(bond));
+    bond.address[0] = 0xAA;
+    bond.address[5] = last;
+    bond.transport = MGMT_PEER_TRANSPORT_BREDR;
+    bond.le_slot = -1;
+    bond.classic_key_type = key_type;
+    return bond;
+}
+
+static mgmt_peer_bond_t le_bond(uint8_t last, int16_t slot, uint8_t addr_type)
+{
+    mgmt_peer_bond_t bond;
+    memset(&bond, 0, sizeof(bond));
+    bond.address[0] = 0xAA;
+    bond.address[5] = last;
+    bond.transport = MGMT_PEER_TRANSPORT_LE;
+    bond.le_slot = slot;
+    bond.le_address_type = addr_type;
+    return bond;
+}
+
+static mgmt_peer_observation_t observation(uint8_t last, const char *name)
+{
+    mgmt_peer_observation_t o;
+    memset(&o, 0, sizeof(o));
+    o.address[0] = 0xAA;
+    o.address[5] = last;
+    if (name)
+        snprintf(o.name, sizeof(o.name), "%s", name);
+    return o;
+}
+
+/* ------------------------------------------------------------------ roles */
+
+static void test_role_order_puts_management_first(void)
+{
+    // The case this ordering exists for: one phone that is simultaneously the
+    // management companion and the Controller Link peer. Calling it a
+    // controller is the specific misclassification the gate forbids.
+    mgmt_peer_observation_t both = observation(0x01, "Phone");
+    both.is_management_client = 1;
+    both.is_bridge_source = 1;
+    both.is_direct_source = 1;
+    assert(mgmt_peers_classify(&both) == MGMT_PEER_ROLE_MANAGEMENT_COMPANION);
+
+    mgmt_peer_observation_t bridge = observation(0x01, "Phone");
+    bridge.is_bridge_source = 1;
+    bridge.is_direct_source = 1;
+    assert(mgmt_peers_classify(&bridge) == MGMT_PEER_ROLE_CONTROLLER_LINK);
+
+    mgmt_peer_observation_t pad = observation(0x01, "DualSense");
+    pad.is_direct_source = 1;
+    assert(mgmt_peers_classify(&pad) == MGMT_PEER_ROLE_PHYSICAL_CONTROLLER);
+
+    mgmt_peer_observation_t remembered = observation(0x01, "DualSense");
+    remembered.is_last_connected = 1;
+    assert(mgmt_peers_classify(&remembered) == MGMT_PEER_ROLE_PHYSICAL_CONTROLLER);
+}
+
+static void test_unseen_peer_is_unknown_not_guessed(void)
+{
+    // A stored bond whose owner has not been seen since boot. The adapter has
+    // no persistent role metadata, so the honest answer is "unknown" -- not
+    // "controller" because most bonds are controllers.
+    mgmt_peer_observation_t nothing = observation(0x01, NULL);
+    assert(mgmt_peers_classify(&nothing) == MGMT_PEER_ROLE_UNKNOWN);
+    assert(mgmt_peers_classify(NULL) == MGMT_PEER_ROLE_UNKNOWN);
+
+    mgmt_peer_bond_t bonds[] = { classic_bond(0x01, 4) };
+    mgmt_peer_t peers[4];
+    size_t count = mgmt_peers_merge(bonds, 1, NULL, 0, peers, 4);
+    assert(count == 1);
+    assert(peers[0].role == MGMT_PEER_ROLE_UNKNOWN);
+    assert(peers[0].connected == 0);
+}
+
+/* ------------------------------------------------------- cross-transport */
+
+static void test_one_device_with_two_key_records_is_one_peer(void)
+{
+    // The project builds with cross-transport key derivation, and the
+    // management phone routinely holds both a Classic and an LE record.
+    // Presenting the records would show one device twice.
+    mgmt_peer_bond_t bonds[] = {
+        classic_bond(0x01, 4),
+        le_bond(0x01, 3, 0),
+    };
+    mgmt_peer_t peers[4];
+    size_t count = mgmt_peers_merge(bonds, 2, NULL, 0, peers, 4);
+    assert(count == 1);
+    assert(peers[0].transport == (MGMT_PEER_TRANSPORT_BREDR | MGMT_PEER_TRANSPORT_LE));
+    assert(peers[0].le_slot == 3);
+    assert(peers[0].classic_key_type == 4);
+}
+
+static void test_distinct_devices_stay_distinct(void)
+{
+    mgmt_peer_bond_t bonds[] = {
+        classic_bond(0x02, 4),
+        le_bond(0x01, 0, 0),
+        classic_bond(0x03, 5),
+    };
+    mgmt_peer_t peers[8];
+    size_t count = mgmt_peers_merge(bonds, 3, NULL, 0, peers, 8);
+    assert(count == 3);
+    // Sorted by address so a cursor means the same thing between calls.
+    assert(peers[0].address[5] == 0x01);
+    assert(peers[1].address[5] == 0x02);
+    assert(peers[2].address[5] == 0x03);
+}
+
+static void test_sort_is_independent_of_enumeration_order(void)
+{
+    mgmt_peer_bond_t forward[] = {
+        classic_bond(0x01, 4), classic_bond(0x02, 4), classic_bond(0x03, 4),
+    };
+    mgmt_peer_bond_t reverse[] = {
+        classic_bond(0x03, 4), classic_bond(0x02, 4), classic_bond(0x01, 4),
+    };
+    mgmt_peer_t a[4];
+    mgmt_peer_t b[4];
+    assert(mgmt_peers_merge(forward, 3, NULL, 0, a, 4) == 3);
+    assert(mgmt_peers_merge(reverse, 3, NULL, 0, b, 4) == 3);
+    for (size_t i = 0; i < 3; ++i)
+        assert(memcmp(a[i].address, b[i].address, 6) == 0);
+}
+
+static void test_connected_peer_without_a_key_is_still_reported(void)
+{
+    // A controller mid-pairing has no stored key yet. Hiding it would make the
+    // inventory disagree with what the adapter is actually doing.
+    mgmt_peer_observation_t live = observation(0x09, "New Pad");
+    live.is_direct_source = 1;
+    live.connected = 1;
+    mgmt_peer_t peers[4];
+    size_t count = mgmt_peers_merge(NULL, 0, &live, 1, peers, 4);
+    assert(count == 1);
+    assert(peers[0].transport == 0);
+    assert(peers[0].connected == 1);
+    assert(peers[0].role == MGMT_PEER_ROLE_PHYSICAL_CONTROLLER);
+}
+
+static void test_live_evidence_names_and_marks_a_stored_peer(void)
+{
+    mgmt_peer_bond_t bonds[] = { classic_bond(0x01, 4) };
+    mgmt_peer_observation_t live = observation(0x01, "DualSense Wireless Controller");
+    live.is_direct_source = 1;
+    live.connected = 1;
+    mgmt_peer_t peers[4];
+    assert(mgmt_peers_merge(bonds, 1, &live, 1, peers, 4) == 1);
+    assert(peers[0].role == MGMT_PEER_ROLE_PHYSICAL_CONTROLLER);
+    assert(peers[0].connected == 1);
+    assert(strncmp(peers[0].name, "DualSense", 9) == 0);
+}
+
+static void test_a_weaker_observation_cannot_demote_a_stronger_one(void)
+{
+    mgmt_peer_observation_t seen[2];
+    seen[0] = observation(0x01, "Phone");
+    seen[0].is_management_client = 1;
+    seen[0].connected = 1;
+    seen[1] = observation(0x01, "Phone");
+    seen[1].is_direct_source = 1;
+    mgmt_peer_t peers[4];
+    assert(mgmt_peers_merge(NULL, 0, seen, 2, peers, 4) == 1);
+    assert(peers[0].role == MGMT_PEER_ROLE_MANAGEMENT_COMPANION);
+}
+
+/* --------------------------------------------------- classification (Phase 4) */
+
+static void test_classification_and_identifiers_survive_the_merge(void)
+{
+    mgmt_peer_bond_t bonds[] = { classic_bond(0x01, 4) };
+    mgmt_peer_observation_t live = observation(0x01, "Wireless Controller");
+    live.is_direct_source = 1;
+    live.connected = 1;
+    snprintf(live.classification, sizeof(live.classification), "Sony DualSense");
+    live.vendor_id = 0x054C;
+    live.product_id = 0x0CE6;
+    mgmt_peer_t peers[4];
+    assert(mgmt_peers_merge(bonds, 1, &live, 1, peers, 4) == 1);
+    assert(strcmp(peers[0].classification, "Sony DualSense") == 0);
+    assert(peers[0].vendor_id == 0x054C && peers[0].product_id == 0x0CE6);
+}
+
+static void test_a_later_observation_cannot_erase_a_known_classification(void)
+{
+    // Two live records for one device -- the case a composite source or a
+    // reconnect mid-enumeration produces. Only one of them may have had a
+    // driver bound, and the answer must not depend on which arrives last.
+    mgmt_peer_observation_t seen[2];
+    seen[0] = observation(0x01, "Pad");
+    seen[0].is_direct_source = 1;
+    snprintf(seen[0].classification, sizeof(seen[0].classification), "Sony DualSense");
+    seen[0].vendor_id = 0x054C;
+    seen[0].product_id = 0x0CE6;
+    seen[1] = observation(0x01, "Pad");
+    seen[1].is_direct_source = 1;
+    mgmt_peer_t peers[4];
+    assert(mgmt_peers_merge(NULL, 0, seen, 2, peers, 4) == 1);
+    assert(strcmp(peers[0].classification, "Sony DualSense") == 0);
+    assert(peers[0].vendor_id == 0x054C);
+}
+
+static void test_an_unclassified_peer_reports_nothing_rather_than_empty(void)
+{
+    mgmt_peer_bond_t bonds[] = { classic_bond(0x01, 4) };
+    mgmt_peer_t peers[2];
+    assert(mgmt_peers_merge(bonds, 1, NULL, 0, peers, 2) == 1);
+    assert(peers[0].classification[0] == '\0');
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+    assert(mgmt_peers_format_page(peers, 1, 0, out, sizeof(out), &info) > 0);
+    // Absent, not empty: the client must be able to tell "the adapter cannot
+    // say" from "the adapter says it is called nothing".
+    assert(strstr(out, "\"class\"") == NULL);
+    assert(strstr(out, "\"vid\"") == NULL);
+}
+
+static void test_a_classification_is_sanitised_like_a_remote_name(void)
+{
+    // A driver name is firmware-controlled today, but it reaches the same JSON
+    // string as an untrusted remote name and is treated identically so that a
+    // future driver name sourced from a device cannot break the envelope.
+    mgmt_peer_observation_t live = observation(0x01, "Pad");
+    live.is_direct_source = 1;
+    snprintf(live.classification, sizeof(live.classification), "Ev\"il\\pad");
+    mgmt_peer_t peers[2];
+    assert(mgmt_peers_merge(NULL, 0, &live, 1, peers, 2) == 1);
+    assert(strchr(peers[0].classification, '"') == NULL);
+    assert(strchr(peers[0].classification, '\\') == NULL);
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+    size_t length = mgmt_peers_format_page(peers, 1, 0, out, sizeof(out), &info);
+    assert(length > 0 && info.complete);
+}
+
+static void test_a_widest_possible_row_still_fits_a_page(void)
+{
+    // The widest row the formatter can be asked to emit: a full-length name, a
+    // full-length classification and both identifiers. If this cannot make
+    // progress the pager fails closed and the whole inventory becomes
+    // unreadable, so the row budget is pinned here rather than assumed.
+    mgmt_peer_t peer;
+    memset(&peer, 0, sizeof(peer));
+    peer.address[0] = 0xAA;
+    peer.address[5] = 0x01;
+    peer.transport = MGMT_PEER_TRANSPORT_BREDR | MGMT_PEER_TRANSPORT_LE;
+    peer.le_slot = 3;
+    peer.role = MGMT_PEER_ROLE_PHYSICAL_CONTROLLER;
+    peer.vendor_id = 0xFFFF;
+    peer.product_id = 0xFFFF;
+    memset(peer.name, 'N', sizeof(peer.name) - 1);
+    memset(peer.classification, 'C', sizeof(peer.classification) - 1);
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+    size_t length = mgmt_peers_format_page(&peer, 1, 0, out, sizeof(out), &info);
+    assert(length > 0 && info.complete && info.next == -1);
+    assert(strstr(out, "\"class\":\"CCC") != NULL);
+    assert(strstr(out, "\"vid\":65535,\"pid\":65535") != NULL);
+}
+
+
+static void test_one_identity_with_a_live_observation_is_one_peer(void)
+{
+    // The management companion: a stored bond under its identity address, plus
+    // a live observation the firmware now emits under that SAME identity
+    // because BTstack resolved the connection's RPA to it. One physical phone
+    // must be one row, carrying the merged transports and role=management.
+    mgmt_peer_bond_t bonds[2];
+    bonds[0] = classic_bond(0x01, 4);            // CTKD-derived Classic key
+    bonds[1] = le_bond(0x01, 2, 0);              // the LE management bond
+    mgmt_peer_observation_t live = observation(0x01, NULL);
+    live.is_management_client = 1;
+    live.connected = 1;
+
+    mgmt_peer_t peers[4];
+    assert(mgmt_peers_merge(bonds, 2, &live, 1, peers, 4) == 1);
+    assert(peers[0].role == MGMT_PEER_ROLE_MANAGEMENT_COMPANION);
+    assert(peers[0].connected == 1);
+    assert(peers[0].transport ==
+           (MGMT_PEER_TRANSPORT_BREDR | MGMT_PEER_TRANSPORT_LE));
+}
+
+static void test_a_remembered_companion_is_not_a_paired_controller(void)
+{
+    // The defect this covers: role used to be LIVE evidence only, so the moment
+    // a management session ended its bond reported role `unknown`. A bonded,
+    // non-connected, roleless peer is exactly what a companion routes into the
+    // PAIRED CONTROLLER list -- so with two front ends, whichever one was
+    // connected showed the other as a controller the user never paired, and
+    // offered to forget it out of its own management relationship.
+    //
+    // The firmware now emits an observation for every REMEMBERED companion,
+    // with connected=0 because it is not connected and is_management_client=1
+    // because the adapter recorded that membership when it last authenticated.
+    mgmt_peer_bond_t bonds[] = { le_bond(0x02, 2, 0) };
+    mgmt_peer_observation_t remembered = observation(0x02, NULL);
+    remembered.is_management_client = 1;
+    remembered.connected = 0;
+
+    mgmt_peer_t peers[4];
+    assert(mgmt_peers_merge(bonds, 1, &remembered, 1, peers, 4) == 1);
+    assert(peers[0].role == MGMT_PEER_ROLE_MANAGEMENT_COMPANION);
+    // Bonded and NOT connected -- the exact combination that used to be routed
+    // as a paired controller, now carrying a role that says otherwise.
+    assert(peers[0].connected == 0);
+    assert(peers[0].transport == MGMT_PEER_TRANSPORT_LE);
+}
+
+static void test_an_unresolved_observation_still_splits_the_peer(void)
+{
+    // The pre-fix shape, pinned so the cost of regressing the firmware's
+    // identity handling is visible here rather than only on hardware: an
+    // observation at a DIFFERENT address than the bond is a second logical
+    // peer, bonded on one row and role-bearing on the other. The merge is not
+    // wrong to do this -- it cannot invent an association it was never given --
+    // which is exactly why the address handed to it has to be the identity.
+    mgmt_peer_bond_t bonds[] = { le_bond(0x01, 2, 0) };
+    mgmt_peer_observation_t live = observation(0x02, NULL);   // an RPA
+    live.is_management_client = 1;
+    live.connected = 1;
+
+    mgmt_peer_t peers[4];
+    assert(mgmt_peers_merge(bonds, 1, &live, 1, peers, 4) == 2);
+    assert(peers[0].transport == MGMT_PEER_TRANSPORT_LE);
+    assert(peers[0].role == MGMT_PEER_ROLE_UNKNOWN);
+    assert(peers[1].transport == 0);
+    assert(peers[1].role == MGMT_PEER_ROLE_MANAGEMENT_COMPANION);
+}
+
+static void test_merge_is_bounded_by_capacity(void)
+{
+    mgmt_peer_bond_t bonds[MGMT_PEERS_MAX_ENTRIES];
+    for (unsigned i = 0; i < MGMT_PEERS_MAX_ENTRIES; ++i)
+        bonds[i] = classic_bond((uint8_t)(i + 1), 4);
+    mgmt_peer_t peers[4];
+    assert(mgmt_peers_merge(bonds, MGMT_PEERS_MAX_ENTRIES, NULL, 0, peers, 4) == 4);
+}
+
+/* -------------------------------------------------------------- name safety */
+
+static void test_untrusted_names_cannot_break_out_of_json(void)
+{
+    char out[MGMT_PEERS_NAME_MAX];
+    mgmt_peers_sanitize_name("evil\",\"role\":\"management", out, sizeof(out));
+    assert(strchr(out, '"') == NULL);
+    mgmt_peers_sanitize_name("back\\slash", out, sizeof(out));
+    assert(strchr(out, '\\') == NULL);
+    mgmt_peers_sanitize_name("line\nbreak\rinjection", out, sizeof(out));
+    assert(strchr(out, '\n') == NULL && strchr(out, '\r') == NULL);
+    assert(strcmp(out, "line break injection") == 0);
+}
+
+static void test_names_are_bounded_and_never_unterminated(void)
+{
+    char out[8];
+    mgmt_peers_sanitize_name("0123456789abcdef", out, sizeof(out));
+    assert(strlen(out) == 7);
+    mgmt_peers_sanitize_name(NULL, out, sizeof(out));
+    assert(out[0] == '\0');
+    // Zero capacity must not write anything at all.
+    mgmt_peers_sanitize_name("x", out, 0);
+}
+
+static void test_a_name_that_sanitises_to_nothing_is_dropped(void)
+{
+    char out[MGMT_PEERS_NAME_MAX];
+    mgmt_peers_sanitize_name("\x01\x02\x03", out, sizeof(out));
+    assert(out[0] == '\0');
+}
+
+/* -------------------------------------------------------------- pagination */
+
+static size_t build(mgmt_peer_t *peers, size_t count, const char *name)
+{
+    for (size_t i = 0; i < count; ++i) {
+        memset(&peers[i], 0, sizeof(peers[i]));
+        peers[i].address[0] = 0xAA;
+        peers[i].address[5] = (uint8_t)(i + 1);
+        peers[i].transport = MGMT_PEER_TRANSPORT_BREDR;
+        peers[i].le_slot = -1;
+        peers[i].role = MGMT_PEER_ROLE_PHYSICAL_CONTROLLER;
+        if (name)
+            snprintf(peers[i].name, sizeof(peers[i].name), "%s", name);
+    }
+    return count;
+}
+
+static void test_a_small_inventory_fits_one_complete_page(void)
+{
+    mgmt_peer_t peers[2];
+    build(peers, 2, "Pad");
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+    size_t length = mgmt_peers_format_page(peers, 2, 0, out, sizeof(out), &info);
+    assert(length > 0);
+    assert(info.complete && info.next == -1 && info.total == 2);
+    assert(strstr(out, "\"v\":1") != NULL);
+    assert(strstr(out, "\"total\":2") != NULL);
+    assert(strstr(out, "\"next\":null") != NULL);
+    assert(strstr(out, "\"role\":\"controller\"") != NULL);
+}
+
+static void test_a_full_inventory_pages_and_every_peer_appears_once(void)
+{
+    mgmt_peer_t peers[MGMT_PEERS_MAX_ENTRIES];
+    size_t count = build(peers, MGMT_PEERS_MAX_ENTRIES,
+                         "A Very Long Controller Name Here");
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+
+    int seen[MGMT_PEERS_MAX_ENTRIES + 1] = { 0 };
+    int cursor = 0;
+    int pages = 0;
+    while (1) {
+        size_t length = mgmt_peers_format_page(peers, count, cursor, out,
+                                               sizeof(out), &info);
+        assert(length > 0);
+        assert(length < sizeof(out));
+        assert(info.total == (int)count);
+        ++pages;
+        // Every page must make progress or a client loops on the cursor.
+        assert(info.complete || info.next > cursor);
+        for (size_t i = 0; i < count; ++i) {
+            char id[16];
+            mgmt_peers_format_id(peers[i].address, id, sizeof(id));
+            char needle[24];
+            snprintf(needle, sizeof(needle), "\"%s\"", id);
+            if (strstr(out, needle))
+                seen[i] += 1;
+        }
+        if (info.complete)
+            break;
+        cursor = info.next;
+        assert(pages < 64);
+    }
+    for (size_t i = 0; i < count; ++i)
+        assert(seen[i] == 1);
+}
+
+/*
+ * The live inventory that returned response_too_large on 2026-08-28.
+ *
+ * Four peers whose encoded rows are 164, 182, 129 and 92 bytes. The page from
+ * cursor 0 fills to 502 of 512 and then cannot fit its 11-byte `],"next":3}`.
+ * Before the fix the whole page was discarded; the inventory paginates
+ * perfectly well, and cursors 1..4 all succeeded, which is what made the
+ * failure look like a size problem rather than a budgeting one.
+ */
+static size_t build_live_inventory(mgmt_peer_t *out)
+{
+    static const struct {
+        uint8_t first;
+        uint8_t transport;
+        mgmt_peer_role_t role;
+        uint8_t connected;
+        const char *name;
+        const char *cls;
+        uint16_t vid, pid;
+    } rows[] = {
+        { 0x2C, 3, MGMT_PEER_ROLE_MANAGEMENT_COMPANION, 1,
+          "Pixel Tablet", "Generic BT Gamepad", 0x18D1, 0x0001 },
+        { 0x58, 1, MGMT_PEER_ROLE_PHYSICAL_CONTROLLER, 1,
+          "DualSense Edge Wireless Control", "Sony DualSense", 0x054C, 0x0DF2 },
+        { 0x98, 3, MGMT_PEER_ROLE_PHYSICAL_CONTROLLER, 0,
+          "Xbox Wireless Controller", NULL, 0, 0 },
+        { 0xB4, 3, MGMT_PEER_ROLE_UNKNOWN, 0, NULL, NULL, 0, 0 },
+    };
+    for (size_t i = 0; i < 4; ++i) {
+        memset(&out[i], 0, sizeof(out[i]));
+        memset(out[i].address, rows[i].first, sizeof(out[i].address));
+        out[i].transport = rows[i].transport;
+        out[i].role = (uint8_t)rows[i].role;
+        out[i].connected = rows[i].connected;
+        out[i].le_slot = -1;
+        if (rows[i].name)
+            snprintf(out[i].name, sizeof(out[i].name), "%s", rows[i].name);
+        if (rows[i].cls)
+            snprintf(out[i].classification, sizeof(out[i].classification), "%s", rows[i].cls);
+        out[i].vendor_id = rows[i].vid;
+        out[i].product_id = rows[i].pid;
+    }
+    return 4;
+}
+
+static void test_the_live_inventory_paginates_instead_of_failing(void)
+{
+    mgmt_peer_t peers[4];
+    size_t count = build_live_inventory(peers);
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+
+    size_t length = mgmt_peers_format_page(peers, count, 0, out, sizeof(out), &info);
+    assert(length > 0);            // the regression: this returned 0
+    assert(!info.complete);
+    assert(info.next > 0);
+    assert(info.total == 4);
+    assert(strstr(out, "\"next\":") != NULL);
+    assert(out[length - 1] == '}');
+}
+
+static void test_every_page_keeps_room_for_its_own_suffix(void)
+{
+    // The property the reserve is supposed to guarantee, asserted directly
+    // across every cursor and every plausible capacity rather than only at the
+    // one size that happened to fail.
+    mgmt_peer_t peers[4];
+    size_t count = build_live_inventory(peers);
+    for (size_t capacity = 128; capacity <= MGMT_PEERS_RESPONSE_CAPACITY; ++capacity) {
+        char out[MGMT_PEERS_RESPONSE_CAPACITY];
+        for (int start = 0; start <= (int)count; ++start) {
+            mgmt_peers_page_info_t info;
+            size_t length = mgmt_peers_format_page(peers, count, start, out,
+                                                   capacity, &info);
+            if (length == 0)
+                continue;   // legitimately too small for even one row
+            assert(length < capacity);
+            assert(out[length] == '\0');
+            // A page always closes, and always says where the next one starts.
+            assert(out[length - 1] == '}');
+            assert(strstr(out, "],\"next\":") != NULL);
+            assert(info.complete == (info.next < 0));
+        }
+    }
+}
+
+static void test_following_the_cursor_visits_every_peer_exactly_once(void)
+{
+    mgmt_peer_t peers[4];
+    size_t count = build_live_inventory(peers);
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+    int cursor = 0;
+    int pages = 0;
+    int seen = 0;
+    while (1) {
+        size_t length = mgmt_peers_format_page(peers, count, cursor, out,
+                                               sizeof(out), &info);
+        assert(length > 0);
+        assert(++pages <= 8);
+        // Count the rows on this page by counting their ids.
+        for (const char *p = out; (p = strstr(p, "\"id\":\"")) != NULL; ++p)
+            ++seen;
+        if (info.complete) {
+            assert(info.next == -1);
+            assert(strstr(out, "\"next\":null") != NULL);
+            break;
+        }
+        assert(info.next > cursor);   // progress, always
+        cursor = info.next;
+    }
+    assert(seen == (int)count);
+    assert(pages >= 2);               // this inventory genuinely needs two
+}
+
+static void test_a_page_that_cannot_progress_fails_closed(void)
+{
+    mgmt_peer_t peers[1];
+    build(peers, 1, "Pad");
+    char tiny[48];
+    mgmt_peers_page_info_t info;
+    // Not even one peer fits: an empty successful page would leave a client
+    // retrying the same cursor forever.
+    assert(mgmt_peers_format_page(peers, 1, 0, tiny, sizeof(tiny), &info) == 0);
+    assert(!info.complete);
+}
+
+static void test_an_out_of_range_cursor_is_rejected(void)
+{
+    mgmt_peer_t peers[2];
+    build(peers, 2, NULL);
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+    assert(mgmt_peers_format_page(peers, 2, -1, out, sizeof(out), &info) == 0);
+    assert(mgmt_peers_format_page(peers, 2, 3, out, sizeof(out), &info) == 0);
+    // A cursor exactly at the end is an empty but complete page, not an error.
+    assert(mgmt_peers_format_page(peers, 2, 2, out, sizeof(out), &info) > 0);
+    assert(info.complete);
+}
+
+static void test_an_empty_inventory_is_a_complete_page(void)
+{
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+    assert(mgmt_peers_format_page(NULL, 0, 0, out, sizeof(out), &info) > 0);
+    assert(info.complete && info.total == 0);
+    assert(strstr(out, "\"peers\":[]") != NULL);
+}
+
+/* -------------------------------------------------------------- identity */
+
+static void test_peer_ids_are_stable_opaque_and_not_slot_indices(void)
+{
+    uint8_t a[6] = { 0xAA, 0, 0, 0, 0, 0x01 };
+    uint8_t b[6] = { 0xAA, 0, 0, 0, 0, 0x02 };
+    char first[16];
+    char again[16];
+    char other[16];
+    mgmt_peers_format_id(a, first, sizeof(first));
+    mgmt_peers_format_id(a, again, sizeof(again));
+    mgmt_peers_format_id(b, other, sizeof(other));
+    assert(strcmp(first, again) == 0);
+    assert(strcmp(first, other) != 0);
+    assert(strncmp(first, "p_", 2) == 0);
+    assert(strlen(first) == 10);
+    // Too small to hold an id: must produce an empty string, never a partial one.
+    char tiny[4];
+    mgmt_peers_format_id(a, tiny, sizeof(tiny));
+    assert(tiny[0] == '\0');
+}
+
+/* ---------------------------------------------------------------- command */
+
+static void test_command_parsing(void)
+{
+    mgmt_peers_action_t action;
+    int cursor;
+    char id[MGMT_PEERS_ID_MAX];
+
+    assert(mgmt_peers_parse_command("list", &action, &cursor, id, sizeof(id)));
+    assert(action == MGMT_PEERS_LIST && cursor == 0);
+    assert(mgmt_peers_parse_command("list 7", &action, &cursor, id, sizeof(id)));
+    assert(action == MGMT_PEERS_LIST && cursor == 7);
+    assert(!mgmt_peers_parse_command("list -1", &action, &cursor, id, sizeof(id)));
+    assert(!mgmt_peers_parse_command("list x", &action, &cursor, id, sizeof(id)));
+    assert(!mgmt_peers_parse_command("nonsense", &action, &cursor, id, sizeof(id)));
+
+    assert(mgmt_peers_parse_command("forget p_1A2B3C4D", &action, &cursor,
+                                    id, sizeof(id)));
+    assert(action == MGMT_PEERS_FORGET);
+    assert(strcmp(id, "p_1A2B3C4D") == 0);
+}
+
+/* ------------------------------------------------------------ no secrets */
+
+
+/* ------------------------------------------------- selective forget (Phase 5) */
+
+static void test_only_the_exact_id_shape_is_accepted(void)
+{
+    // A malformed id must be a USAGE error, never a lookup that reports
+    // "already forgotten": that would tell the user a controller was removed
+    // when nothing was even addressed.
+    assert(mgmt_peers_id_valid("p_1A2B3C4D"));
+    assert(!mgmt_peers_id_valid(NULL));
+    assert(!mgmt_peers_id_valid(""));
+    assert(!mgmt_peers_id_valid("p_1A2B3C4"));      // too short
+    assert(!mgmt_peers_id_valid("p_1A2B3C4DE"));    // too long
+    assert(!mgmt_peers_id_valid("x_1A2B3C4D"));     // wrong prefix
+    assert(!mgmt_peers_id_valid("p_1a2b3c4d"));     // lowercase is not what we emit
+    assert(!mgmt_peers_id_valid("p_1A2B3C4G"));     // not hex
+
+    mgmt_peers_action_t action;
+    int cursor;
+    char id[MGMT_PEERS_ID_MAX];
+    assert(!mgmt_peers_parse_command("forget nonsense", &action, &cursor, id, sizeof(id)));
+    assert(!mgmt_peers_parse_command("forget", &action, &cursor, id, sizeof(id)));
+    assert(!mgmt_peers_parse_command("forget ", &action, &cursor, id, sizeof(id)));
+}
+
+static void test_an_id_resolves_to_the_peer_that_produced_it(void)
+{
+    mgmt_peer_bond_t bonds[] = { classic_bond(0x01, 4), classic_bond(0x02, 4),
+                                 classic_bond(0x03, 4) };
+    mgmt_peer_t peers[4];
+    size_t count = mgmt_peers_merge(bonds, 3, NULL, 0, peers, 4);
+    assert(count == 3);
+
+    for (size_t i = 0; i < count; ++i) {
+        char id[MGMT_PEERS_ID_MAX];
+        mgmt_peers_format_id(peers[i].address, id, sizeof(id));
+        assert(mgmt_peers_find_by_id(peers, count, id) == (int)i);
+    }
+    // An id nothing produced resolves to nothing. The caller turns that into an
+    // idempotent success, not into a wrong peer being deleted.
+    assert(mgmt_peers_find_by_id(peers, count, "p_00000000") == -1);
+    assert(mgmt_peers_find_by_id(peers, count, "garbage") == -1);
+    assert(mgmt_peers_find_by_id(NULL, 0, "p_00000000") == -1);
+}
+
+static void test_forget_results_report_the_verified_state(void)
+{
+    char out[128];
+
+    // Removed: success, and the verification says nothing is left.
+    assert(mgmt_peers_format_forget_result("p_1A2B3C4D", MGMT_PEER_FORGET_REMOVED,
+                                           0, out, sizeof(out)) > 0);
+    assert(strstr(out, "\"ok\":true") != NULL);
+    assert(strstr(out, "\"result\":\"removed\"") != NULL);
+    assert(strstr(out, "\"bonded\":false") != NULL);
+    assert(strstr(out, "\"tr\":0") != NULL);
+
+    // Already absent is a SUCCESS. A management reply can be lost after the
+    // command ran, so a retry must not report failure for completed work.
+    assert(mgmt_peers_format_forget_result("p_1A2B3C4D",
+                                           MGMT_PEER_FORGET_ALREADY_ABSENT,
+                                           0, out, sizeof(out)) > 0);
+    assert(strstr(out, "\"ok\":true") != NULL);
+    assert(strstr(out, "\"result\":\"already_absent\"") != NULL);
+
+    // Refusing the companion is a failure with a nameable reason.
+    assert(mgmt_peers_format_forget_result("p_1A2B3C4D", MGMT_PEER_FORGET_PROTECTED,
+                                           3u, out, sizeof(out)) > 0);
+    assert(strstr(out, "\"ok\":false") != NULL);
+    assert(strstr(out, "\"result\":\"management_peer\"") != NULL);
+    assert(strstr(out, "\"bonded\":true") != NULL);
+
+    // A partial delete must surface, not be smoothed into success: a client
+    // that believes it would show a pairing the adapter still holds.
+    assert(mgmt_peers_format_forget_result("p_1A2B3C4D", MGMT_PEER_FORGET_INCOMPLETE,
+                                           1u, out, sizeof(out)) > 0);
+    assert(strstr(out, "\"ok\":false") != NULL);
+    assert(strstr(out, "\"result\":\"incomplete\"") != NULL);
+    assert(strstr(out, "\"tr\":1") != NULL);
+}
+
+static void test_a_forget_result_never_emits_a_malformed_id_or_overruns(void)
+{
+    char out[128];
+    assert(mgmt_peers_format_forget_result("bad", MGMT_PEER_FORGET_REMOVED,
+                                           0, out, sizeof(out)) == 0);
+    assert(out[0] == '\0');
+    char tiny[8];
+    assert(mgmt_peers_format_forget_result("p_1A2B3C4D", MGMT_PEER_FORGET_REMOVED,
+                                           0, tiny, sizeof(tiny)) == 0);
+    assert(tiny[0] == '\0');
+    assert(mgmt_peers_format_forget_result("p_1A2B3C4D", MGMT_PEER_FORGET_REMOVED,
+                                           0, NULL, 0) == 0);
+}
+
+static void test_forgetting_one_peer_leaves_the_others_addressable(void)
+{
+    // The phase gate in miniature: three saved controllers, one removed, the
+    // other two still resolvable by the ids the client already holds.
+    mgmt_peer_bond_t bonds[] = { classic_bond(0x01, 4), classic_bond(0x02, 4),
+                                 classic_bond(0x03, 4) };
+    mgmt_peer_t before[4];
+    assert(mgmt_peers_merge(bonds, 3, NULL, 0, before, 4) == 3);
+    char kept_a[MGMT_PEERS_ID_MAX], gone[MGMT_PEERS_ID_MAX], kept_b[MGMT_PEERS_ID_MAX];
+    mgmt_peers_format_id(before[0].address, kept_a, sizeof(kept_a));
+    mgmt_peers_format_id(before[1].address, gone, sizeof(gone));
+    mgmt_peers_format_id(before[2].address, kept_b, sizeof(kept_b));
+
+    // The adapter now holds only the two survivors.
+    mgmt_peer_bond_t after_bonds[] = { classic_bond(0x01, 4), classic_bond(0x03, 4) };
+    mgmt_peer_t after[4];
+    size_t after_count = mgmt_peers_merge(after_bonds, 2, NULL, 0, after, 4);
+    assert(after_count == 2);
+    assert(mgmt_peers_find_by_id(after, after_count, gone) == -1);
+    assert(mgmt_peers_find_by_id(after, after_count, kept_a) >= 0);
+    assert(mgmt_peers_find_by_id(after, after_count, kept_b) >= 0);
+    // Ids are derived from the address, so a survivor's id is unchanged by
+    // another peer's removal -- the client's cached ids stay valid.
+    char recomputed[MGMT_PEERS_ID_MAX];
+    mgmt_peers_format_id(after[0].address, recomputed, sizeof(recomputed));
+    assert(strcmp(recomputed, kept_a) == 0);
+}
+
+/* ------------------------------------------- adversarial (hardening pass) */
+
+static void test_a_peer_removed_between_pages_does_not_corrupt_the_walk(void)
+{
+    // Real between-request change: the client holds a cursor from a page built
+    // when four peers existed, and by the next request one is gone. The page
+    // must still be well-formed and must not read past the end.
+    mgmt_peer_t before[4];
+    size_t count = build_live_inventory(before);
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+    assert(mgmt_peers_format_page(before, count, 0, out, sizeof(out), &info) > 0);
+    int cursor = info.next;
+    assert(cursor > 0);
+
+    // Now only two remain, and the cursor points past them.
+    mgmt_peer_t after[4];
+    build_live_inventory(after);
+    size_t shrunk = 2;
+    size_t length = mgmt_peers_format_page(after, shrunk, cursor, out,
+                                           sizeof(out), &info);
+    if (cursor > (int)shrunk) {
+        // Out of range: refused rather than reading past the array.
+        assert(length == 0);
+    } else {
+        assert(length > 0 && out[length] == '\0');
+    }
+    // The total is re-read each time, so a client comparing totals detects the
+    // change rather than silently assembling a mixed inventory.
+    assert(info.total == (int)shrunk);
+}
+
+static void test_a_full_inventory_of_rich_rows_still_terminates(void)
+{
+    // 32 peers, every one carrying a maximum name, maximum classification and
+    // both identifiers -- the largest inventory the types allow. Walking it
+    // must visit each peer exactly once and finish.
+    mgmt_peer_t peers[MGMT_PEERS_MAX_ENTRIES];
+    for (unsigned i = 0; i < MGMT_PEERS_MAX_ENTRIES; ++i) {
+        memset(&peers[i], 0, sizeof(peers[i]));
+        peers[i].address[0] = 0xAA;
+        peers[i].address[5] = (uint8_t)(i + 1);
+        peers[i].transport = MGMT_PEER_TRANSPORT_BREDR | MGMT_PEER_TRANSPORT_LE;
+        peers[i].role = MGMT_PEER_ROLE_PHYSICAL_CONTROLLER;
+        peers[i].le_slot = (int16_t)i;
+        peers[i].vendor_id = 0xFFFF;
+        peers[i].product_id = 0xFFFF;
+        memset(peers[i].name, 'N', sizeof(peers[i].name) - 1);
+        memset(peers[i].classification, 'C', sizeof(peers[i].classification) - 1);
+    }
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+    int cursor = 0;
+    int pages = 0;
+    int seen = 0;
+    while (1) {
+        size_t length = mgmt_peers_format_page(peers, MGMT_PEERS_MAX_ENTRIES,
+                                               cursor, out, sizeof(out), &info);
+        assert(length > 0);
+        assert(length < sizeof(out));
+        assert(out[length - 1] == '}');
+        assert(++pages <= 64);           // must terminate, and well before this
+        for (const char *p = out; (p = strstr(p, "\"id\":\"")) != NULL; ++p)
+            ++seen;
+        if (info.complete) break;
+        assert(info.next > cursor);      // always advances
+        cursor = info.next;
+    }
+    assert(seen == (int)MGMT_PEERS_MAX_ENTRIES);
+}
+
+static void test_forget_resolution_survives_the_peer_disappearing(void)
+{
+    // The peer is resolved from a rebuilt inventory, so one that vanished
+    // between the client reading the list and the adapter acting on it simply
+    // does not resolve -- which the caller reports as already_absent, not as a
+    // failure and not by deleting something else.
+    mgmt_peer_bond_t bonds[] = { classic_bond(0x01, 4), classic_bond(0x02, 4) };
+    mgmt_peer_t peers[4];
+    size_t count = mgmt_peers_merge(bonds, 2, NULL, 0, peers, 4);
+    char gone[MGMT_PEERS_ID_MAX];
+    mgmt_peers_format_id(peers[1].address, gone, sizeof(gone));
+
+    mgmt_peer_bond_t remaining[] = { classic_bond(0x01, 4) };
+    mgmt_peer_t after[4];
+    size_t after_count = mgmt_peers_merge(remaining, 1, NULL, 0, after, 4);
+    assert(mgmt_peers_find_by_id(after, after_count, gone) == -1);
+    // The survivor is untouched and still addressable by its original id.
+    char kept[MGMT_PEERS_ID_MAX];
+    mgmt_peers_format_id(peers[0].address, kept, sizeof(kept));
+    assert(mgmt_peers_find_by_id(after, after_count, kept) == 0);
+    (void)count;
+}
+
+static void test_single_transport_peers_resolve_and_report_correctly(void)
+{
+    // Classic-only, LE-only and both. Selective forget is device-level, so each
+    // must be one addressable peer reporting exactly the transports it holds.
+    mgmt_peer_bond_t classic_only[] = { classic_bond(0x01, 4) };
+    mgmt_peer_bond_t le_only[] = { le_bond(0x02, 5, 0) };
+    mgmt_peer_bond_t both[] = { classic_bond(0x03, 4), le_bond(0x03, 6, 0) };
+
+    mgmt_peer_t p[4];
+    assert(mgmt_peers_merge(classic_only, 1, NULL, 0, p, 4) == 1);
+    assert(p[0].transport == MGMT_PEER_TRANSPORT_BREDR);
+    assert(mgmt_peers_merge(le_only, 1, NULL, 0, p, 4) == 1);
+    assert(p[0].transport == MGMT_PEER_TRANSPORT_LE);
+    assert(mgmt_peers_merge(both, 2, NULL, 0, p, 4) == 1);
+    assert(p[0].transport == (MGMT_PEER_TRANSPORT_BREDR | MGMT_PEER_TRANSPORT_LE));
+    assert(p[0].le_slot == 6);
+}
+
+static void test_repeated_forget_of_the_same_id_is_stable(void)
+{
+    // Idempotence at the layer that can be tested purely: resolving the same id
+    // twice against an inventory that no longer holds it gives the same answer
+    // both times, so a retry after a lost reply cannot behave differently.
+    mgmt_peer_t none[1];
+    for (int attempt = 0; attempt < 3; ++attempt)
+        assert(mgmt_peers_find_by_id(none, 0, "p_1A2B3C4D") == -1);
+
+    char out[128];
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        assert(mgmt_peers_format_forget_result("p_1A2B3C4D",
+                                               MGMT_PEER_FORGET_ALREADY_ABSENT,
+                                               0, out, sizeof(out)) > 0);
+        assert(strstr(out, "\"ok\":true") != NULL);
+    }
+}
+
+static void test_no_page_can_contain_key_material(void)
+{
+    // Structural, not textual: mgmt_peer_t has nowhere to put a key, so a page
+    // cannot carry one. This asserts the shape that makes that true, so a
+    // future field addition has to come past this test.
+    assert(sizeof(((mgmt_peer_t *)0)->address) == 6);
+    mgmt_peer_t peers[2];
+    build(peers, 2, "Pad");
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+    assert(mgmt_peers_format_page(peers, 2, 0, out, sizeof(out), &info) > 0);
+    // The only key-adjacent value on the wire is a link-key TYPE, and even that
+    // is not emitted by this page format.
+    assert(strstr(out, "key") == NULL);
+    assert(strstr(out, "ltk") == NULL);
+    assert(strstr(out, "irk") == NULL);
+}
+
+/*
+ * A provisional classification must never be published as if it were an answer.
+ *
+ * Classic identity arrives in two stages: the HID descriptor binds the generic
+ * gamepad fallback, then the PnP SDP query returns the VID/PID that rebinds the
+ * device to its real driver. Pairing reports success at the first stage, and
+ * the companion reads the inventory the instant that happens -- inside the gap.
+ * Publishing the fallback there is what recorded a DualSense as the generic
+ * gamepad, which only a second pairing appeared to fix.
+ */
+static void test_a_provisional_classification_is_withheld_until_it_settles(void)
+{
+    // The defect: generic fallback bound, identity still on its way. The
+    // adapter cannot say yet, so it says nothing.
+    assert(!mgmt_peers_classification_publishable(true, true));
+
+    // Resolution concluded and no vendor driver claimed it. The fallback IS the
+    // answer now, and withholding it forever would lose a real classification.
+    assert(mgmt_peers_classification_publishable(true, false));
+
+    // A vendor driver matched on real evidence. Authoritative immediately --
+    // an outstanding query must not suppress a classification that is already
+    // better than anything the query could produce.
+    assert(mgmt_peers_classification_publishable(false, true));
+    assert(mgmt_peers_classification_publishable(false, false));
+
+    // Order-independence: whichever way the two inputs arrive, the only
+    // withheld combination is provisional-and-unsettled.
+    for (int fallback = 0; fallback <= 1; ++fallback) {
+        for (int outstanding = 0; outstanding <= 1; ++outstanding) {
+            bool expected = !(fallback && outstanding);
+            assert(mgmt_peers_classification_publishable(
+                       fallback != 0, outstanding != 0) == expected);
+        }
+    }
+}
+
+/*
+ * A controller that has been identified must not be forgotten when it goes
+ * offline.
+ *
+ * The remembered name is captured at bonding, before any driver has claimed the
+ * peer. For a controller whose advertisement carries no name that is the scan
+ * handler's placeholder, and it is invisible while connected -- the inventory
+ * reports the live driver as the classification. It becomes visible the moment
+ * the peer disconnects: no live driver, so the row falls back to the remembered
+ * name. Hardware, 2026-08-29: `btpeers` reported the offline Xbox as
+ * role=controller, bonded=true, conn=false, name="Generic BLE Gamepad", while
+ * the same controller read "Xbox Wireless Controller" whenever it was connected.
+ */
+static void test_a_known_controller_is_not_downgraded_when_it_goes_offline(void)
+{
+    // The fix: a driver that matched real evidence replaces the placeholder.
+    assert(mgmt_peers_remembered_identity_should_replace(true, true));
+
+    // THE INVARIANT. The generic fallback is never authoritative, so it can
+    // never overwrite an identity already resolved -- this is what stops a
+    // known controller being downgraded by a later, weaker observation.
+    assert(!mgmt_peers_remembered_identity_should_replace(false, true));
+
+    // Nothing to do when the resolved identity is what is already remembered.
+    // Guarding on this is what keeps an ordinary reconnect from rewriting flash.
+    assert(!mgmt_peers_remembered_identity_should_replace(true, false));
+    assert(!mgmt_peers_remembered_identity_should_replace(false, false));
+
+    // The rule is strictly one-directional over every input combination: a
+    // replacement requires authority AND an actual change, in that order.
+    for (int authoritative = 0; authoritative <= 1; ++authoritative) {
+        for (int differs = 0; differs <= 1; ++differs) {
+            bool expected = authoritative && differs;
+            assert(mgmt_peers_remembered_identity_should_replace(
+                       authoritative != 0, differs != 0) == expected);
+        }
+    }
+
+    // Related but separate rule, asserted together so the two cannot drift: a
+    // still-unresolved peer publishes NO classification rather than the
+    // fallback, and a settled one publishes whatever it actually resolved to.
+    // A controller that is genuinely generic therefore still reports as such.
+    assert(!mgmt_peers_classification_publishable(true, true));
+    assert(mgmt_peers_classification_publishable(true, false));
+}
+
+int main(void)
+{
+    test_a_known_controller_is_not_downgraded_when_it_goes_offline();
+    test_a_provisional_classification_is_withheld_until_it_settles();
+    test_role_order_puts_management_first();
+    test_unseen_peer_is_unknown_not_guessed();
+    test_one_device_with_two_key_records_is_one_peer();
+    test_distinct_devices_stay_distinct();
+    test_sort_is_independent_of_enumeration_order();
+    test_connected_peer_without_a_key_is_still_reported();
+    test_live_evidence_names_and_marks_a_stored_peer();
+    test_a_weaker_observation_cannot_demote_a_stronger_one();
+    test_one_identity_with_a_live_observation_is_one_peer();
+    test_a_remembered_companion_is_not_a_paired_controller();
+    test_an_unresolved_observation_still_splits_the_peer();
+    test_classification_and_identifiers_survive_the_merge();
+    test_a_later_observation_cannot_erase_a_known_classification();
+    test_an_unclassified_peer_reports_nothing_rather_than_empty();
+    test_a_classification_is_sanitised_like_a_remote_name();
+    test_a_widest_possible_row_still_fits_a_page();
+    test_merge_is_bounded_by_capacity();
+    test_untrusted_names_cannot_break_out_of_json();
+    test_names_are_bounded_and_never_unterminated();
+    test_a_name_that_sanitises_to_nothing_is_dropped();
+    test_a_small_inventory_fits_one_complete_page();
+    test_a_full_inventory_pages_and_every_peer_appears_once();
+    test_the_live_inventory_paginates_instead_of_failing();
+    test_every_page_keeps_room_for_its_own_suffix();
+    test_following_the_cursor_visits_every_peer_exactly_once();
+    test_a_page_that_cannot_progress_fails_closed();
+    test_an_out_of_range_cursor_is_rejected();
+    test_an_empty_inventory_is_a_complete_page();
+    test_peer_ids_are_stable_opaque_and_not_slot_indices();
+    test_command_parsing();
+    test_only_the_exact_id_shape_is_accepted();
+    test_an_id_resolves_to_the_peer_that_produced_it();
+    test_forget_results_report_the_verified_state();
+    test_a_forget_result_never_emits_a_malformed_id_or_overruns();
+    test_forgetting_one_peer_leaves_the_others_addressable();
+    test_a_peer_removed_between_pages_does_not_corrupt_the_walk();
+    test_a_full_inventory_of_rich_rows_still_terminates();
+    test_forget_resolution_survives_the_peer_disappearing();
+    test_single_transport_peers_resolve_and_report_correctly();
+    test_repeated_forget_of_the_same_id_is_stable();
+    test_no_page_can_contain_key_material();
+    printf("mgmt_peers: all tests passed\n");
+    return 0;
+}

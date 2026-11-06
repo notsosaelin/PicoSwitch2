@@ -33,7 +33,7 @@ channel: EP `0x02` OUT = host→device requests, EP `0x82` IN = device→host re
 8-byte command header (`id, dir, transport, sub, …`), grouped by `(cmd, sub)`, and diffed the full
 response bytes between the two files. HID input reports on the interrupt endpoint (`0x81`) and EP0
 control traffic were excluded from the command diff. Findings were then re-verified against the
-**current** `src/switch_pro2/switch_pro2.c` (the captures are dated 2026-07-10; some fixes postdate
+**current** `firmware/src/console/pro2/switch_pro2.c` (the captures are dated 2026-07-10; some fixes postdate
 them).
 
 > Note: `tshark` was not on the analysis shell's PATH, so a self-contained Python pcapng/USBPcap

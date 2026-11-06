@@ -134,7 +134,7 @@ Management now matches that rule: `config_ble.fresh_bond_admitted` is latched wh
 accepted and cleared on disconnect and on the HCI-loss transient reset. Admission is unchanged in
 who it admits — `mgmt off` still revokes a latched attempt, and an attempt that was not admitted at
 connect time can never become admitted. Pinned by `mgmt_accept_latched_bonding()` in
-`tools/test_mgmt_access.c` and by `tools/test_bluetooth_closeout_wiring.py`.
+`tests/firmware/test_mgmt_access.c` and by `tests/tools/test_bluetooth_closeout_wiring.py`.
 
 Live confirmation on the accepted build: `btlife` reports `cble.fresh_bond: true` for the
 management connection that was admitted inside the window.
@@ -203,7 +203,7 @@ silent reconnect churn masquerading as stability.
 ### Remaining unknowns
 
 - The bounded HCI/CYW43 OFF/ON recovery has still never fired on hardware. Its logic is host-tested
-  (`tools/test_ns2_bt_health.c`); the recovery *path* remains unvalidated in the field.
+  (`tests/firmware/test_ns2_bt_health.c`); the recovery *path* remains unvalidated in the field.
 - The `le-gatt-initiated` bond fallback is unexercised on hardware (see the table above).
 - Longer-than-80-minute behaviour, and behaviour across console sleep/wake during a soak, are
   untested.
@@ -298,7 +298,7 @@ audio, so tying the audio sink to input ownership would silence a working headse
 
 ### Made explicit
 
-`tools/test_bluetooth_closeout_wiring.py` now pins the decoupling: `ds5_audio_bridge.c` must not
+`tests/tools/test_bluetooth_closeout_wiring.py` now pins the decoupling: `ds5_audio_bridge.c` must not
 reference `ns2_active_input` / `ns2_input_arbiter`, both audio builds must gate on connection
 identity alone, and the DS5 audio task must not gate on input ownership. Mutation-checked — injecting
 an arbiter reference into either file fails the guard.

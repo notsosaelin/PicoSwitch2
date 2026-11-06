@@ -69,7 +69,7 @@ python tools\ns2_motion_chart_solver.py `
   "dumps\BLE CAPTURE\pro2-chart-transition-splatoon-3-to-1-2026-07-29.jsonl" `
   "dumps\BLE CAPTURE\pro2-chart-transition-3-to-2-2026-07-29.jsonl"
 
-python tools\test_ns2_motion_reference.py
+python tests\tools\test_ns2_motion_reference.py
 ```
 
 An orthogonal control then placed the controller upright, with its face buttons
@@ -258,7 +258,7 @@ not proven by interpolation alone.
 - prefix epochs that fall across a chart transition and both candidate-chart
   residuals, including direct nonzero/nonzero seams.
 
-`tools/test_ns2_motion_reference.py` locks all five boundary captures into the
+`tests/tools/test_ns2_motion_reference.py` locks all five boundary captures into the
 offline regression suite, including the `3 → 1` and state-2 prefix seams in
 their capture-proven local cyclic frames.
 
@@ -293,7 +293,7 @@ The passive trigger's `unresolved` target mask ignored
 state-0/state-1/state-3 transitions while advancing its true baseline and froze only
 when state 2 participated. It supplied the missing coverage during ordinary play
 without a prescribed physical maneuver. Its pure
-state machine is covered by `tools/test_ds5_motion_chart_trigger.c`; it never
+state machine is covered by `tests/firmware/test_ds5_motion_chart_trigger.c`; it never
 changes the controller's native PDU.
 
 No production motion generator changed. Genuine Pro2 packets are still passed

@@ -57,8 +57,8 @@ and in reverse:
 
 | Layer | Location | Platform-specific? |
 |---|---|---|
-| Bridge Core | `android/companion/bridge-core/` (Gradle module `:bridge-core`) | **No.** Plain Kotlin/JVM, no Android dependency. |
-| Android backend | `android/companion/app/src/main/java/dev/picoswitch/companion/bridge/` | Yes |
+| Bridge Core | `companions/android/bridge-core/` (Gradle module `:bridge-core`) | **No.** Plain Kotlin/JVM, no Android dependency. |
+| Android backend | `companions/android/app/src/main/java/dev/picoswitch/companion/bridge/` | Yes |
 | Android app/UI | `.../companion/ui/`, `MainActivity` | Yes |
 
 The module boundary is the guard: `:bridge-core` is a `java-library` + `kotlin("jvm")` module with
@@ -66,7 +66,7 @@ no Android SDK on its compile classpath, so an Android type in the shared model 
 failure**, not a review finding. `ArchitectureGuardTest` additionally scans the sources for
 platform vocabulary in identifiers and string literals, which a classpath cannot catch.
 
-> The module currently lives under `android/companion/` because that is where the only consumer is.
+> The module currently lives under `companions/android/` because that is where the only consumer is.
 > That path is historical ownership, not an Android architecture boundary. Do not create a second
 > touch-layout core beside it. When a second host appears, relocate this existing module upward
 > without changing its package/API; nothing in it depends on the current path.
@@ -77,7 +77,7 @@ outcomes; this document is written so Level 1 is sufficient.
 
 ### 2.1 The second host arrived, and did NOT trigger the relocation
 
-**Settled 2026-08-29.** A Windows companion now exists under `windows/companion/` (design:
+**Settled 2026-08-29.** A Windows companion now exists under `companions/windows/` (design:
 `WINDOWS_PASS.md`). It is **C#**, so it cannot link Kotlin/JVM bytecode: it is a **Level 1**
 consumer, and relocating `:bridge-core` upward would have delivered churn and zero reuse. The
 relocation trigger in the quotation above is specifically a **JVM** second consumer. `:bridge-core`
@@ -92,11 +92,11 @@ them:
 
 | Fixture | Guards |
 |---|---|
-| `tools/fixtures/android_controller_hid.h` | descriptor bytes, offsets, contract version |
-| `tools/fixtures/bridge_report_goldens.csv` | **normalized state → wire bytes**, in both encoders |
-| `tools/fixtures/controller_link_face_mapping.csv` | physical key + layout → logical button/usage |
-| `tools/fixtures/touch_face_mapping.csv` | on-screen slot + layout → usage |
-| `tools/fixtures/management/protocol-v1.json` | management encode/decode conformance |
+| `contracts/android_controller_hid.h` | descriptor bytes, offsets, contract version |
+| `contracts/bridge_report_goldens.csv` | **normalized state → wire bytes**, in both encoders |
+| `contracts/controller_link_face_mapping.csv` | physical key + layout → logical button/usage |
+| `contracts/touch_face_mapping.csv` | on-screen slot + layout → usage |
+| `contracts/management/protocol-v1.json` | management encode/decode conformance |
 
 `tools/check_android_descriptor_parity.py` covers C, Kotlin and C#; a one-sided edit to any of the
 three fails it. The report goldens are new with the Windows pass and close a gap the descriptor
@@ -700,5 +700,5 @@ does not, Path C is the pattern to copy.
   full Android reference, feasibility evidence, and hardware validation record
 - [`../agents/ANDROID.md`](../agents/ANDROID.md) — durable Android traps worth reading even if you
   are implementing a different platform
-- `tools/fixtures/android_controller_hid.h` — the C-side source of truth for the descriptor and
+- `contracts/android_controller_hid.h` — the C-side source of truth for the descriptor and
   wire layout

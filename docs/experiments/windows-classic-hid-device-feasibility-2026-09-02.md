@@ -32,7 +32,7 @@ Classic.
 
 ## What Android actually does (from source, not memory)
 
-`android/companion/app/src/main/java/dev/picoswitch/companion/bridge/AndroidHidTransport.kt`:
+`companions/android/app/src/main/java/dev/picoswitch/companion/bridge/AndroidHidTransport.kt`:
 
 | Step | Call |
 |---|---|

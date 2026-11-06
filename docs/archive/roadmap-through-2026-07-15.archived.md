@@ -35,11 +35,11 @@ After editing `web/index.html`, regenerate the embedded copy before building:
 
 - **core0** — TinyUSB device. Normal mode = Switch 2 Pro Controller (HID + vendor-bulk +
   audio interfaces). Config mode = composite CDC + read-only MSC (serves the web page).
-- **core1** — the vendored **joypad-os bthid** stack (`src/bt_hid`) on BTstack/CYW43: Bluetooth
+- **core1** — the vendored **joypad-os bthid** stack (`firmware/src/hid_host`) on BTstack/CYW43: Bluetooth
   host to the controllers, plus LED, BOOTSEL gestures, pairing, rumble/lightbar, and settings flash.
-- **Seam** — `src/bt_hid/ns2_seam.c` maps each driver's unified `input_event_t` (JP buttons) →
+- **Seam** — `firmware/src/input/ns2_seam.c` maps each driver's unified `input_event_t` (JP buttons) →
   the Switch 2 wire format via the per-family remap, and publishes it cross-core through `report.c`.
-- **NS2 protocol** — `src/switch_pro2/` (descriptors, EP0 identity handshake, command channel,
+- **NS2 protocol** — `firmware/src/console/pro2/` (descriptors, EP0 identity handshake, command channel,
   report 0x09/0x05, rumble). Spec: `docs/switch2/usb-spec.md`.
 
 bluepad32 has been fully retired (joypad-os is the sole BT stack).
@@ -90,7 +90,7 @@ something that changes the picture. Preserved in full for context; no longer the
 - **Genuine-controller BLE reverse-engineering — 🟡 active, 2026-07-10.** New objective,
   replacing "fix the encoder": closes a concrete blind spot (`switch2_ble.c` receives but never
   reads report bytes 16-59, where third-party decodes place motion) with a non-invasive,
-  timestamped raw-capture facility (`src/bt_hid/sw2_capture.c`, config-mode `sw2cap on/off/stat/
+  timestamped raw-capture facility (`firmware/src/diagnostics/sw2_capture.c`, config-mode `sw2cap on/off/stat/
   drain`). **Revised same day:** the initial CDC-auto-streaming design produced no usable output
   in practice (structurally incompatible with the config web UI's request/response protocol) —
   redesigned as a pull-based batch-drain command with a proper **"Switch 2 BLE Capture" panel in
@@ -445,15 +445,15 @@ state (Pro2 → GameCube → CDC config, terminal; power-cycle returns to Pro2),
 Stage F as originally scoped (persisted selection, reboot-required switching) is superseded, not
 merely deferred. New `usb_personality_t` enum owned exclusively by core0; core1's existing BOOTSEL-hold
 gesture (`bootsel.c`, unmodified — its `hold_fired` latch already satisfied every requirement) now
-requests a cycle instead of unconditionally entering config. New `src/switch_gc/switch_gc.c` module
+requests a cycle instead of unconditionally entering config. New `firmware/src/console/gamecube/switch_gc.c` module
 carries Confirmed byte-exact descriptors (promoted from Strong this same pass — see below) and
 explicit, individually-evidence-tagged Stage-B-scope stubs for everything else. Centralized every
 TinyUSB callback that can only have one link-time definition (descriptor callbacks, EP0 vendor
 control, mount, HID get/set report); found and fixed a real latent bug in the process (Pro2's
 WinUSB/MS-OS-1.0 string descriptor was gated only on "not config mode," so it would have incorrectly
-answered for GameCube mode too). Two new pure-logic files (`src/usb_mode_cycle.c`, zero pico-sdk
+answered for GameCube mode too). Two new pure-logic files (`firmware/src/app/usb_mode_cycle.c`, zero pico-sdk
 dependency) are host-compilable and host-tested
-(`tools/test_usb_mode_cycle.c`); `tools/verify_gc_descriptors.py` independently re-derives the
+(`tests/firmware/test_usb_mode_cycle.c`); `tools/verify_gc_descriptors.py` independently re-derives the
 expected descriptor bytes (not copied from the C source) and diffs them against `switch_gc.c`. Same
 pass, decoding `rumble-procon-gccon.pcapng.gz` further promoted the GameCube HID report descriptor's
 structure and a second physical unit's device/config descriptor bytes to Confirmed — this closed what
@@ -523,7 +523,7 @@ the current single most important next step, not further rumble research. Full d
 
 ### 🔵 Joy-Con 2 Left/Right (Experimental) — Stage A-C implemented, hardware-tested at the enumeration level
 
-Previously documented as reserved-but-unimplemented (`USB_PERSONALITY_JOYCON2` in `include/usb.h`,
+Previously documented as reserved-but-unimplemented (`USB_PERSONALITY_JOYCON2` in `firmware/src/app/usb.h`,
 skipped by the mode-cycle logic) with no hardware evidence at all — "60-70% templatable" from
 GameCube's own scaffolding at best. Superseded: the project owner obtained genuine Joy-Con 2 Left
 and Right hardware (a USB adapter, plus full SPI flash dumps of each), giving this personality real
@@ -573,7 +573,7 @@ all. Full detail: `docs/switch2-joycon2/protocol.md` "Open questions" and "Why n
 are now `true`; new `switch_joycon2.h`/`.c`/`_encode.h`/`.c`, templated from `switch_gc.h`/`.c`. USB
 descriptors (device/config/HID Report, both sides) use this session's own Confirmed captured
 bytes; input report encoders implement the full Confirmed button/field layout from `ndeadly`'s
-docs and pass 32/32 new host-side golden tests (`tools/test_switch_joycon2_report.c`). EP0 identity
+docs and pass 32/32 new host-side golden tests (`tests/firmware/test_switch_joycon2_report.c`). EP0 identity
 handshake, vendor command responses beyond the shared family baseline, and rumble byte semantics
 are Hypothesis-tier, matching GameCube's own Stage D starting point before hardware correction.
 Side is never user-facing: `usb.c`'s `usb_reset_personality_state()` calls
@@ -621,14 +621,14 @@ A/B/X/Y, D-pad, L/R, ZL/ZR, stick+click, Plus/Minus, Home/Capture, and C all alr
 zero new code (Joy-Con2's encoder reads the same fields Pro2's existing per-family remap pipeline
 already populates, just side-gated). Only **SL/SR** — real rail buttons on both Joy-Con units, no
 Pro2/GameCube equivalent — were missing, hardcoded to 0. Fixed: new `SWITCH_EXTRA_SL`/`SR` bits
-(`include/switch_pro.h`), wired into both encoders, sourced by reinterpreting the existing
+(`firmware/src/console/pro/switch_pro.h`), wired into both encoders, sourced by reinterpreting the existing
 `NS2_DST_GL`/`NS2_DST_GR` destinations as SL/SR whenever a Joy-Con2 personality is active
 (`ns2_seam.c`) — GL/GR have no meaning for a lone Joy-Con (no grips), so the same paddle/extra
 source buttons that default to GL/GR in Pro2 mode now drive a real control here instead, with
 Pro2/GameCube mode provably unaffected. Also documented: the Switch's "sideways" single-Joy-Con
 behavior is entirely console-side software — this project only needs correct physical button
 positions, no rotation layer of its own. Full detail: `docs/switch2-joycon2/mapping.md`.
-Host-tested (`tools/test_switch_joycon2_report.c`, 43/43), both boards build clean, **not yet
+Host-tested (`tests/firmware/test_switch_joycon2_report.c`, 43/43), both boards build clean, **not yet
 hardware-tested**.
 
 **Update, same day — Config mode gained a live BOOTSEL-hold exit back to Pro2.** Previously
@@ -637,7 +637,7 @@ whether a live exit was possible, and it was — lifted the restriction rather t
 it. `usb_next_personality(CDC_CONFIG)` now wraps to `SWITCH2_PRO2`; `ns2_bt_host.c` no longer
 suppresses BOOTSEL_HOLD in config mode (pairing/wipe gestures still are). `!NS2_PRO` builds
 unaffected. Cycle is now a closed loop: `Pro2 → GameCube → Joy-Con2 L → Joy-Con2 R → Config →
-(hold) → Pro2`. Host-tested (`tools/test_usb_mode_cycle.c`, 11/11), both boards build clean, not
+(hold) → Pro2`. Host-tested (`tests/firmware/test_usb_mode_cycle.c`, 11/11), both boards build clean, not
 yet hardware-tested.
 
 **Update, same day — three real bugs reported by the project owner after testing the above, all
@@ -810,7 +810,7 @@ USB is not — check the transport before assuming a wall) — **live BLE queryi
 implementation of the same command protocol this repo's own USB path implements, useful for resolving
 unknown SPI addresses/command bytes and for capabilities this repo's static analysis can't reach, e.g.
 reading a *calibrated* unit's user motion-cal region) — and, as of 2026-07-10, this repo's own
-**non-invasive BLE traffic capture** (`src/bt_hid/sw2_capture.c`, config-mode `sw2cap on/off/stat/
+**non-invasive BLE traffic capture** (`firmware/src/diagnostics/sw2_capture.c`, config-mode `sw2cap on/off/stat/
 drain`, driven by a dedicated capture panel in the config web UI —
 `docs/switch2/ble-controller-protocol-inventory.md`): the durable next step this section used to
 describe as aspirational — "our dongle is itself a BT host that *decrypts* a real controller's reports,

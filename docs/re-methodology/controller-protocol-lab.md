@@ -198,7 +198,7 @@ fixture-checked against the examples mirrored in
 retained trace:
 
 ```powershell
-python tools/test_ns2_firmware_update.py -v
+python tests/tools/test_ns2_firmware_update.py -v
 ./tools/firmware_lab.ps1 -Trace <full-command-0x0d-trace.jsonl>
 ```
 
@@ -221,13 +221,13 @@ The on-device sink remains a staged research task:
 
 ```powershell
 ./tools/test_PicoSwitch2Lab.ps1
-python tools/test_capture_to_fixture.py -v
-python tools/test_ns2_command_atlas.py -v
-python tools/test_audio_lab_analyze.py -v
-python tools/test_audit_firmware_capture_space.py -v
-python tools/test_ns2_firmware_update.py -v
-python tools/test_repo_skills.py -v
-python tools/test_ns2_magprobe.py
+python tests/tools/test_capture_to_fixture.py -v
+python tests/tools/test_ns2_command_atlas.py -v
+python tests/tools/test_audio_lab_analyze.py -v
+python tests/tools/test_audit_firmware_capture_space.py -v
+python tests/tools/test_ns2_firmware_update.py -v
+python tests/tools/test_repo_skills.py -v
+python tests/tools/test_ns2_magprobe.py
 ```
 
 These tests validate the laboratory and parsers. They are not controller or

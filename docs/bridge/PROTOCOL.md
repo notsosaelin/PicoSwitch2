@@ -10,7 +10,7 @@ implementation should be writable from this document plus
 [`PLATFORM_BACKEND.md`](PLATFORM_BACKEND.md), without reading Android code.
 
 The C-side source of truth for the byte layout remains
-[`tools/fixtures/android_controller_hid.h`](../../tools/fixtures/android_controller_hid.h);
+[`contracts/android_controller_hid.h`](../../contracts/android_controller_hid.h);
 `tools/check_android_descriptor_parity.py` fails loudly if the C, Kotlin and C# descriptors ever
 diverge. (The C# copy lives in the Windows companion and is optional: on a checkout without
 `windows/`, the script reports two-way parity and still passes.)
@@ -20,7 +20,7 @@ diverge. (The C# copy lives in the Windows companion and is optional: on a check
 ## 1. Contract version and runtime skew
 
 The bridge carries a single integer contract version, defined once in
-[`tools/fixtures/android_controller_hid.h`](../../tools/fixtures/android_controller_hid.h) as
+[`contracts/android_controller_hid.h`](../../contracts/android_controller_hid.h) as
 `ANDROID_BRIDGE_CONTRACT_VERSION`, mirrored by `BridgeContract.VERSION` in Kotlin and
 `BridgeContract.Version` in C#. `tools/check_android_descriptor_parity.py` fails if any of them
 disagree.
@@ -215,8 +215,8 @@ have that cross-layer coverage, keyed off a shared fixture:
 
 | Origin | Fixture | Head (Kotlin) | Tail (C) |
 | --- | --- | --- | --- |
-| On-screen | `tools/fixtures/touch_face_mapping.csv` | `TouchProfileCatalogTest` | `tools/test_touch_layout_face_goldens.c` |
-| Physical | `tools/fixtures/controller_link_face_mapping.csv` | `ControllerLinkFaceMappingTest` | `tools/test_controller_link_face_goldens.c` |
+| On-screen | `contracts/touch_face_mapping.csv` | `TouchProfileCatalogTest` | `tests/firmware/test_touch_layout_face_goldens.c` |
+| Physical | `contracts/controller_link_face_mapping.csv` | `ControllerLinkFaceMappingTest` | `tests/firmware/test_controller_link_face_goldens.c` |
 
 The physical fixture gained a third consumer with the Windows companion:
 `ControllerLinkFaceMappingTests` (C#). It also carries the property behind the table rather than
@@ -232,7 +232,7 @@ property is what stops a future simplification from doing it again.
 Capture has no physical key by default on any audited device; it is reached through a virtual
 button, as are Home (which also accepts a platform "mode" key) and C/GameChat.
 
-### 3.4 Encoder goldens — `tools/fixtures/bridge_report_goldens.csv`
+### 3.4 Encoder goldens — `contracts/bridge_report_goldens.csv`
 
 **Added 2026-08-29 with the Windows companion.** The descriptor guard proves that every
 implementation **describes** the same report. It cannot show that they **fill** it identically, and

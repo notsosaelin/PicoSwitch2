@@ -42,9 +42,9 @@ normal bthid_task() scheduling -> per-controller cached state/change detection -
 specific BT output packet/sustain semantics`.
 
 **1. Does switching Pro2→GameCube synchronously publish `(0,0)` before reconnect?**
-**Confirmed: yes.** `usb_apply_mode_cycle()` (`src/usb.c:86-108`) calls `tud_disconnect()`, then
+**Confirmed: yes.** `usb_apply_mode_cycle()` (`firmware/src/app/usb.c:86-108`) calls `tud_disconnect()`, then
 `usb_reset_personality_state(next)` — which for the GameCube target calls `switch_gc_reset()` →
-`switch_gc_init()` (`src/switch_gc/switch_gc.c`), which calls `report_set_rumble(0, 0, 0)`
+`switch_gc_init()` (`firmware/src/console/gamecube/switch_gc.c`), which calls `report_set_rumble(0, 0, 0)`
 unconditionally — **before** `g_usb_personality = next` executes on the next line. This write to
 the shared `report.c` state is personality-agnostic (plain critical-section-guarded globals), so
 it takes effect immediately regardless of the `g_usb_personality` variable's exact timing.
@@ -62,7 +62,7 @@ comparison basis is this private cache, not the fresh shared state — a real, i
 for a missed transition (see finding 5 below for a concrete, non-narrow bug in the same function).
 
 **3. Does `switch_gc_init()` run before or after `g_usb_personality` changes, and can the BT task
-observe an intermediate state?** **Confirmed: `switch_gc_init()` runs first** (`src/usb.c:100-101`:
+observe an intermediate state?** **Confirmed: `switch_gc_init()` runs first** (`firmware/src/app/usb.c:100-101`:
 `usb_reset_personality_state(next);` then `g_usb_personality = next;`). Core1 (BT task) reads
 `g_usb_personality` in exactly one rumble-relevant place (`ns2_seam.c`'s `gc_active` check inside
 `router_submit_input()`, unrelated to the rumble-forwarding path) — the rumble reset itself
@@ -182,7 +182,7 @@ controlled USB host for either the Pico or the genuine NSO GameCube Controller. 
   with `--ndjson`.
 
 **Verified this pass (no hardware connected)**: the tool builds clean
-(`tools/gcusb/build.ps1`), all 46 pure-logic tests pass (`tools/test_gcusb_core.c`), and every
+(`tools/gcusb/build.ps1`), all 46 pure-logic tests pass (`tests/firmware/test_gcusb_core.c`), and every
 read-only/refusal code path was exercised directly against a machine with zero matching USB
 devices attached: `list` correctly reports none found; `describe`/`rumble`/etc. without `--target`
 or with an unresolvable target refuse cleanly with an actionable message, never silently proceed;
@@ -370,7 +370,7 @@ envelope-duration fix (previous section) remains independently correct and neces
 how long the *downstream* Xbox bridge holds a trigger, which matters regardless of which upstream
 byte is read as the trigger — but the trigger itself was being misidentified the whole time.
 
-**Fixed** in `switch_gc_hid_out_report()` (`src/switch_gc/switch_gc.c`, see `gc_rumble_state_t`):
+**Fixed** in `switch_gc_hid_out_report()` (`firmware/src/console/gamecube/switch_gc.c`, see `gc_rumble_state_t`):
 now reads `data[1]` as the state enum and drives the motor at a fixed level for `GC_RUMBLE_ON`,
 off for `OFF`/`STOP`/anything malformed. `tools/gcusb`'s `gcusb_build_rumble_data()` updated to
 match (now emits a real OFF/ON state at the correct offset rather than a fake amplitude byte), and

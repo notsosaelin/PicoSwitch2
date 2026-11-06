@@ -22,7 +22,7 @@ protocol reference's own layout table, which is what let it survive so long.
 **The claim**: the twelve bytes at motion offsets `0x04..0x0F` are three 32-bit binary angles, one
 per body axis, `2^32 = 360°`, and the console reconstructs angular rate by differencing them. The
 firmware encoder built on it (`ns2_motion_tick()` + `ns2_encode_motion30()` in
-`src/switch_pro2/switch_pro2.c`) integrated gyro rate over real elapsed time at
+`firmware/src/console/pro2/switch_pro2.c`) integrated gyro rate over real elapsed time at
 `2^32 / (16.384 LSB/dps · 360° · 1e6) = 0.72818` per µs·LSB, initialized `Z` to `0x80000000`
 (≈ −180°) from a capture, and wrote the three accumulators out little-endian.
 
@@ -63,7 +63,7 @@ represent emits motion length 0.
 
 **Do not**: reintroduce a per-axis angle model for this field, or add a second motion encoder
 "for generic controllers". Per-source differences are frame differences and belong in
-`src/bt_hid/motion/ns2_motion_seam.c` as one determinant-+1 row per source.
+`firmware/src/motion/ns2_motion_seam.c` as one determinant-+1 row per source.
 
 ## GC rumble output-report `0x03`, `data[0]` as a linear 0-255 amplitude byte
 
@@ -129,7 +129,7 @@ was refuted first and independently.
 
 1. **Stale shared rumble state survives the Pro2→GameCube transition.** Refuted:
    `switch_gc_init()`'s `report_set_rumble(0, 0, 0)` runs synchronously before the personality
-   flag flips (`src/usb.c`'s `usb_apply_mode_cycle()`), verified by direct trace of the exact
+   flag flips (`firmware/src/app/usb.c`'s `usb_apply_mode_cycle()`), verified by direct trace of the exact
    transition sequence.
 2. **A race between `g_usb_personality` flipping and `switch_gc_init()` running lets the BT task
    observe an inconsistent intermediate state.** Refuted for rumble specifically: the rumble reset

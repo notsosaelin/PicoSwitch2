@@ -571,7 +571,7 @@ behavior — both boards build clean.
 
 ### 11.1 Capture-annotation marker (new)
 
-`sw2_capture_mark(const uint8_t *label, uint16_t len)` (`src/bt_hid/sw2_capture.c`/`.h`) inserts a
+`sw2_capture_mark(const uint8_t *label, uint16_t len)` (`firmware/src/diagnostics/sw2_capture.c`/`.h`) inserts a
 single new `SW2_CAP_MARKER` capture entry carrying the label text, timestamped exactly like every
 other entry. It is a **pure logging call** — `sw2_capture_record()` was already cross-core-safe
 and side-effect-free with respect to the BLE connection; calling it with a text label from

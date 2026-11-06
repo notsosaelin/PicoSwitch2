@@ -36,9 +36,9 @@ matching is the discovery authority; a name is not authentication.
 **CL-IN / CL-OUT are gameplay, not management.** They are Controller Link's Path C data plane, on
 this service so they inherit the same bond, encryption and allowlist -- one ACL, not a second
 relationship. They are listed here because a management client discovers the whole service and
-because `tools/fixtures/management/protocol-v1.json` pins all five UUIDs for both companions; the
+because `contracts/management/protocol-v1.json` pins all five UUIDs for both companions; the
 newline-JSON contract in this document does not apply to them. Their framing is
-`include/ns2_companion_link.h`.
+`firmware/src/management/ns2_companion_link.h`.
 
 Write Without Response is deliberate: at gameplay rates an acknowledged write would serialise
 input behind a round trip, and a lost frame is superseded by the next one. The frame's sequence
@@ -146,7 +146,7 @@ Portable `ManagementClient` starts after carrier subscription in step 4 and perf
 probe that promotes the session. Android permission, association, bond repair,
 and user-facing retry behavior remain app/backend responsibilities.
 
-The Windows backend (`windows/companion`, C#/WinUI 3) follows the same sequence with four carrier
+The Windows backend (`companions/windows`, C#/WinUI 3) follows the same sequence with four carrier
 differences, none of which change the logical contract:
 
 1. **No association model.** Windows has no counterpart to Android's companion-device association;

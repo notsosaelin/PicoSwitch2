@@ -116,10 +116,10 @@ reaches the console, and the Adapter page shows a truthful active-input identity
 
 ## Guards
 
-`tools/test_ns2_console_slot_wiring.py` pins the one-output-slot invariant in both directions and
+`tests/tools/test_ns2_console_slot_wiring.py` pins the one-output-slot invariant in both directions and
 is mutation-checked — reintroducing `ns2_slot(e->dev_addr)`, publishing via `e->dev_addr`, or making
 `find_player_index()` return a connection index each fail it. The naming rule is covered at its pure
-seam in `tools/test_ns2_input_arbiter.c`.
+seam in `tests/firmware/test_ns2_input_arbiter.c`.
 
 ## Remaining unknowns
 

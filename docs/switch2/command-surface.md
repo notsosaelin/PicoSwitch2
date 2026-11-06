@@ -11,8 +11,8 @@
 > [`nfc-implementation.md`](nfc-implementation.md) (command `0x01`), and
 > [`../bluetooth/battery-passthrough.md`](../bluetooth/battery-passthrough.md) (command `0x0B`).
 >
-> Evidence base: `src/switch_pro2/switch_pro2.c` (`ns2_dispatch`, the authoritative dispatcher),
-> `src/switch_gc/switch_gc.c` + `src/switch_joycon2/switch_joycon2.c` (family mirrors),
+> Evidence base: `firmware/src/console/pro2/switch_pro2.c` (`ns2_dispatch`, the authoritative dispatcher),
+> `firmware/src/console/gamecube/switch_gc.c` + `firmware/src/console/joycon2/switch_joycon2.c` (family mirrors),
 > `nso-gc-refs/switch2_controller_research/commands.md` (ndeadly), and the dumps/captures cataloged
 > in §7. Confidence: **Confirmed** (byte-verified here) · **Strong Evidence** (external capture) ·
 > **Hypothesis** · **Unknown**.
@@ -281,8 +281,8 @@ genuine console session.
 
 ## 10. References
 
-- `src/switch_pro2/switch_pro2.c:618-783` (`ns2_dispatch`), `:300-310` (`ns2_mem_read`).
-- `src/switch_gc/switch_gc.c:393-612`, `src/switch_joycon2/switch_joycon2.c:381-545`.
+- `firmware/src/console/pro2/switch_pro2.c:618-783` (`ns2_dispatch`), `:300-310` (`ns2_mem_read`).
+- `firmware/src/console/gamecube/switch_gc.c:393-612`, `firmware/src/console/joycon2/switch_joycon2.c:381-545`.
 - `nso-gc-refs/switch2_controller_research/commands.md` — the full command reference.
 - `nso-gc-refs/switch2_controller_research/memory_layout.md` — `0x02` address map.
 - Dumps/captures per §7.

@@ -33,7 +33,7 @@ Player LEDs 1 and 4 light while in Safe Mode. `SYNC` exits.
 Hold all three, then release them individually in the order listed.
 
 Normal PIDs are this project's own confirmed values
-(`src/bt_hid/bt/bthid/devices/vendors/nintendo/switch2_ble.h`); Safe Mode PIDs are ndeadly's.
+(`firmware/src/hid_host/bt/bthid/devices/vendors/nintendo/switch2_ble.h`); Safe Mode PIDs are ndeadly's.
 
 Two internal consistency checks support the Safe Mode table even though we have not reproduced it:
 

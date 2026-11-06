@@ -95,10 +95,10 @@ Run:
 .\build\host-tests\build-host-test-ns2-ds5-motion40.exe
 .\build\host-tests\test_ns2_motion_hybrid.exe
 .\build\host-tests\test_ns2_motion_hybrid_projector.exe
-python tools\test_ns2_motion_packet.py
-python tools\test_ns2_motion_carrier.py
-python tools\test_ns2_motion40_coherence.py
-python tools\test_ns2_motion_hybrid.py
+python tests\tools\test_ns2_motion_packet.py
+python tests\tools\test_ns2_motion_carrier.py
+python tests\tools\test_ns2_motion40_coherence.py
+python tests\tools\test_ns2_motion_hybrid.py
 ```
 
 State whether results are offline, build-only, or hardware-confirmed. Record a

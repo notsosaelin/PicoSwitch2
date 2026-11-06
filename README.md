@@ -126,13 +126,13 @@ VS Code extension. Its expected versions are Pico SDK 2.2.0, ARM GCC 14_2_Rel1,
 CMake 3.31.5, Ninja 1.12.1, and picotool 2.2.0-a4.
 
 ```powershell
-./build.ps1            # both boards
-./build.ps1 pico_w     # RP2040 Pico W, validated non-audio build
-./build.ps1 pico2_w    # RP2350 Pico 2 W, live audio at 300 MHz
-./build.ps1 -Clean     # clean, then build both
-./build.ps1 -Tone      # Pico 2 W fixed DualSense diagnostic tone
-./build.ps1 -Audio     # Pico 2 W live-audio 150 MHz comparison
-./build.ps1 -AudioOverclock # Pico 2 W live-audio 200 MHz comparison
+firmware/build.ps1            # both boards
+firmware/build.ps1 pico_w     # RP2040 Pico W, validated non-audio build
+firmware/build.ps1 pico2_w    # RP2350 Pico 2 W, live audio at 300 MHz
+firmware/build.ps1 -Clean     # clean, then build both
+firmware/build.ps1 -Tone      # Pico 2 W fixed DualSense diagnostic tone
+firmware/build.ps1 -Audio     # Pico 2 W live-audio 150 MHz comparison
+firmware/build.ps1 -AudioOverclock # Pico 2 W live-audio 200 MHz comparison
 ```
 
 Artifacts are written to:
@@ -146,7 +146,7 @@ This is also a standard Pico SDK CMake project for environments with `PICO_SDK_P
 
 Core 0 owns TinyUSB and the active USB personality. Core 1 owns Bluetooth, controller
 drivers, pairing, LEDs, BOOTSEL sampling, and controller output such as rumble. Shared input
-and output state crosses the cores through `src/report.c` under a hardware critical section.
+and output state crosses the cores through `firmware/src/app/report.c` under a hardware critical section.
 
 The architectural overview is in [docs/architecture/overview.md](docs/architecture/overview.md).
 Protocol facts and unresolved research are deliberately kept in `docs/`, while source comments

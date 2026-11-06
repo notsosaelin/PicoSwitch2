@@ -18,7 +18,7 @@ stable contract or firmware-shaped vectors.
 
 Use `:management-core`, built with the plain Kotlin/JVM plugin, for the reference implementation.
 Specify the wire behavior independently in `PROTOCOL.md` and
-`tools/fixtures/management/protocol-v1.json`.
+`contracts/management/protocol-v1.json`.
 
 ## Consequences / trade-offs
 

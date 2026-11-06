@@ -357,7 +357,7 @@ in the 8BitDo's runtime path.
 
 ### The branch structure
 
-`admit_and_route()` (`src/bt_hid/ns2_kbm_runtime.c:539`), in order:
+`admit_and_route()` (`firmware/src/input/ns2_kbm_runtime.c:539`), in order:
 
 | # | Predicate | On failure | Counter |
 |---|---|---|---|
@@ -462,7 +462,7 @@ classification as pending — branch 2, the BLE-only silent exit.
 
 **That hypothesis is disproven.** `ns2_kbm_runtime.c` turns out to be host-
 compilable with four small stubs (the bthid device table, the source arbiter, the
-report seam and the clock), so `tools/test_kbm_runtime_lifecycle.c` now drives
+report seam and the clock), so `tests/firmware/test_kbm_runtime_lifecycle.c` now drives
 the real `admit_and_route()` through the production entry points and asserts on
 `ns2_kbm_runtime_status()` — the same view `kbm status` returns.
 
@@ -510,7 +510,7 @@ block's field sizes, so:
 
 The device still parses as a keyboard on its modifier byte alone. It classifies,
 admits, takes the keyboard role, shows `keyboard=true` — and types nothing.
-`tools/test_bthid_keyboard_report.c::test_push_pop_restores_global_state` fails
+`tests/firmware/test_bthid_keyboard_report.c::test_push_pop_restores_global_state` fails
 before the fix (`map.array_count == 0`) and passes after it.
 
 **Confidence: this is a genuine, generic defect with exactly the observed failure
@@ -601,7 +601,7 @@ the admission and the layout. A report id the descriptor never declared is still
 refused, so the accepted set widens to exactly what the device declared and no
 further. No VID/PID, no transport special-case.
 
-`tools/test_bthid_keyboard_report.c::test_every_declared_keyboard_report_decodes`
+`tests/firmware/test_bthid_keyboard_report.c::test_every_declared_keyboard_report_decodes`
 reproduces it: with the old single-id rule the NKRO report asserts out; with the
 fix both reports decode and an undeclared id is still rejected.
 

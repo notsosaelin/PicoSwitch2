@@ -388,19 +388,19 @@ instead of a downstream short mapping.
 
 ### Where these formatters live, and why
 
-The read formatters are in **`src/ns2_kbm_commands.c`**, not `src/config.c`.
+The read formatters are in **`firmware/src/input/ns2_kbm_commands.c`**, not `firmware/src/settings/config.c`.
 `config.c` is bound to TinyUSB, BTstack and the flash driver, so it does not
 compile on the host — which meant its pagination was covered only by
 hand-written client fixtures, written from the same misunderstanding that
 produced the bug. Both C# and Kotlin fixtures agreed with the broken firmware.
 
-`tools/test_ns2_kbm_commands.c` drives the real formatter across every layout,
+`tests/firmware/test_ns2_kbm_commands.c` drives the real formatter across every layout,
 profile and cursor under worst-case content, and **generates
-`tools/fixtures/management/kbm-wire-corpus.json`** — the exact firmware bytes,
+`contracts/management/kbm-wire-corpus.json`** — the exact firmware bytes,
 which the Windows and Android integration tests replay through their real
 clients. Three implementations now check against one authority.
 
-`tools/test_ns2_kbm_status.c` saturates every field and asserts the **wire**
+`tests/firmware/test_ns2_kbm_status.c` saturates every field and asserts the **wire**
 limit. Its earlier version asserted against 2048 — a firmware-local buffer —
 which is why it passed while the adapter was refusing the reply.
 
@@ -494,8 +494,8 @@ identical content, and without it both would read as "on adapter".
 The library, the editor and the whole mapping grid work with **no adapter**. A
 profile stores sparse overrides, and the canonical table those are applied
 against is firmware data shipped in both companions
-(`tools/fixtures/management/kbm-default-mappings.json`, generated from
-`src/ns2_kbm.c`). Parity tests on both platforms assert the shipped copy still
+(`contracts/management/kbm-default-mappings.json`, generated from
+`firmware/src/input/ns2_kbm.c`). Parity tests on both platforms assert the shipped copy still
 matches what the firmware emits, so carrying it cannot silently drift.
 
 Adapter-only controls are **disabled, not hidden**: a user who cannot see them

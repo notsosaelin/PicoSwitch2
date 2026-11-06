@@ -148,8 +148,8 @@ performed order out-of-band (verbally, or in a synced timestamp) so it doesn't h
 The same `pcapng_parse.py` script works unmodified; the analysis in §2.2 is directly reusable.
 
 ## 5. Files touched (tests 1 → take-1 fixes)
-- `src/bt_hid/ns2_seam.c` — axis permutation fix (§2.3).
-- `src/switch_pro2/switch_pro2.c` `ns2_build_report()` — gyro bias tracker (§3).
+- `firmware/src/input/ns2_seam.c` — axis permutation fix (§2.3).
+- `firmware/src/console/pro2/switch_pro2.c` `ns2_build_report()` — gyro bias tracker (§3).
 - Both boards built clean (`build.ps1`).
 
 ---
@@ -226,7 +226,7 @@ integration) is otherwise unchanged from take 1 — only the *gate* was broken.
 Both hardware tests so far diagnosed the bias tracker **indirectly**, from in-game camera
 behavior — slow and ambiguous (many different bugs produce "camera drifts"). To avoid a third
 round of blind guessing, the bias estimate and live gate state are now exposed through the
-existing config-mode IMU debug readout (`cmd_imu` in `src/config.c`, surfaced on the config web
+existing config-mode IMU debug readout (`cmd_imu` in `firmware/src/settings/config.c`, surfaced on the config web
 UI's `imu:` line): `bias=[x,y,z] still=0|1`. **Before touching the bias-tracker constants again,
 read this line with the controller sitting still** — if `still` never reads `1`, the gate is
 still broken (a different mechanism than §7.1); if it does read `1` but drift continues anyway,
@@ -319,9 +319,9 @@ hard evidence about how Nintendo's own firmware and a working consumer of it beh
 ---
 
 ## 8. Files touched (test 2 → take-2 fix)
-- `src/switch_pro2/switch_pro2.c` — stillness gate redesigned (derivative, not magnitude);
+- `firmware/src/console/pro2/switch_pro2.c` — stillness gate redesigned (derivative, not magnitude);
   bias-tracker state promoted to file scope; new `ns2_dbg_motion_bias()` debug getter (§7).
-- `src/config.c` `cmd_imu()` — exposes live bias/still state.
+- `firmware/src/settings/config.c` `cmd_imu()` — exposes live bias/still state.
 - `web/index.html` (+ regenerated `src/web_disk.h`) — `imu:` debug line shows `bias=[...]
   still=0|1`.
 - Both boards build clean (`build.ps1`); **pending hardware test 3.**
@@ -402,11 +402,11 @@ re-discovering the same "the instrumentation says nothing happened" symptom for 
 reason.
 
 ## 10. Files touched (this section's fix)
-- `src/switch_pro2/switch_pro2.c` — extracted `ns2_motion_tick()` (timing/phase/bias, independent
+- `firmware/src/console/pro2/switch_pro2.c` — extracted `ns2_motion_tick()` (timing/phase/bias, independent
   of `ns2_imu_enabled`) from `ns2_build_report()`'s inline motion block; added
   `ns2_motion_debug_tick()` (rate-limited, config-mode-only entry point).
-- `include/switch_pro2.h` — declares `ns2_motion_debug_tick()`.
-- `src/usb.c` — calls `ns2_motion_debug_tick()` from the config-mode branch of the main loop.
+- `firmware/src/console/pro2/switch_pro2.h` — declares `ns2_motion_debug_tick()`.
+- `firmware/src/app/usb.c` — calls `ns2_motion_debug_tick()` from the config-mode branch of the main loop.
 - Both boards build clean (`build.ps1`); **pending a hardware check of the `imu` line in config
   mode** (§9.3) — no code changes to the gate/bias math itself this pass, only to what makes it
   observable.
@@ -439,7 +439,7 @@ suspect on its own.
 
 ### 11.3 Genuine Pro Controller 2: expected, not a new bug
 
-Confirmed by code inspection (not inference): `switch2_ble.c` (`src/bt_hid/bt/bthid/devices/vendors/nintendo/`)
+Confirmed by code inspection (not inference): `switch2_ble.c` (`firmware/src/hid_host/bt/bthid/devices/vendors/nintendo/`)
 contains **zero** references to `has_motion`, `gyro`, `accel`, or `motion` anywhere in the file —
 this driver has never populated the shared `switch_pro_input_t`'s motion fields for a genuine Pro
 Controller 2 at all. `ns2_motion_debug_tick()`'s `if (in.has_motion) ns2_motion_tick(&in);` guard
@@ -549,7 +549,7 @@ One candidate explanation considered: if the DualSense's actual raw gyro LSB/dps
 from the `16.384 LSB/dps` (±2000°/s over a 16-bit signed range) this repo's phase-integration
 constant assumes, residual sensor noise could be amplified into large, erratic phase swings that
 would look exactly like multidirectional jumps. **Checked against the joypad-os framework's own
-declaration, not a guess:** `src/bt_hid/core/input_event.h` declares
+declaration, not a guess:** `firmware/src/hid_host/core/input_event.h` declares
 `event->gyro_range = 2000; // Default to DS4/DS5 range (±2000 dps)` — i.e. the framework itself
 states the DualSense's gyro is ±2000°/s over (implicitly, given SInput's 16-bit convention used
 elsewhere in the same file) a signed 16-bit range, which is exactly `32768/2000 = 16.384 LSB/dps`.
@@ -632,8 +632,8 @@ device, nothing about *how* it parses motion). Steam's actual parser is closed-s
 observable from this repo. No changes made to `report-0x09-motion.md` based on this repo.
 
 ## 13. Files touched (this section)
-- `src/switch_pro2/switch_pro2.c` — new `ns2_dbg_motion_phase()` getter.
-- `src/config.c` `cmd_imu()` — exposes live `phase=[...]`.
+- `firmware/src/console/pro2/switch_pro2.c` — new `ns2_dbg_motion_phase()` getter.
+- `firmware/src/settings/config.c` `cmd_imu()` — exposes live `phase=[...]`.
 - `web/index.html` (+ regenerated `src/web_disk.h`) — `imu:` line shows `phase=[...] (~[...]°)`.
 - Both boards build clean (`build.ps1`); **pending a hardware check of the `phase` field's
   stability in config mode** (§12.6) — no change to the encoder/gate/bias math itself this pass.
@@ -773,14 +773,14 @@ than I expected."
 instrumentation. §14.4 is how to find out.
 
 ## 15. Files touched (this section)
-- `include/switch_pro2.h` — `ns2_anom_trail_t`/`ns2_anom_capture_t` types, `NS2_ANOM_TRAIL`,
+- `firmware/src/console/pro2/switch_pro2.h` — `ns2_anom_trail_t`/`ns2_anom_capture_t` types, `NS2_ANOM_TRAIL`,
   `ns2_dbg_motion_anomaly()`; also now the single home for the `ns2_dbg_*` getter prototypes
   (previously hand-duplicated as `extern` in `config.c`).
-- `src/switch_pro2/switch_pro2.c` — `ns2_encode_motion30()` (extracted, shared, de-duplicated);
+- `firmware/src/console/pro2/switch_pro2.c` — `ns2_encode_motion30()` (extracted, shared, de-duplicated);
   `NS2_MAX_PHASE_DELTA` derivation; anomaly detection + capture in `ns2_motion_tick()`.
-- `src/config.c` — includes `switch_pro2.h`; `imu` line gains `anom=<count>`; new `imuanom`
+- `firmware/src/settings/config.c` — includes `switch_pro2.h`; `imu` line gains `anom=<count>`; new `imuanom`
   command; `out[]` raised 256→1024 bytes.
-- `include/tusb_config.h` — `CFG_TUD_CDC_TX_BUFSIZE` raised 256→1024 to carry the larger reply.
+- `firmware/config/tusb_config.h` — `CFG_TUD_CDC_TX_BUFSIZE` raised 256→1024 to carry the larger reply.
 - `web/index.html` (+ regenerated `src/web_disk.h`) — anomaly box, auto-fetch on `anom` change.
 - Both boards build clean (`build.ps1`). **No change to generated motion behavior** — phase
   integration, the bias tracker, the stillness gate, and the transmitted bytes are byte-for-byte

@@ -111,7 +111,7 @@ code shows so far:
 
 ## Tests
 
-`tools/test_ns2_wake_policy.c` (extended, green): the pre-existing automatic-wake policy is
+`tests/firmware/test_ns2_wake_policy.c` (extended, green): the pre-existing automatic-wake policy is
 unchanged, plus new coverage that a latched request reads `pending`; a console-awake request reports
 `console_awake` and not success; an asleep console with a free radio reports `advertised` **and**
 actually starts one advertisement; a busy radio reports `radio_busy`; and every serviced request is

@@ -186,4 +186,4 @@ lands.
   (private captures; treat as structured hypothesis — `inventory` §4).
 - amiitool / NTAG215 amiibo layout — the 540-byte tag format and encryption model (general
   amiibo documentation; keys **not** needed for serve/store per §5).
-- `src/switch_pro2/switch_pro2.c` (`case 0x01`, ~L762) — the current stub.
+- `firmware/src/console/pro2/switch_pro2.c` (`case 0x01`, ~L762) — the current stub.

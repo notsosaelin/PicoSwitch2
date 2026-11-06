@@ -70,7 +70,7 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   stick deflection, and a seamless up+right diagonal.
 
   **The BLE contract was a subset of the service.** Path C added two characteristics to the
-  management service and only Windows was told; `tools/fixtures/management/protocol-v1.json` and
+  management service and only Windows was told; `contracts/management/protocol-v1.json` and
   Android's `BleManagementContract` still described RX and TX alone. Android discovers by UUID so
   nothing broke, but both companions now name the pair and both conformance tests pin it against the
   fixture. **The reported Android pairing failure was NOT reproduced** — no device was reachable
@@ -359,7 +359,7 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   **The precondition came first.** `AmiiboCrypto` already existed twice — Kotlin and
   `web/index.html` — and its failure mode is silent: a wrong HMAC produces a tag the console simply
   rejects, with nothing to read. A C# port would have been a third copy verified against nothing, so
-  `tools/fixtures/amiibo/crypto-vectors.json` was built first, generated from the Kotlin
+  `contracts/amiibo/crypto-vectors.json` was built first, generated from the Kotlin
   implementation over real dumps. 14 vectors and 2 negative ones now cover both tag sizes and both
   register states; coverage is DERIVED from the vectors so it cannot go stale, and crossing tag type
   with register state immediately exposed a gap the per-axis view had hidden (no set-up NTAG215 tag,
@@ -429,10 +429,10 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   silently. `kbm map`, `kbm pmap` and `kbm profiles` now use **cursor pagination**: `next` is the
   index of the first item not in the reply, null exactly at the end, decided by the firmware, which
   alone knows how many rows it serialized.
-  The read formatters moved to `src/ns2_kbm_commands.c` because `config.c` cannot compile on the
+  The read formatters moved to `firmware/src/input/ns2_kbm_commands.c` because `config.c` cannot compile on the
   host — which is why their pagination was covered only by hand-written client fixtures, in both
-  C# and Kotlin, that agreed with the bug. `tools/test_ns2_kbm_commands.c` drives the real
-  formatter (1077 checks) and generates `tools/fixtures/management/kbm-wire-corpus.json`, the exact
+  C# and Kotlin, that agreed with the bug. `tests/firmware/test_ns2_kbm_commands.c` drives the real
+  formatter (1077 checks) and generates `contracts/management/kbm-wire-corpus.json`, the exact
   firmware bytes, which the Windows and Android integration tests replay through their real
   clients. One authority for three implementations.
   **Pre-release companion fallbacks are gone.** `kbm counters`/`kbm profiles`/`kbm active` are
@@ -459,7 +459,7 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   adapter's bank is **3 positions × 2 layouts plus a built-in Default**, and only
   Assign/Update/Remove/Activate/On-startup reach it. Editing works offline because the firmware's
   canonical default table ships in both companions from
-  `tools/fixtures/management/kbm-default-mappings.json`, with parity tests asserting it still
+  `contracts/management/kbm-default-mappings.json`, with parity tests asserting it still
   matches what the firmware emits.
   Schema **14 → 16**: profiles gain a semantic `position` (what the user selects, resolved through
   the derived layout), plus one shared layout-free **switch-key table** so the profile can be
@@ -891,7 +891,7 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   between the two SDK trees (`2075e3be…8647`), so this migration cannot have fixed a
   controller-side defect.** Both boards build clean with no warnings outside vendored libopus (and
   those reproduce identically under GCC 14.2). 72/72 declared active host-test targets passed, plus
-  a new `tools/test_btstack_dependency_contract.py`. The maintainer subsequently flashed a Stage C
+  a new `tests/tools/test_btstack_dependency_contract.py`. The maintainer subsequently flashed a Stage C
   candidate to a different Pico 2 W and began endurance on a different Android device. At the
   latest report it had exceeded three hours of established management traffic with five-second
   replies still completing, no observed HCI `0x08` or management disconnect, no obvious pairing
@@ -910,8 +910,8 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   the handheld actually prints. Now `mapTouchFacePosition` and `mapPhysicalFaceKey`, applied per
   origin in `ControllerInputState.publish()`. **Companion-only; no firmware source changed and no
   reflash is required.** The physical path gained the cross-layer coverage it never had:
-  `tools/fixtures/controller_link_face_mapping.csv` drives `ControllerLinkFaceMappingTest` (platform
-  key + layout -> usage) and `tools/test_controller_link_face_goldens.c` (usage -> production
+  `contracts/controller_link_face_mapping.csv` drives `ControllerLinkFaceMappingTest` (platform
+  key + layout -> usage) and `tests/firmware/test_controller_link_face_goldens.c` (usage -> production
   parser -> bridge seam -> Pro Controller 2 report bit), mirroring the touch catalog fixture, and a
   resolver test asserts the two mappers can never resolve alike. Bench testing on a live Odin 2 Mini
   the same day found the second half of the defect: AYN's button-layout toggle changes the device
@@ -940,7 +940,7 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   pass. Both
   board builds, **71/71 declared active host-test targets rebuilt from current source and passed; 9 test
   sources are explicitly classified outside the active host suite**
-  (`pwsh -File tools/run_host_tests.ps1`, inventory in
+  (`pwsh -File tests/run_host_tests.ps1`, inventory in
   [`docs/host-test-inventory.md`](docs/host-test-inventory.md)), the in-band management group plus
   descriptor parity, controller-link classification, console-slot wiring, Bluetooth identity and
   the trace/NFC/corpus Python suites, 714 Android JVM test executions (app debug 226, app release
@@ -968,8 +968,8 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 - **Settings schema:** 11 (was 10; adds KB/M configuration, migrates v10 in place).
 - **Release artifacts:** firmware UF2 for both boards, the Android APK, and — new in this release —
   two Windows artifacts: a Setup `.exe` and a portable ZIP. Built by
-  `windows/companion/build.ps1 -ReleaseArtifacts`; see
-  [`windows/companion/docs/HUMAN_CHECKLIST.md`](windows/companion/docs/HUMAN_CHECKLIST.md) for the
+  `companions/windows/build.ps1 -ReleaseArtifacts`; see
+  [`companions/windows/docs/HUMAN_CHECKLIST.md`](companions/windows/docs/HUMAN_CHECKLIST.md) for the
   release checklist.
 
 ## Release baseline
@@ -1003,17 +1003,17 @@ Release notes: [`CHANGELOG.md`](CHANGELOG.md) §2.5.0, and §2.0.0 for the basel
 
 ```
 physical controller / Android handheld
-      |  vendored joypad-os bthid driver (src/bt_hid/bt/bthid/devices/...)
+      |  vendored joypad-os bthid driver (firmware/src/hid_host/bt/bthid/devices/...)
 input_event_t                       shared interchange units
-      |  src/bt_hid/ns2_seam.c      the one bridge into this project's state
-switch_pro_input_t                  cross-core seam (src/report.c seqlock)
-      |  src/switch_pro2/           console-facing personality, USB on core 0
+      |  firmware/src/input/ns2_seam.c      the one bridge into this project's state
+switch_pro_input_t                  cross-core seam (firmware/src/app/report.c seqlock)
+      |  firmware/src/console/pro2/           console-facing personality, USB on core 0
 Switch 2 report
 ```
 
 Core 1 runs BTstack plus the vendored joypad-os HID layer; core 0 owns USB and the command parser.
 Controller-specific knowledge lives in the driver and in `ns2_motion_seam.c`; console-protocol
-knowledge lives in `src/switch_pro2/` and `src/bt_hid/motion/`.
+knowledge lives in `firmware/src/console/pro2/` and `firmware/src/motion/`.
 
 The companion mirrors that boundary: `:bridge-core` is plain Kotlin/JVM with no Android SDK on its
 compile classpath (normalized controller state, motion convention, capabilities, HID descriptor and
@@ -1081,7 +1081,7 @@ host-facing logical control is **ZR**. The fix is one line — report `0x05` now
 `GC_MASK_Z`, sourced from `gc_extra` alone exactly as report `0x0A` does, so the two reports cannot
 disagree about whether it is pressed. Nothing on the console path changed; trigger detents really
 do have no slot in `0x05` and are unchanged (a PC reads travel from the analog tail at
-`0x3C`/`0x3D`). Pinned by `tools/test_switch_gc_report.c` cases 13/15/16/17 and, on the touch side,
+`0x3C`/`0x3D`). Pinned by `tests/firmware/test_switch_gc_report.c` cases 13/15/16/17 and, on the touch side,
 by `TouchProfilesTest`'s legend-versus-binding test.
 
 ## Input sources
@@ -1114,7 +1114,7 @@ by loosening the connection limit (see [Keyboard and mouse input](#keyboard-and-
   connection index has silently discarded a correctly-arbitrated peer twice — rumble on 2026-07-12,
   input on 2026-08-21 — because BLE connection indices are offset past `NS2_SLOTS` and fall back to
   0, so only a *Classic* peer on connection 1..3 is affected. Pinned by
-  `tools/test_ns2_console_slot_wiring.py`.
+  `tests/tools/test_ns2_console_slot_wiring.py`.
 - A source with no Bluetooth name is not "no controller". The Android Controller Link arrives as an
   incoming Classic HID Device connection, so no inquiry record ever names it;
   `ns2_input_source_display_name()` supplies "Controller Link" from the source class the firmware
@@ -1272,7 +1272,7 @@ Keyboard + Mouse profile back into the Keyboard profile when the override pinned
 No-root Android app using the public API-28+ `BluetoothHidDevice` profile; PicoSwitch2 remains the
 console-facing protocol owner. Reference hardware is an AYN Thor (Android 13 / API 33).
 
-- **Wire contract:** single source of truth `tools/fixtures/android_controller_hid.h`; 161-byte
+- **Wire contract:** single source of truth `contracts/android_controller_hid.h`; 161-byte
   descriptor, 26-byte input report (15 buttons within the original two bytes), 5-byte output
   report. The firmware identifies the bridge by an exact descriptor match, never by VID/PID.
 - **Compatibility:** both ends declare the bridge contract and compare it on connect; the firmware
@@ -1291,7 +1291,7 @@ console-facing protocol owner. Reference hardware is an AYN Thor (Android 13 / A
   the same transport; firmware sees the declared Android bridge source but cannot distinguish the
   screen from the handheld's built-in controls.
   The portable half is the existing plain-JVM `:bridge-core` module's
-  `dev.picoswitch.bridge.touch`; its current directory under `android/companion/` is historical,
+  `dev.picoswitch.bridge.touch`; its current directory under `companions/android/` is historical,
   not Android ownership. It now owns an exhaustive Pro Controller 2 / NSO GameCube / sideways
   Joy-Con 2 Left / sideways Joy-Con 2 Right profile catalog, immutable templates and fixed output
   bindings, versioned per-profile layout documents, composition, editor operations, schema policy,
@@ -1677,7 +1677,7 @@ Briefs: [`docs/agents/ANDROID.md`](docs/agents/ANDROID.md),
 
 ## Windows companion — Phase 4 implemented; Phase 3 hardware smoke-tested 2026-08-29
 
-Second host platform, designed in `WINDOWS_PASS.md` and implemented under `windows/companion/`.
+Second host platform, designed in `WINDOWS_PASS.md` and implemented under `companions/windows/`.
 C# on .NET 9 with WinUI 3. The Roadmap's own numbering is used below so the gap between what exists
 and what is designed stays explicit.
 
@@ -1702,7 +1702,7 @@ and what is designed stays explicit.
 - **Anti-drift.** Both languages read the same fixtures. `tools/check_android_descriptor_parity.py`
   now covers **three** languages, including a separate C# digest registry, and was verified to fail
   on a one-sided C# descriptor edit. A new shared fixture,
-  `tools/fixtures/bridge_report_goldens.csv`, closes the gap the descriptor guard could not: 47
+  `contracts/bridge_report_goldens.csv`, closes the gap the descriptor guard could not: 47
   vectors of normalized state → wire bytes, generated from the Kotlin encoder and consumed by both
   encoders, so a divergence in how the report is *filled* fails in the other language's suite.
 - **Controller Link is still gated.** The HOGP peripheral-role experiment (`WINDOWS_PASS.md` §14.5)
@@ -1713,7 +1713,7 @@ and what is designed stays explicit.
   `NavigationView` rail and the connection banner, and **a second launch exits 0 leaving exactly one
   instance** — the Phase 0 exit criterion for single-instance activation, which is the Windows
   enforcement of "one process, one active management session".
-- **Two toolchain traps, recorded so they are not rediagnosed** (`windows/companion/docs/README.md`
+- **Two toolchain traps, recorded so they are not rediagnosed** (`companions/windows/docs/README.md`
   §4). First: `XamlCompiler.exe` reports XAML errors by **exiting 1 in complete silence** — no
   output, no `output.json`, and it still emits every `*.g.cs`, so it reads as a tooling crash when it
   is a reporting failure over real authoring errors. Rebuild with
@@ -1861,7 +1861,7 @@ of what remains on top of it.
 The prepared hardware sequence for the four boundaries, with what to capture and what would falsify
 each, is [`docs/experiments/windows-phase2-boundaries-2026-08-29.md`](docs/experiments/windows-phase2-boundaries-2026-08-29.md).
 
-Reference: [`windows/companion/docs/README.md`](windows/companion/docs/README.md), `WINDOWS_PASS.md`.
+Reference: [`companions/windows/docs/README.md`](companions/windows/docs/README.md), `WINDOWS_PASS.md`.
 
 ## Bluetooth, pairing, and wake
 
@@ -1990,7 +1990,7 @@ Remaining gates are listed under [Open validation gates](#open-validation-gates)
 ## Motion
 
 There is exactly one Switch 2 motion encoder for translated sources,
-`src/bt_hid/motion/ns2_ds5_motion.c` (misleadingly named; the rename is a PLAN.md task).
+`firmware/src/motion/ns2_ds5_motion.c` (misleadingly named; the rename is a PLAN.md task).
 `ns2_build_report()` has two motion branches — opaque genuine Pro Controller 2 passthrough and the
 translator — with no fallback and no per-source whitelist. Per-source frame differences live in one
 place, `ns2_motion_seam.c`, one determinant-+1 row per source, each landing that source's face-up
@@ -2060,7 +2060,7 @@ built-in controller is classified EXTERNAL. Brief: [`docs/agents/RUMBLE.md`](doc
   `ns2_active_input`. So Controller Link may be the active console input source while a connected
   DualSense remains the audio sink — hardware-observed, and the behaviour the product wants, because
   the Android bridge cannot transport controller audio. Pinned by
-  `tools/test_bluetooth_closeout_wiring.py`; do not couple these two ownership domains.
+  `tests/tools/test_bluetooth_closeout_wiring.py`; do not couple these two ownership domains.
 - The only remaining audio interruption during normal use is USB personality re-enumeration, which
   is a deliberate simulated USB disconnect/reconnect. Refresh no longer causes a meaningful gap
   (hardware-observed 2026-08-21).
@@ -2168,7 +2168,7 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
    adapter (`btif_hd` → `check_cod_hid`, `(cod & 0x1F00) == 0x0500`) *after* the ACL,
    authentication, encryption and both HID channels succeed. Appearance is now `0x0080` Generic
    Computer, agreeing with the unchanged Classic CoD `0x000104`, guarded by a `_Static_assert` and a
-   source check in `tools/test_bluetooth_closeout_wiring.py`. Confirmed from the app over ADB on the
+   source check in `tests/tools/test_bluetooth_closeout_wiring.py`. Confirmed from the app over ADB on the
    failing build: `major=0x0500 hostOk=false`.
 
    Because the poisoned class lives in the *phone's* record, an already-poisoned pairing must be
@@ -2226,7 +2226,7 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
 ## Known technical debt
 
 - **`NS2_PRO=OFF` does not build.** Verified 2026-08-16 by building `build/pico_w_switch1`: the
-  `personality` and `reenumerate` command block in `src/config.c` is outside the `NS2_PRO` guard and
+  `personality` and `reenumerate` command block in `firmware/src/settings/config.c` is outside the `NS2_PRO` guard and
   references `g_usb_personality`, `g_usb_requested_personality`,
   `g_usb_personality_request_pending`, `g_usb_reenumerate_request_pending`, and the personality enum,
   which exist only under `NS2_PRO`. Repair is a PLAN.md task. Note the v2.0.0 CHANGELOG validation
@@ -2392,13 +2392,13 @@ concentrated on initialization. The corpus counts and the ranked capture gaps ar
 
 Standard families, with commands and the current inventory in [`AGENTS.md`](AGENTS.md):
 
-- compiled C host tests — **one manifest, one command**: `pwsh -File tools/run_host_tests.ps1`
+- compiled C host tests — **one manifest, one command**: `pwsh -File tests/run_host_tests.ps1`
   builds all 72 declared tests from current source into a freshly emptied `build/host-tests` and
   runs only what it built. Covers protocol codecs, report encoders, motion PDU/seam invariants,
   BOOTSEL policy, wake identity, battery, audio control/resampler, virtual-tag store and v3 runtime
   replay, the keyboard/mouse mapping model, keyboard HID report decoding, settings-schema migration,
   the Bluetooth admission/liveness/lifecycle policy objects, and the seeded lifecycle model.
-  `tools/run_mgmt_tests.ps1` is the `management` group plus its Python boundary suites. Nine further
+  `tests/run_mgmt_tests.ps1` is the `management` group plus its Python boundary suites. Nine further
   `tools/test_*.c` are declared non-suite (platform-dependent, obsolete, or a separate lab tool) in
   the runner's `$notHostTests` table — see also
   [`docs/host-test-inventory.md`](docs/host-test-inventory.md)

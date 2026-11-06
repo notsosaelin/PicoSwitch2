@@ -146,6 +146,6 @@ programming is changed to emit a distinguishable report.
 - BlueRetro issue #1348 and attached XInput/Switch traces:
   <https://github.com/darthcloud/BlueRetro/issues/1348>
 - Dedicated driver, decoder, and regression test:
-  `src/bt_hid/bt/bthid/devices/vendors/retrofighters/battlergc_pro.c`,
-  `src/bt_hid/bt/bthid/devices/vendors/retrofighters/battlergc_pro_report.c`,
-  `tools/test_battlergc_pro_report.c`
+  `firmware/src/hid_host/bt/bthid/devices/vendors/retrofighters/battlergc_pro.c`,
+  `firmware/src/hid_host/bt/bthid/devices/vendors/retrofighters/battlergc_pro_report.c`,
+  `tests/firmware/test_battlergc_pro_report.c`

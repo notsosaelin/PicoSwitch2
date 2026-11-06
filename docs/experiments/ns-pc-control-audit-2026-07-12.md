@@ -108,7 +108,7 @@ sourced from NS-PC-Control only, all 🔵 Hypothesis unless independently verifi
 by two independent real-capture sources (`ndeadly`'s raw USB capture, decoded in the previous
 pass; NS-PC-Control's own factory-table comment). This crosses the evidence bar DATA.md set
 ("seek another independent unit/capture... before deciding") — the previous pass deliberately left
-this unchanged with exactly one source. See `src/switch_pro2/switch_pro2.c` `ns2_factory_init()`.
+this unchanged with exactly one source. See `firmware/src/console/pro2/switch_pro2.c` `ns2_factory_init()`.
 Both boards build clean.
 
 ## 4. Deliberately not changed

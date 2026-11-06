@@ -1,6 +1,6 @@
 # Switch 2 Output Emulation
 
-This firmware emulates a **Switch 2 Pro Controller** (VID `0x057E` / PID `0x2069`) over wired USB. The relevant code resides in `src/switch_pro2/`.
+This firmware emulates a **Switch 2 Pro Controller** (VID `0x057E` / PID `0x2069`) over wired USB. The relevant code resides in `firmware/src/console/pro2/`.
 
 ## USB Descriptors & Identity (`switch_pro2.c`)
 - **Device & Configuration:** The device enumerates as a composite IAD device (Misc/02/01). We output an "Option A" configuration which exposes two primary device functions via Interface Association Descriptors (IADs): the **Controller Input** (HID + Vendor Bulk) and a **UAC1 Audio Device** (Audio Control + Streaming).

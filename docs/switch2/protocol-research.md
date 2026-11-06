@@ -163,7 +163,7 @@ defeating cryptography.** Reasons:
 
 ## 6. Roadmap — ✅ all shipped (v1.0 / v1.1)
 
-_Kept for historical context. Input maps via the joypad-os seam (`src/bt_hid/ns2_seam.c`), not
+_Kept for historical context. Input maps via the joypad-os seam (`firmware/src/input/ns2_seam.c`), not
 bluepad32. The original report-`0x09` int32 hypothesis below was superseded by genuine native-PDU
 capture: Pro2 passthrough and DualSense length-`0x1E` translation now ship on `ns2-testing`._
 
@@ -171,7 +171,7 @@ capture: Pro2 passthrough and DualSense length-`0x1E` translation now ship on `n
    `/captures`; produce an exact descriptor + handshake byte spec. *(no console needed)*
 2. **Descriptor + enumeration** — new `usb_descriptors.c` variant (PID `0x2069`, IAD, HID +
    vendor + stub audio). Goal: Switch 2 enumerates it without rejecting. *(needs Switch 2)*
-3. **Command handshake** — new `src/switch_pro2/` module answering `0x07`/`0x03`/`0x0C`/
+3. **Command handshake** — new `firmware/src/console/pro2/` module answering `0x07`/`0x03`/`0x0C`/
    `0x10`/`0x02`. Goal: console completes init and shows a connected PC2. *(needs Switch 2)*
 4. **Input reports** — map controller input → report `0x09` (12-bit sticks, 3-byte buttons).
    Goal: buttons/sticks work in-game. *(needs Switch 2)*
@@ -181,7 +181,7 @@ capture: Pro2 passthrough and DualSense length-`0x1E` translation now ship on `n
    would be a huge descriptor). Multi-controller is a later question.
 
 ### Files this will touch (vs `main`)
-- `src/usb_descriptors.c` — the big one (new composite descriptor, mode-switched).
-- `src/switch_pro2/*` — new protocol module (parallel to `src/switch_pro/`).
-- `src/usb.c` — drive the new command channel + report cadence.
-- `src/bt_hid/ns2_seam.c` — map controller input into the report format (the seam).
+- `firmware/src/app/usb_descriptors.c` — the big one (new composite descriptor, mode-switched).
+- `firmware/src/console/pro2/*` — new protocol module (parallel to `firmware/src/console/pro/`).
+- `firmware/src/app/usb.c` — drive the new command channel + report cadence.
+- `firmware/src/input/ns2_seam.c` — map controller input into the report format (the seam).

@@ -13,7 +13,7 @@ Last updated: 2026-08-13
 > default; `mgmt off` lasts until reboot)
 > the same service, parser, and allowlist run **in a normal controller personality** — managing the
 > adapter over Bluetooth without dropping the console. The access-control state machine
-> (`src/mgmt_access.c`), first-pair policy, and remaining hardware gates are detailed in
+> (`firmware/src/management/mgmt_access.c`), first-pair policy, and remaining hardware gates are detailed in
 > [`../bluetooth/in-band-management-plan.md`](../bluetooth/in-band-management-plan.md).
 
 ## Purpose
@@ -87,7 +87,7 @@ relationship authority. Android keeps the saved-address reconnect path and accep
 only for discovery/fallback matching; it does not delete, recreate, or infer a bond from a name.
 
 The source/byte-length and USB-negative checks are reproducible with
-`python tools/test_bluetooth_identity.py`; Android's current/legacy chooser and host-match rules
+`python tests/tools/test_bluetooth_identity.py`; Android's current/legacy chooser and host-match rules
 are covered by `AdapterBluetoothIdentityTest`.
 
 ## Framing and core ownership

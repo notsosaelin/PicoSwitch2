@@ -2,7 +2,7 @@
 
 Every `tools/test_*.c` in the repository, classified. Established 2026-08-21.
 
-Authoritative runner: `pwsh -File tools/run_host_tests.ps1`. The manifest lives in that script;
+Authoritative runner: `pwsh -File tests/run_host_tests.ps1`. The manifest lives in that script;
 this document explains the classification and the reasoning behind the exclusions.
 
 ## Why this audit happened
@@ -39,11 +39,11 @@ are withdrawn. Do not restore them.
 | **Total `tools/test_*.c`** | **79** |
 
 The category-A baseline is the working tree at the start of the audit: 22 recipes committed in
-`tools/run_mgmt_tests.ps1`, plus `test_ns2_lifecycle_model`, which arrived with the in-flight
+`tests/run_mgmt_tests.ps1`, plus `test_ns2_lifecycle_model`, which arrived with the in-flight
 Bluetooth reliability work and shipped with its own recipe.
 
 **These totals are the audit's snapshot, not a running count.** Targets added since are listed
-below; the authoritative figure is always what `tools/run_host_tests.ps1` declares, and the runner
+below; the authoritative figure is always what `tests/run_host_tests.ps1` declares, and the runner
 refuses to start if any `tools/test_*.c` is in neither its manifest nor its `$notHostTests` table,
 so a new test cannot be quietly forgotten.
 
@@ -78,7 +78,7 @@ to make any of them compile** — test infrastructure must not drive architectur
 | `test_ds5_audio_tone` | needs the vendored Opus library; belongs to the audio lab tooling |
 
 Note that `test_ns2_active_input_lifecycle` *is* in the suite and does link `bthid.c` — it uses
-`tools/host_stubs` and `--gc-sections` to avoid the SDK-dependent paths. That trick did not extend
+`tests/firmware/host_stubs` and `--gc-sections` to avoid the SDK-dependent paths. That trick did not extend
 to `test_bthid_late_identity`, which reaches code the linker cannot discard.
 
 ## D — obsolete
@@ -113,7 +113,7 @@ Three needed something non-obvious, all documented inline in the runner:
 
 Candidate source sets were discovered by compiling each test and resolving exactly what the linker
 asked for, then reviewed by hand. That review mattered: a greedy "add sources until it links" pass
-pulled `src/switch_pro/switch_pro.c` — and with it the Pico SDK — into `test_ns2_motion_seam` and
+pulled `firmware/src/console/pro/switch_pro.c` — and with it the Pico SDK — into `test_ns2_motion_seam` and
 `test_ns2_motion_quality`, which in fact need only `ns2_motion_seam.c` (plus `ns2_motion_pdu.c` and
 `ns2_ds5_motion.c` for the latter). Both would have been misclassified as platform-dependent.
 
@@ -139,7 +139,7 @@ are now in the active manifest and pass every run:
 | 11 | `test_hid_out_normalize` | console-slot output |
 | 12 | `test_bthid_mouse_report` | input source registry |
 
-The count and this table are verified against `tools/run_host_tests.ps1` and against the recipe set
+The count and this table are verified against `tests/run_host_tests.ps1` and against the recipe set
 committed at the time the gap was found; each entry was absent from that set and is present in the
 manifest now.
 

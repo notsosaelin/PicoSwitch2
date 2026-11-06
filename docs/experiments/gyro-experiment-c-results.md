@@ -89,7 +89,7 @@ Every command is `[cmd][0x91][0x00][sub][0x00][plen][0x00][0x00][data…]`, wher
 | 9903 | 03/0a | "select input report" — appears *after* motion already present |
 
 ### 4.4 Our firmware vs. the capture
-`ns2_dispatch()` in [switch_pro2.c](../../src/switch_pro2/switch_pro2.c) handles all these
+`ns2_dispatch()` in [switch_pro2.c](../../firmware/src/console/pro2/switch_pro2.c) handles all these
 families, **but**:
 - `0x0C` handler: `sub 0x01`→feature-info, `sub 0x06`→40-byte echo, **else (incl. 0x02, 0x04)
   → generic 4-byte ACK**.

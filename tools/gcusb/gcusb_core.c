@@ -61,7 +61,7 @@ typedef struct {
     const char *name;
 } gcusb_allow_entry_t;
 
-/* Mirrors switch_gc_vendor_dispatch()'s own switch(id)/sub structure exactly (src/switch_gc/
+/* Mirrors switch_gc_vendor_dispatch()'s own switch(id)/sub structure exactly (firmware/src/console/gamecube/
  * switch_gc.c) -- every entry here corresponds to a case that dispatcher actually implements a
  * real (non-generic-bare-ACK) response for for. Anything NOT listed here classifies as REJECTED,
  * matching PROMPT.md's "reject unknown vendor writes by default" requirement -- including this
@@ -136,7 +136,7 @@ uint32_t gcusb_clamp_rumble_duration_ms(uint32_t requested_ms, bool allow_unsafe
     return (requested_ms > GCUSB_RUMBLE_MAX_PULSE_MS) ? GCUSB_RUMBLE_MAX_PULSE_MS : requested_ms;
 }
 
-/* GC_RUMBLE_STATE_ON=1 -- must match src/switch_gc/switch_gc.c's gc_rumble_state_t exactly
+/* GC_RUMBLE_STATE_ON=1 -- must match firmware/src/console/gamecube/switch_gc.c's gc_rumble_state_t exactly
  * (duplicated, not shared, since this tool intentionally has zero dependency on firmware headers
  * -- see this file's own top-of-file comment on the pure/impure split). */
 #define GCUSB_WIRE_GC_RUMBLE_STATE_ON 1u

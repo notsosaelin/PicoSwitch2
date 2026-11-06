@@ -88,7 +88,7 @@ too, and they were not.
 
 `att_server_request_to_send_notification()` for the management link had exactly
 one call site, at the end of `config_ble_service_task()` in
-`src/bt_hid/bt/btstack/btstack_host.c`. Above it sat:
+`firmware/src/hid_host/bt/btstack/btstack_host.c`. Above it sat:
 
 ```c
 // Don't perturb an in-flight controller connect attempt (a gap_connect is
@@ -165,7 +165,7 @@ notification completing, published as `cble.tx_wait_max_ms` in the UART
 from "the answer was never sent", which is why this took a source audit rather
 than a reading.
 
-`tools/test_bluetooth_closeout_wiring.py::check_management_notify_is_not_gated_by_controller_connect`
+`tests/tools/test_bluetooth_closeout_wiring.py::check_management_notify_is_not_gated_by_controller_connect`
 pins both halves — the call ordering, and that there is exactly one arming site —
 and was mutation-verified: restoring the pre-fix ordering fails it, and the fixed
 ordering passes.

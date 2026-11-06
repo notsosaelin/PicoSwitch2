@@ -48,10 +48,10 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.request import Request, urlopen
 
-# Keep these in sync with include/ns2_amiibo_v3.h and
-# include/ns2_amiibo_v3_write.h. They are duplicated rather than parsed because
+# Keep these in sync with firmware/src/nfc/ns2_amiibo_v3.h and
+# firmware/src/nfc/ns2_amiibo_v3_write.h. They are duplicated rather than parsed because
 # this tool must run without a build tree, but any change to the C constants
-# must be mirrored here; tools/test_amiibo_corpus.py asserts the ones that are
+# must be mirrored here; tests/tools/test_amiibo_corpus.py asserts the ones that are
 # observable in the captured corpus.
 V3_SIZE = 2048
 V3_SRAM_OFFSET = 0x3C0
@@ -82,7 +82,7 @@ class CorpusError(RuntimeError):
 
 
 def crc16_mcrf4xx(data: bytes) -> int:
-    """Mirror of ns2_amiibo_v3_crc16_mcrf4xx in src/nfc/ns2_amiibo_v3.c."""
+    """Mirror of ns2_amiibo_v3_crc16_mcrf4xx in firmware/src/nfc/ns2_amiibo_v3.c."""
     crc = 0xFFFF
     for byte in data:
         crc ^= byte

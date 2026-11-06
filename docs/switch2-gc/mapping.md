@@ -3,15 +3,15 @@
 > Current status (2026-07-15): the native GameCube output mapping is implemented and its primary
 > controls are hardware-validated. Per-input-controller edge cases still require a full matrix.
 > `switch_gc_build_report()`/`switch_gc_encode_report()`
-> (`src/switch_gc/switch_gc.c`, `src/switch_gc/switch_gc_encode.c`) implement the full report
+> (`firmware/src/console/gamecube/switch_gc.c`, `firmware/src/console/gamecube/switch_gc_encode.c`) implement the full report
 > `0x0A` construction: A/B/X/Y, D-pad, Plus/Minus, Home/Capture, C, ZL, both analog sticks, **and**
 > native Z, independent L/R trigger detents, and continuous analog L/R trigger — the latter three
 > via new dedicated `switch_pro_input_t` fields (`gc_extra`/`left_trigger`/`right_trigger`, see
-> include/switch_pro.h's `GC_MASK_*`), populated for evidence-backed native layouts including the
+> firmware/src/console/pro/switch_pro.h's `GC_MASK_*`), populated for evidence-backed native layouts including the
 > 8BitDo NGC Modkit and Retro Fighters BattlerGC Pro
-> (`gc_has_native_layout`-gated, `src/bt_hid/bt/bthid/devices/generic/bthid_gamepad.c`). L3/R3
+> (`gc_has_native_layout`-gated, `firmware/src/hid_host/bt/bthid/devices/generic/bthid_gamepad.c`). L3/R3
 > remain hardcoded to 0 per this document's own constraint. Host-tested:
-> `tools/test_switch_gc_report.c` (10-point golden coverage). The generic analog→ZL/ZR fold is
+> `tests/firmware/test_switch_gc_report.c` (10-point golden coverage). The generic analog→ZL/ZR fold is
 > suppressed specifically for GameCube-mode + Modkit (see "Do not repeat the existing analog-fold
 > problem" below) so a device with no real ZL/ZR doesn't get one synthesized. Every *other*
 > per-device mapping table below (DualSense/Xbox/genuine Switch Pro Controller as GameCube-output
@@ -46,15 +46,15 @@ GameCube controller doesn't have (L3/R3, chiefly).
 
 ## Internal normalized model requirements
 
-The cross-core input struct (`switch_pro_input_t`, `include/switch_pro.h`) and the seam's
-destination enum (`NS2_DST_*`, `src/bt_hid/ns2_seam.c`) already carry several of the fields a
+The cross-core input struct (`switch_pro_input_t`, `firmware/src/console/pro/switch_pro.h`) and the seam's
+destination enum (`NS2_DST_*`, `firmware/src/input/ns2_seam.c`) already carry several of the fields a
 GameCube personality needs — `NS2_DST_C`, `NS2_DST_HOME`, `NS2_DST_CAPTURE`, `NS2_DST_GL`/`NS2_DST_GR`
 already exist and are wired to Pro2's `SWITCH_EXTRA_*`/`SWITCH_MASK_*` bits today. This is a
 meaningfully smaller gap than a from-scratch model would face. **Implemented 2026-07-13** (added,
 preserved independently per explicit instruction — not collapsed into existing fields that mean
 something different):
 
-- **Native GameCube Z** — `switch_pro_input_t.gc_extra`'s `GC_MASK_Z` bit (`include/switch_pro.h`),
+- **Native GameCube Z** — `switch_pro_input_t.gc_extra`'s `GC_MASK_Z` bit (`firmware/src/console/pro/switch_pro.h`),
   NOT `NS2_DST_GL`/`GR` (Pro2's own paddle-adjacent concept) or `SWITCH_MASK_R`/`SWITCH_MASK_ZR`
   (a different physical control entirely). Populated by `bthid_gamepad.c`'s
   `process_report_dynamic()` from the Modkit's usage 11, independent of (and in addition to) that
@@ -63,7 +63,7 @@ something different):
   Modkit's usage 9/10 raw bits (the confirmed TRUE mechanical click, not usage 7/8's partial-travel
   echo — see `docs/bluetooth/8bitdo-ngc-diy-profile.md` "Raw hardware observations"). Independent
   of the *analog* L/R value end-to-end: neither is derived from the other, verified by
-  `tools/test_switch_gc_report.c`'s "digital detents independent of analog value" and "analog
+  `tests/firmware/test_switch_gc_report.c`'s "digital detents independent of analog value" and "analog
   full-scale without detent" cases. (This directly generalizes the lesson already learned and
   documented from the 8BitDo NGC Modkit input work — see `docs/bluetooth/8bitdo-ngc-diy-profile.md`
   "Architecture" — where collapsing a digital detent and an analog-derived digital fold onto the
@@ -76,12 +76,12 @@ something different):
 - **ZL remains a distinct destination from Pro2's own `NS2_DST_ZL`/`SWITCH_MASK_ZL`** — the GC
   output encoder reads the same `SWITCH_MASK_ZL` bit (destination enum value reused, per the
   original plan below) but encodes it into report `0x0A`'s own, independent ZL bit — verified by
-  `tools/test_switch_gc_report.c`'s "ZL alone... does NOT set... native Z bit" case. For the 8BitDo
+  `tests/firmware/test_switch_gc_report.c`'s "ZL alone... does NOT set... native Z bit" case. For the 8BitDo
   NGC Modkit specifically, this bit is now suppressed in GameCube mode (see "Do not repeat the
   existing analog-fold problem" below) since that device has no real ZL to report.
 - **No new L3/R3 output destination.** `switch_gc_encode_report()` hardcodes both stick-click bits
   to 0 unconditionally and never reads `SWITCH_MASK_L3`/`SWITCH_MASK_R3` — verified by
-  `tools/test_switch_gc_report.c`'s "L3/R3 source inputs cannot set native output stick-click bits"
+  `tests/firmware/test_switch_gc_report.c`'s "L3/R3 source inputs cannot set native output stick-click bits"
   case.
 
 ### Do not repeat the existing analog-fold problem
@@ -136,7 +136,7 @@ Controller's `Z` is recognized as ZR by Windows/Steam. `GC_MASK_Z` is this proje
 control, and it reaches report `0x0A`'s GC slot for a console and report `0x05`'s ZR bit for a PC.
 See `switch2-gc/protocol.md`, "GameCube `Z` IS the ZR control".
 
-**Fixed** in `router_submit_input()` (`src/bt_hid/ns2_seam.c`), gated on `g_usb_personality ==
+**Fixed** in `router_submit_input()` (`firmware/src/input/ns2_seam.c`), gated on `g_usb_personality ==
 USB_PERSONALITY_NSO_GAMECUBE && !event->gc_has_native_layout` (i.e. any device *except* the Modkit,
 which keeps its own real per-button signals untouched by this synthesis):
 
@@ -192,7 +192,7 @@ identity detection (`is_ngc_modkit`, PID `0x2DC8:0x286A` exact match — never t
 **Implemented** in `bthid_gamepad.c`'s `process_report_dynamic()` (native Z/detent extraction,
 `gc_has_native_layout` flag) and `ns2_seam.c`'s `router_submit_input()` (fold suppression,
 unconditional trigger/gc_extra forwarding) — not a separate remap table. Verified end-to-end (from
-an explicit `switch_pro_input_t` through the encoder) by `tools/test_switch_gc_report.c`'s "Modkit
+an explicit `switch_pro_input_t` through the encoder) by `tests/firmware/test_switch_gc_report.c`'s "Modkit
 Z plus one trigger simultaneously" and detent-independence cases. **Not yet verified**: real
 hardware — the 8BitDo Modkit connected while the Pico is in GameCube mode and actually streaming
 (gated on Stage D, also implemented this pass — see `docs/switch2-gc/protocol.md` "USB init command

@@ -40,20 +40,20 @@ peer identity are outside that channel. The firmware owns validation and the aut
 ## Module view
 
 ```text
-android/companion/app
+companions/android/app
   UI, ViewModel, local Amiibo library, Android BLE backend
            |
            v
-android/companion/management-core
+companions/android/management-core
   domain + commands/parsers + portable workflows + session serialization
            |
            v
 Kotlin/JVM + kotlinx-coroutines + kotlinx-serialization-json
 
-android/companion/bridge-core       (independent sibling; no management dependency)
+companions/android/bridge-core       (independent sibling; no management dependency)
 ```
 
-`:management-core` is physically below `android/companion` because the existing Gradle build is
+`:management-core` is physically below `companions/android` because the existing Gradle build is
 rooted there. Its build uses the plain `kotlin("jvm")` plugin, contains no Android imports, and is
 independently tested. `ArchitectureGuardTest` mechanically checks that boundary.
 

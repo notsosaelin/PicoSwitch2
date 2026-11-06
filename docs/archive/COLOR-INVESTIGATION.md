@@ -33,8 +33,8 @@ init). Four 3-byte RGB fields live at fixed offsets:
 | Grip | `0x13022` | grip color |
 
 This project does not have real 2 MB SPI flash; it serves a synthesized `factory[]` / identity
-block from a table (`src/switch_pro2/switch_pro2.c`, `src/switch_joycon2/switch_joycon2.c`,
-`src/switch_gc/switch_gc.c`). The console reads colors identically over USB (SPI read emulated at
+block from a table (`firmware/src/console/pro2/switch_pro2.c`, `firmware/src/console/joycon2/switch_joycon2.c`,
+`firmware/src/console/gamecube/switch_gc.c`). The console reads colors identically over USB (SPI read emulated at
 EP0) and, for BLE, over the equivalent GATT path.
 
 Because color lives in the factory block that the console reads only via the vendor/SPI path,
@@ -334,8 +334,8 @@ The byte at index 8 is the player bitmask, identical in convention to Switch 1's
 
 **We receive it and throw it away.** All three USB personalities bare-ACK `0x09` without parsing
 the payload:
-- `src/switch_pro2/switch_pro2.c:685` — `case 0x09:  // player LEDs -> ACK only` (`dl = 0`)
-- `src/switch_gc/switch_gc.c:546` — `case 0x09:  // player LEDs -> bare ack`
+- `firmware/src/console/pro2/switch_pro2.c:685` — `case 0x09:  // player LEDs -> ACK only` (`dl = 0`)
+- `firmware/src/console/gamecube/switch_gc.c:546` — `case 0x09:  // player LEDs -> bare ack`
 
 So the connected Bluetooth controller's player indicator currently reflects the **dongle's own
 internal player index** (`PLAYER_COLORS`/`PLAYER_LED_PATTERNS`, assigned dongle-side), **not the
@@ -347,7 +347,7 @@ unparsed.
 Switch 2's OS is the same base as Switch 1's, hardened. The Switch 1 mechanism is well-documented
 (community reference: dekuNukem's *Nintendo_Switch_Reverse_Engineering*, subcommand `0x30` "Set
 player lights") **and this project already implements the parse** in its Switch 1 build —
-`src/switch_pro/switch_pro.c:250-263`:
+`firmware/src/console/pro/switch_pro.c:250-263`:
 
 ```c
 case SUBCMD_SET_PLAYER: {              // 0x30
@@ -750,9 +750,9 @@ controller colour), never a read.
 
 ## Related files
 
-- `src/switch_pro2/switch_pro2.c` (`0x13019`-`0x13022`, Pro2 factory block)
-- `src/switch_joycon2/switch_joycon2.c` (`switch_joycon2_ctrl_identity_l`, `_right()` derivation)
-- `src/switch_gc/switch_gc.c` (`switch_gc_ctrl_identity`)
+- `firmware/src/console/pro2/switch_pro2.c` (`0x13019`-`0x13022`, Pro2 factory block)
+- `firmware/src/console/joycon2/switch_joycon2.c` (`switch_joycon2_ctrl_identity_l`, `_right()` derivation)
+- `firmware/src/console/gamecube/switch_gc.c` (`switch_gc_ctrl_identity`)
 - `dumps/SPI/2069_spi_dump_*.bin`, `dumps/SWITCH2_JOYCON_L_1.bin`, `dumps/SWITCH2_JOYCON_R_1.bin`,
   `dumps/SPI/NSO_GC_SPI_DUMP_*.bin`
 - `docs/switch2/usb-spec.md`, `docs/switch2/protocol-research.md`, `docs/switch2-gc/protocol.md`

@@ -26,14 +26,14 @@ implementations. A disagreement between those surfaces is a defect.
 
 | Concern | Current authority |
 |---|---|
-| Command dispatch and JSON formatting | `src/config.c`, especially `handle_line`, `cmd_kbm`, `cmd_amiibo`, `cmd_bonds` |
-| Wireless command allowlist and bounded slots | `src/config_wireless_bridge.c` and `include/config_wireless_bridge.h` |
-| BLE access decisions | `src/mgmt_access.c`, `src/mgmt_access.h` |
-| BLE ATT carrier | `src/bt_hid/bt/btstack/btstack_host.c` |
-| Bond cursor encoding | `src/mgmt_bonds.c`, `include/mgmt_bonds.h` |
-| Android-free reference implementation | `android/companion/management-core` |
-| Language-neutral vectors | `tools/fixtures/management/protocol-v1.json` |
-| Host firmware regression suite | `tools/run_mgmt_tests.ps1` and its referenced tests |
+| Command dispatch and JSON formatting | `firmware/src/settings/config.c`, especially `handle_line`, `cmd_kbm`, `cmd_amiibo`, `cmd_bonds` |
+| Wireless command allowlist and bounded slots | `firmware/src/management/config_wireless_bridge.c` and `firmware/src/management/config_wireless_bridge.h` |
+| BLE access decisions | `firmware/src/management/mgmt_access.c`, `firmware/src/management/mgmt_access.h` |
+| BLE ATT carrier | `firmware/src/hid_host/bt/btstack/btstack_host.c` |
+| Bond cursor encoding | `firmware/src/management/mgmt_bonds.c`, `firmware/src/management/mgmt_bonds.h` |
+| Android-free reference implementation | `companions/android/management-core` |
+| Language-neutral vectors | `contracts/management/protocol-v1.json` |
+| Host firmware regression suite | `tests/run_mgmt_tests.ps1` and its referenced tests |
 
 The Kotlin module is reusable code for JVM clients, not the specification for other languages.
 Non-JVM clients implement [PROTOCOL.md](PROTOCOL.md) and validate against the fixture.

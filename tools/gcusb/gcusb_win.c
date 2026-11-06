@@ -1021,7 +1021,7 @@ static void print_usage(void) {
         "  gcusb rumble --target pico|genuine --amplitude <0=off, nonzero=on> --duration-ms <N>\n"
         "                [--unsafe] [--confirm-genuine-motor]\n"
         "                (GC rumble is ON/OFF/STOP only, not a real amplitude -- see\n"
-        "                 src/switch_gc/switch_gc.c's gc_rumble_state_t comment)\n"
+        "                 firmware/src/console/gamecube/switch_gc.c's gc_rumble_state_t comment)\n"
         "  gcusb rumble-sweep --target pico|genuine [--unsafe] [--confirm-genuine-motor]\n"
         "                (toggle-cadence test, not an amplitude sweep -- see cmd_rumble_sweep)\n"
         "  gcusb stop-rumble --target pico|genuine\n"

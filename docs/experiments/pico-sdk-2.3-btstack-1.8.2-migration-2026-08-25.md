@@ -134,7 +134,7 @@ and two guards now make disagreement impossible to miss:
 
 - `build.ps1` reads `PICO_SDK_PATH` back out of `CMakeCache.txt` after
   configuring and throws `SDK selection skew` if it is not what it asked for;
-- `tools/test_btstack_dependency_contract.py` compares the declarations
+- `tests/tools/test_btstack_dependency_contract.py` compares the declarations
   statically, before a build runs at all.
 
 VS Code metadata (`settings.json`, `c_cpp_properties.json`, `launch.json`,
@@ -227,7 +227,7 @@ is exactly the parallel-path problem
 **Durable-record owners (10 sites)** — they name a handle held in local state
 that outlives the call. These route through `btstack_host_request_disconnect()`,
 which returns whether an event is actually coming. The pending-vs-converge rule
-itself lives in `ns2_bt_disconnect_outcome()` (`src/ns2_bt_lifecycle.c`) so it is
+itself lives in `ns2_bt_disconnect_outcome()` (`firmware/src/bluetooth/ns2_bt_lifecycle.c`) so it is
 pinned by a host test; note that `ERROR_CODE_COMMAND_DISALLOWED` is **not** a
 convergence case — it means a disconnect is already in flight and converging
 early would tear down twice.
@@ -266,7 +266,7 @@ whether the convergence papered over it.
 
 ## HID Host long-report shim
 
-`cmake/btstack_hid_host_long_report.c` compiles upstream `hid_host.c` inside its
+`firmware/cmake/btstack_hid_host_long_report.c` compiles upstream `hid_host.c` inside its
 own translation unit (CMake removes the upstream one from
 `pico_btstack_classic`) for live DualSense-audio builds. It was ported to
 1.8.2's implementation rather than carried forward.
@@ -322,7 +322,7 @@ BTstack 1.8.2 changed three defaults. Two were already overridden explicitly.
 
 1.8.2's `sm_init()` sets `sm_sc_only_mode = true` whenever
 `ENABLE_LE_SECURE_CONNECTIONS` is defined (`sm.c:5230`), which
-`src/btstack_config.h` does. SC-Only rejects any pairing whose peer does not
+`firmware/config/btstack_config.h` does. SC-Only rejects any pairing whose peer does not
 offer Secure Connections (`sm.c:1292`), rejects a remote max key size below 16
 (`sm.c:1276`), and disconnects an encrypted link whose actual key size is below
 16 (`sm.c:4956`, `sm.c:4994`).
@@ -361,10 +361,10 @@ untouched. No authentication policy changed.
 **Confidence: Confirmed (source, both trees). Reachability in this product:
 Strong Evidence. Observed on hardware: no.**
 
-`src/btstack_config.h` defines `ENABLE_CROSS_TRANSPORT_KEY_DERIVATION`, and the
+`firmware/config/btstack_config.h` defines `ENABLE_CROSS_TRANSPORT_KEY_DERIVATION`, and the
 Android companion depends on it: it bonds over LE for management, and its
 Controller Link's Classic key is cross-transport-derived from that LE bond (see
-`ns2_bt_classic_trust_present()` in `include/ns2_bt_lifecycle.h`).
+`ns2_bt_classic_trust_present()` in `firmware/src/bluetooth/ns2_bt_lifecycle.h`).
 
 CTKD runs in two directions, and BTstack keeps both in `setup->sm_link_key` —
 but in **different byte orders**:
@@ -488,16 +488,16 @@ All software. No hardware.
 | --- | --- | --- |
 | Clean build, both boards | `./build.ps1 -Clean` | pico_w and pico2_w OK |
 | Compiler diagnostics | build log | no warnings in PicoSwitch, SDK, or BTstack sources |
-| Host test suite | `pwsh -File tools\run_host_tests.ps1` | 72/72 declared active targets rebuilt from source and passed; 9 sources classified outside the suite |
-| Dependency contract | `python tools\test_btstack_dependency_contract.py` | passed |
-| Management boundary suites | the four suites in `tools/run_mgmt_tests.ps1` | passed |
+| Host test suite | `pwsh -File tests\run_host_tests.ps1` | 72/72 declared active targets rebuilt from source and passed; 9 sources classified outside the suite |
+| Dependency contract | `python tests\tools\test_btstack_dependency_contract.py` | passed |
+| Management boundary suites | the four suites in `tests/run_mgmt_tests.ps1` | passed |
 | General Python suites | `test_ns2_trace`, `test_ns2_nfc_semantics`, `test_amiibo_corpus` | passed |
 | Install-reset marker | `tools/verify_install_reset_marker.py` on both `.bin` | marker present on both |
 | Whitespace | `git diff --check` | clean |
 
 ### Warnings
 
-The only compiler warnings in the whole build are in vendored `third_party/opus`:
+The only compiler warnings in the whole build are in vendored `firmware/third_party/opus`:
 43× the `#warning` pair in `celt/float_cast.h` (emitted whenever `HAVE_LRINTF` is
 undefined — toolchain-independent) and 2× `-Wstringop-overflow=` in
 `silk/decode_indices.c`.
@@ -511,19 +511,19 @@ directly. No suppression was added and no vendored source was modified.
 
 ### Regression tests added
 
-- `tools/test_ns2_bt_lifecycle.c` —
+- `tests/firmware/test_ns2_bt_lifecycle.c` —
   `test_disconnect_convergence_after_btstack_1_8()` pins which
   `gap_disconnect()` statuses still leave a completion event in flight, including
   that `COMMAND_DISALLOWED` must not trigger local convergence and that an
   unrecognised status fails safe.
-- `tools/test_btstack_dependency_contract.py` — eight structural guards for the
+- `tests/tools/test_btstack_dependency_contract.py` — eight structural guards for the
   decisions above, chosen because in each case the wrong answer still compiles:
   the HIDS Host pool macro, the removed protocol-mode enumerator, the HID Host
   send guard and its CMake substitution, the explicit LE/Classic security policy,
   the disconnect convergence wiring, agreement between the two SDK version
   declarations, the canonical `BTSTACK_ROOT` resolution and skew check, and stale
   tool paths in `.vscode`.
-- `tools/test_bluetooth_closeout_wiring.py` was updated, not weakened: it still
+- `tests/tools/test_bluetooth_closeout_wiring.py` was updated, not weakened: it still
   pins that the Controller Link teardown is a plain ACL disconnect ordered after
   the binding is cleared, and now additionally asserts that no second release
   mechanism appears in that function.

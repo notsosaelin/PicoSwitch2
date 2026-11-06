@@ -110,7 +110,7 @@ beyond the 14 (`C`, `Z`, `BACK`, `APP_SWITCH`) exist but are not part of version
 ## Impact on the PicoSwitch2 side (no firmware change needed)
 
 The Odin Controller fits the existing checked-in contract — the same 81-byte descriptor / 10-byte
-wire report and the sequential 14-button generic map that `tools/test_bthid_android_controller.c`
+wire report and the sequential 14-button generic map that `tests/firmware/test_bthid_android_controller.c`
 already validates against the production parser (all assertions pass, 2026-08-12). Nothing in this
 audit requires a parser or descriptor change. It confirms:
 

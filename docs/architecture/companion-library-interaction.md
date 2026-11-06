@@ -169,11 +169,11 @@ reader or a switch device. Every transition therefore has a non-gesture route:
 
 | | Path |
 | --- | --- |
-| Shared model (C#) | `windows/companion/src/PicoSwitch.Companion.Services/Presentation/AmiiboInteractionState.cs` |
-| Shared model (Kotlin) | `android/companion/app/src/main/java/dev/picoswitch/companion/data/AmiiboInteractionState.kt` |
+| Shared model (C#) | `companions/windows/src/PicoSwitch.Companion.Services/Presentation/AmiiboInteractionState.cs` |
+| Shared model (Kotlin) | `companions/android/app/src/main/java/dev/picoswitch/companion/data/AmiiboInteractionState.kt` |
 | Contract tests | `AmiiboInteractionTests.cs` / `AmiiboInteractionTest.kt` — the same 36 properties on both |
-| Windows surface | `windows/companion/src/PicoSwitch.Companion.App/Pages/AmiiboPage.xaml{,.cs}` |
-| Android surface | `android/companion/app/src/main/java/dev/picoswitch/companion/ui/AmiiboScreen.kt` |
+| Windows surface | `companions/windows/src/PicoSwitch.Companion.App/Pages/AmiiboPage.xaml{,.cs}` |
+| Android surface | `companions/android/app/src/main/java/dev/picoswitch/companion/ui/AmiiboScreen.kt` |
 
 The two test suites are deliberately parallel. They are the guard against the clients drifting into
 behaving differently while each looks correct on its own.

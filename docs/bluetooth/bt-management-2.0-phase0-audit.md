@@ -76,21 +76,21 @@ Positive findings that de-risk later phases:
 
 | HLD concept | Current reality | File |
 |---|---|---|
-| Management command dispatcher (§75) | One `handle_line()` if/else chain over newline-framed JSON commands, shared by CDC Config and in-band BLE. | `src/config.c:1451` |
-| Management authorization (§51) | `mgmt_access.c` — pure predicates, exhaustively host-tested. Writes require enabled + connected + bonded + encrypted + allowlisted. Trust additionally requires a 16-byte key. | `src/mgmt_access.c`, `src/mgmt_access.h`, `tools/test_mgmt_access.c` |
-| Wireless command allowlist | `config_wireless_command_allowed()`. Any new management verb must be added here or it is unreachable over BLE. | `src/config_wireless_bridge.c:204` |
+| Management command dispatcher (§75) | One `handle_line()` if/else chain over newline-framed JSON commands, shared by CDC Config and in-band BLE. | `firmware/src/settings/config.c:1451` |
+| Management authorization (§51) | `mgmt_access.c` — pure predicates, exhaustively host-tested. Writes require enabled + connected + bonded + encrypted + allowlisted. Trust additionally requires a 16-byte key. | `firmware/src/management/mgmt_access.c`, `firmware/src/management/mgmt_access.h`, `tests/firmware/test_mgmt_access.c` |
+| Wireless command allowlist | `config_wireless_command_allowed()`. Any new management verb must be added here or it is unreachable over BLE. | `firmware/src/management/config_wireless_bridge.c:204` |
 | Adapter stable identity (§8.2) | **Not exposed by any command.** But the LE peripheral advertises with the public BD_ADDR (`hci_le_set_own_address_type(BD_ADDR_TYPE_LE_PUBLIC)`), so the app already has it. | `btstack_host.c:2469` |
 | Classic link-key backend (§17) | BTstack TLV `BTL0…BTL15`. Read/drop APIs are already used (`gap_get_link_key_for_bd_addr`, `gap_drop_link_key_for_bd_addr`, `gap_delete_all_link_keys`). **No iterator is used anywhere** — there is currently no enumeration. | `btstack_host.c`, [`PERSISTENCE.md`](PERSISTENCE.md) |
 | LE device DB backend (§18) | BTstack TLV `BTD0…BTD15`. Enumerated by capacity, not by count, via `btstack_host_le_bond_entry_at`. Deletion goes through `gap_delete_bonding()` so resolving-list side effects survive. | `btstack_host.c:6767`, `PERSISTENCE.md` |
-| Bond capacities (§41) | `NVM_NUM_LINK_KEYS 16`, `NVM_NUM_DEVICE_DB_ENTRIES 16`, `MAX_NR_LE_DEVICE_DB_ENTRIES 16`. (Equal to BlueRetro's published 16/16 by coincidence, not by copying.) | `src/btstack_config.h` |
-| Cross-transport derivation (§16) | `ENABLE_CROSS_TRANSPORT_KEY_DERIVATION` is **on**. | `src/btstack_config.h:32` |
-| Physical pairing state machine (§32) | `open_pairing_window(now_ms)`, a 30 s window (`PAIRING_WINDOW_MS`) driven by the BOOTSEL double-tap gesture. Single authoritative entry point. | `src/bt_hid/ns2_bt_host.c:128` |
-| Bond list/remove marshalling (§81) | Established pattern: core0 command → `btstack_run_loop_execute_on_main_thread` → core1 op → `*_done` flag → core0 formats reply. Wireless callers complete asynchronously; CDC pumps USB. | `btstack_host.c:6746`, `src/config.c:1195` |
+| Bond capacities (§41) | `NVM_NUM_LINK_KEYS 16`, `NVM_NUM_DEVICE_DB_ENTRIES 16`, `MAX_NR_LE_DEVICE_DB_ENTRIES 16`. (Equal to BlueRetro's published 16/16 by coincidence, not by copying.) | `firmware/config/btstack_config.h` |
+| Cross-transport derivation (§16) | `ENABLE_CROSS_TRANSPORT_KEY_DERIVATION` is **on**. | `firmware/config/btstack_config.h:32` |
+| Physical pairing state machine (§32) | `open_pairing_window(now_ms)`, a 30 s window (`PAIRING_WINDOW_MS`) driven by the BOOTSEL double-tap gesture. Single authoritative entry point. | `firmware/src/bluetooth/ns2_bt_host.c:128` |
+| Bond list/remove marshalling (§81) | Established pattern: core0 command → `btstack_run_loop_execute_on_main_thread` → core1 op → `*_done` flag → core0 formats reply. Wireless callers complete asynchronously; CDC pumps USB. | `btstack_host.c:6746`, `firmware/src/settings/config.c:1195` |
 | Atomic forget (§63) | `btstack_host_forget_device_typed()` already performs the full sequence. Currently only reachable via LE-slot removal and the MouthPad relay. | `btstack_host.c:12446` |
-| Role/classification tracking (§14, §61) | Partial and **live-only**: `ns2_input_arbiter` records per-source transport, BD address, VID/PID, 32-char name, and a source class (`DIRECT` vs `BRIDGE` vs `UNKNOWN`). Nothing is persisted per peer. | `include/ns2_input_arbiter.h`, `src/config.c:829` |
+| Role/classification tracking (§14, §61) | Partial and **live-only**: `ns2_input_arbiter` records per-source transport, BD address, VID/PID, 32-char name, and a source class (`DIRECT` vs `BRIDGE` vs `UNKNOWN`). Nothing is persisted per peer. | `firmware/src/input/ns2_input_arbiter.h`, `firmware/src/settings/config.c:829` |
 | Remote name acquisition (§21) | Already implemented in the Classic inquiry path — EIR complete-local-name, else `gap_remote_name_request()`. | `btstack_host.c:4321`, `:4613`, `:4834` |
 | Peer metadata storage (§55) | **Does not exist.** Project-owned TLV tags are an established pattern (`JPLC` last-connected hint, `JPLK` pairing lockout), so the mechanism is available. | `btstack_host.c:1529` |
-| Host-testable bond logic | `ns2_bt_lifecycle.c` already hosts the pure parts (`ns2_bt_find_bond_slot`, `ns2_bt_forget_matches_address_type`) with `tools/test_ns2_bt_lifecycle.c`. This is where Phase 3/5 pure logic belongs. | `src/ns2_bt_lifecycle.c` |
+| Host-testable bond logic | `ns2_bt_lifecycle.c` already hosts the pure parts (`ns2_bt_find_bond_slot`, `ns2_bt_forget_matches_address_type`) with `tests/firmware/test_ns2_bt_lifecycle.c`. This is where Phase 3/5 pure logic belongs. | `firmware/src/bluetooth/ns2_bt_lifecycle.c` |
 
 ### 2.3 Management wire
 
@@ -100,7 +100,7 @@ Positive findings that de-risk later phases:
 | Reply capacity | 512-byte slot, **511-byte JSON payload** + newline | `CONFIG_WIRELESS_RESPONSE_CAPACITY`, `BleManagementContract.MAX_REPLY_PAYLOAD_BYTES` |
 | Framing | newline-delimited JSON lines, one command in flight | `config_wireless_bridge.h` |
 | Delivery model | command/response only. The TX characteristic is the reply channel; **there is no event/notification stream** | `btstack_host.c` `config_ble`, `BleReplyAssembler` |
-| Pagination precedent | `bonds list v2 [cursor]` → `{"v":2,"total":N,"bonds":[…],"next":int\|null}` | `src/mgmt_bonds.c`, [`../management/PROTOCOL.md`](../management/PROTOCOL.md) |
+| Pagination precedent | `bonds list v2 [cursor]` → `{"v":2,"total":N,"bonds":[…],"next":int\|null}` | `firmware/src/management/mgmt_bonds.c`, [`../management/PROTOCOL.md`](../management/PROTOCOL.md) |
 | Version negotiation | **None.** `info` returns `bridge_contract` (Controller Bridge, not management) and `build`. Management compatibility is per-command probing plus the `v:2` bond envelope | `PROTOCOL.md` §"Personality, wake, management, bonds, and save" |
 
 ---
@@ -197,7 +197,7 @@ before it classifies anything else, and the peer model must allow one logical pe
 ## 6. Storage audit (HLD §24.2, §55, §56, §89)
 
 Physical flash map, highest address first (from [`PERSISTENCE.md`](PERSISTENCE.md) and
-`src/nfc/virtual_amiibo_store.c`):
+`firmware/src/nfc/virtual_amiibo_store.c`):
 
 | Offset | Owner |
 |---|---|
@@ -292,7 +292,7 @@ management session. It does not.
 
 ```
 BOOTSEL double-tap
-  -> bootsel_action_resolve(...) == BOOTSEL_ACTION_OPEN_PAIRING     (src/bt_hid/ns2_bt_host.c:182)
+  -> bootsel_action_resolve(...) == BOOTSEL_ACTION_OPEN_PAIRING     (firmware/src/bluetooth/ns2_bt_host.c:182)
   -> open_pairing_window(now)                                       (:128)
        -> if a standalone controller is connected:
               btstack_host_disconnect_all_devices()                 (:151)
@@ -751,13 +751,13 @@ address-stable ordering, untrusted-name sanitisation, fail-closed pagination, an
 absence of key material). 1222 Android JVM test executions with 0 failures — app debug 295, app
 release 295, `:bridge-core` 568, `:management-core` 65 — the 20 new Kotlin cases being
 `PeerInventoryTest` plus peer vectors added to the shared conformance fixture
-`tools/fixtures/management/protocol-v1.json`, so a non-Kotlin client inherits the same guards.
+`contracts/management/protocol-v1.json`, so a non-Kotlin client inherits the same guards.
 Lint unchanged at 0 errors / 13 warnings with no findings in the changed files; both APKs assembled;
 descriptor parity green at bridge contract 4 with the same 161-byte digest, confirming the Controller
 Bridge wire is untouched.
 
 **Phase 4 (2026-08-28):** firmware and companion. Both boards rebuild clean from scratch with no new
-warnings — the only warnings emitted are the four pre-existing `third_party/opus` ones. 73/73
+warnings — the only warnings emitted are the four pre-existing `firmware/third_party/opus` ones. 73/73
 declared active host-test targets rebuilt from source and passed; `test_mgmt_peers` grew by 5 cases
 covering classification carry-through, the rule that a later observation cannot erase a known
 classification, absent-rather-than-empty optional fields, sanitisation of the classification string,

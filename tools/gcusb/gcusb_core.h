@@ -1,7 +1,7 @@
 /*
  * gcusb_core.h -- pure, host-testable logic for the gcusb PC-side USB protocol lab
  * (tools/gcusb). Zero Windows-API dependency, by design, mirroring this project's own
- * established pure/impure split (src/switch_gc/switch_gc_encode.c, switch_gc_report_select.c,
+ * established pure/impure split (firmware/src/console/gamecube/switch_gc_encode.c, switch_gc_report_select.c,
  * hid_out_normalize.c, ns2_pairing_crypto.c) -- everything that can be reasoned about and tested
  * without a Windows box or real hardware lives here. The Windows-specific SetupAPI/WinUSB/HID
  * plumbing lives in gcusb_win.c and calls into this file for every safety-critical decision:
@@ -9,7 +9,7 @@
  * line formatting, and replay-script parsing/validation.
  *
  * Build/test (no Windows headers, no hardware):
- *   gcc -I tools/gcusb -o test_gcusb_core tools/test_gcusb_core.c tools/gcusb/gcusb_core.c
+ *   gcc -I tools/gcusb -o test_gcusb_core tests/firmware/test_gcusb_core.c tools/gcusb/gcusb_core.c
  *   ./test_gcusb_core
  */
 #ifndef GCUSB_CORE_H
@@ -31,7 +31,7 @@ extern "C" {
  * requirement). bcdDevice is the one field known to differ:
  *   genuine controller: 0x0101 (captured directly, see docs/switch2-gc/protocol.md)
  *   Pico (NSO GameCube): 0x0111 (deliberately NOT the real captured 0x0101 -- see
- *     src/switch_gc/switch_gc.c's device descriptor comment for why: avoiding a Windows
+ *     firmware/src/console/gamecube/switch_gc.c's device descriptor comment for why: avoiding a Windows
  *     WinUSB-driver-cache collision with the genuine unit was a real, previously-hardware-hit bug)
  * --------------------------------------------------------------------------------------------- */
 
@@ -66,7 +66,7 @@ bool gcusb_parse_bcddevice_from_hwid(const char *hwid, uint16_t *out_bcddevice);
 /* ---------------------------------------------------------------------------------------------
  * Vendor-bulk command allowlist
  *
- * Byte layout (Confirmed, src/switch_gc/switch_gc.c's switch_gc_vendor_dispatch(),
+ * Byte layout (Confirmed, firmware/src/console/gamecube/switch_gc.c's switch_gc_vendor_dispatch(),
  * docs/switch2-gc/protocol.md "USB init command sequence"): request bytes
  * [0]=id [1]=dir(0x91) [2]=transport(0x00) [3]=sub [4..5]=len(LE) [6..7]=00 00 [8..]=payload.
  * `id`==c[0], `sub`==c[3] are what the firmware's own dispatcher switches on, so the allowlist is
@@ -116,7 +116,7 @@ uint32_t gcusb_clamp_rumble_duration_ms(uint32_t requested_ms, bool allow_unsafe
 
 /* Builds the 4-byte report-0x03 rumble-data field. Revised 2026-07-14 (Strong evidence, sourced
  * from the real Linux kernel "HID: nintendo" driver -- see gc_rumble_state_t's comment in
- * src/switch_gc/switch_gc.c and docs/experiments/refuted-hypotheses.md): the GameCube controller
+ * firmware/src/console/gamecube/switch_gc.c and docs/experiments/refuted-hypotheses.md): the GameCube controller
  * has no continuous-amplitude rumble hardware at all -- data[1] is a 3-value state enum
  * (OFF=0/ON=1/STOP=2), not an amplitude byte, and data[0] is an unrelated sequence/command byte,
  * not amplitude either. `requested` here is `0` for off, nonzero for on -- this function does NOT

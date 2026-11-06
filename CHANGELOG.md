@@ -193,7 +193,7 @@ identifier, not a product version.
 
 ### Added
 
-- **Native Android companion application** (`android/companion/`). Adapter management over
+- **Native Android companion application** (`companions/android/`). Adapter management over
   bonded/encrypted BLE, adapter mode and identity-colour configuration, an Amiibo library with
   import/export/initialization and phone-NFC capture, active-controller selection, live input
   diagnostics, and a shareable diagnostic export. No root, Shizuku, accessibility service, or
@@ -397,9 +397,9 @@ identifier, not a product version.
   interleaved `3 → 2` and formerly suppressed `3 → 1` prefix seam choices.
 
 - The figure-v3 NFC state machine is host-replayable. It moved out of the USB personality into
-  `src/nfc/ns2_amiibo_v3_runtime.c` behind a `step(state, host, now_ms, generation, command)`
+  `firmware/src/nfc/ns2_amiibo_v3_runtime.c` behind a `step(state, host, now_ms, generation, command)`
   interface matching the 540-byte path, with durable side effects behind a small host interface a
-  test can fake. `tools/test_ns2_amiibo_v3_runtime.c` replays the recognition read, the Air Riders
+  test can fake. `tests/firmware/test_ns2_amiibo_v3_runtime.c` replays the recognition read, the Air Riders
   clear/update/write lifecycle, the `0x1E` reuse read, the persistence-gated eject, and the
   mid-transaction generation edge with a fake clock. Console behavior is unchanged.
 - Internal v3 error reasons. Every v3 failure reaches the console as the same status `0x07` /
@@ -677,7 +677,7 @@ identifier, not a product version.
 - The management session integration suite now links the production access-control module instead
   of a weaker local imitation. It proves allowlisted commands are rejected for bonded-but-plaintext
   and encrypted-but-disconnected states as well as unbonded, disabled, and diagnostic cases;
-  `tools/run_mgmt_tests.ps1` remains 11/11 green.
+  `tests/run_mgmt_tests.ps1` remains 11/11 green.
 - DualSense gyro immediately returned to normal when the experimental length-`0x28` gate was
   disabled, confirming the validated production path remains the length-`0x1E` carrier.
 - All 53 host-test executables pass, including the v3 write codec, Config BLE bridge, locked

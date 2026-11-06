@@ -197,8 +197,8 @@ Do not begin this work as part of unrelated firmware or Android tasks.
 ## Windows
 
 A Windows companion is now an accepted and started platform direction. The design is
-`WINDOWS_PASS.md`; the implementation lives under `windows/companion/` and its current state is
-`windows/companion/docs/README.md`.
+`WINDOWS_PASS.md`; the implementation lives under `companions/windows/` and its current state is
+`companions/windows/docs/README.md`.
 
 Settled by the design pass and the first implementation pass:
 
@@ -208,7 +208,7 @@ Settled by the design pass and the first implementation pass:
   relocating `:bridge-core` and `:management-core`. The relocation trigger named in
   `docs/bridge/PLATFORM_BACKEND.md` is a *JVM* second consumer, which a C# host is not; moving those
   modules would deliver churn and zero reuse. The cost of the duplication is paid down by the shared
-  fixtures under `tools/fixtures/`, which both languages read.
+  fixtures under `contracts/`, which both languages read.
 - **Delivered.** Roadmap Phases 0, 1 and 2, with 366 passing tests and
   `tools/check_android_descriptor_parity.py` extended to a third language. Phase 0: project
   skeleton, architecture guards, and a WinUI shell that builds x64/ARM64, packages as MSIX and

@@ -15,7 +15,7 @@
 ## 1. Goal
 
 The Switch 2 Pro Controller has a genuine headset jack; our USB descriptor already advertises the
-matching 3 audio interfaces (`src/switch_pro2/switch_pro2.c`, `NS2_AUDIO` Option A). As of
+matching 3 audio interfaces (`firmware/src/console/pro2/switch_pro2.c`, `NS2_AUDIO` Option A). As of
 2026-07-17, a real UAC1 endpoint/control driver services those interfaces; its initial transport
 milestone deliberately sinks speaker PCM and emits silent microphone PCM. The complete feature:
 when the connected Bluetooth controller is a
@@ -40,7 +40,7 @@ adapt, and vendor pieces of with attribution.
 
 ### 2.1 The DualSense's own BT audio protocol (what DS5Dongle reverse-engineered/implements)
 
-This is the part our own `src/bt_hid/bt/bthid/devices/vendors/sony/ds5_bt.c` driver does **not**
+This is the part our own `firmware/src/hid_host/bt/bthid/devices/vendors/sony/ds5_bt.c` driver does **not**
 currently touch at all — it only parses/sends report `0x31` (standard BT input/output: buttons,
 sticks, rumble, LED, touchpad; confirmed by reading that file, `DS5_REPORT_BT_INPUT`/`_OUTPUT`
 `#define`s). DS5Dongle's `src/bt.cpp`/`src/audio.cpp` use two additional report IDs entirely
@@ -80,7 +80,7 @@ the report rate can't carry it) — it uses **Opus**, tuned aggressively low-lat
   cache stalls on the hot path), with a dedicated ~28 KB core1 stack. This is a real, deliberate
   performance-engineering choice, not incidental — worth replicating, not simplifying away, if this
   is ever ported. **Direct conflict to resolve:** this repo's core1 is already fully committed to
-  the joypad-os BTstack input stack (`src/bt_hid`). DS5Dongle's core1 does BT *and* audio codec
+  the joypad-os BTstack input stack (`firmware/src/hid_host`). DS5Dongle's core1 does BT *and* audio codec
   work together in one loop; this repo would need to either fold audio into the existing BT core1
   loop (bandwidth/timing budget unverified) or find a third execution context — RP2350 has no third
   core, so this is a real open design question, not a checklist item.
@@ -89,7 +89,7 @@ the report rate can't carry it) — it uses **Opus**, tuned aggressively low-lat
 
 - **`lib/opus`** (Xiph.Org's Opus reference implementation) — **BSD-3-Clause**, confirmed via the
   upstream `COPYING` file. Safe to vendor with attribution, matching this project's existing
-  pattern for `src/bt_hid` (joypad-os, Apache-2.0, attributed in `src/bt_hid/LICENSE`).
+  pattern for `firmware/src/hid_host` (joypad-os, Apache-2.0, attributed in `firmware/src/hid_host/LICENSE`).
 - **`lib/WDL`** (Cockos WDL, used for resampling) — **license unconfirmed this pass.** GitHub's API
   reports no detected `license` field for `justinfrankel/WDL`, and the expected `license.txt` path
   404'd during this research session. WDL has historically been distributed under permissive terms

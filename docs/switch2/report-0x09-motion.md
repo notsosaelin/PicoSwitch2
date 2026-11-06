@@ -109,7 +109,7 @@ Scales (the encoder uses fewer bits than the field provides for G1 and G2):
 The chart state therefore lives in the **low two bits of motion byte `0x04`**, reached as G2's
 bits 25:24 after extraction. Extract 26 bits per field, then apply that field's scale.
 `ns2_motion_pdu30_get_orientation()` / `..._set_orientation()` in
-`src/bt_hid/motion/ns2_motion_pdu.c` are the authority; the setter preserves the six unrelated bits
+`firmware/src/motion/ns2_motion_pdu.c` are the authority; the setter preserves the six unrelated bits
 of bytes `0x04`, `0x08`, and `0x0C`.
 
 The state numbers components in wire order `w/x/y/z`, so identity is state 0, and the omitted
@@ -523,7 +523,7 @@ point capable of resolving controller-private filter/FIFO/state behavior.
 
 🔴 **Removed: the per-axis "phase" encoder (2026-07-10 → 2026-08-14).**
 
-`src/switch_pro2/switch_pro2.c` used to contain a second encoder, `ns2_motion_tick()` +
+`firmware/src/console/pro2/switch_pro2.c` used to contain a second encoder, `ns2_motion_tick()` +
 `ns2_encode_motion30()`, that integrated `in.gyro` over real elapsed time into three independent
 `uint32` accumulators (`2^32 = 360°`, scale `0.72818` per µs·LSB, `Z` initialized to `0x80000000`)
 and wrote them straight into `0x04..0x0F`. It was written against the refuted layout at the top of
@@ -551,7 +551,7 @@ representation the console cannot decode. Motion remains gated on the `0x0C/0x04
 (`ns2_imu_enabled`, reset per host session in `tud_mount_cb`), matching a real PC2, and accel is
 still `in.accel * 65536` (Q16.16).
 
-Per-source frame differences live in exactly one place, `src/bt_hid/motion/ns2_motion_seam.c`: one
+Per-source frame differences live in exactly one place, `firmware/src/motion/ns2_motion_seam.c`: one
 row per source, each a proper rotation (determinant +1) from that sensor's frame onto the carrier
 frame (X right, Y forward, Z face normal). Adding a controller family means adding a seam row, not
 a branch in the encoder.

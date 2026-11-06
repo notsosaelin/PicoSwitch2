@@ -149,7 +149,7 @@ repeating roughly every 1-5 seconds for the rest of the session, a paired `03 91
 0x01/0x00 data byte) — shape consistent with a periodic keepalive/ping, but **Unknown**, not
 implemented, not required to explain streaming start (streaming was already active by then).
 
-**Implemented 2026-07-13** (`switch_gc_vendor_dispatch()` in `src/switch_gc/switch_gc.c`): the
+**Implemented 2026-07-13** (`switch_gc_vendor_dispatch()` in `firmware/src/console/gamecube/switch_gc.c`): the
 minimum gate — Sub 0x0D and Sub 0x0A handled with the exact Confirmed response envelopes above;
 Sub 0x03 ACKed defensively (documented, never observed, cheap to support); everything else
 (pairing/LEDs/features/memory/keepalive) deliberately unimplemented, with a rate-limited diagnostic
@@ -342,7 +342,7 @@ existing "resend only on detected change, arm a ~10-minute hardware sustain per 
 "loop_count"), a skipped "off" observation leaves the physical motor coasting on its last-observed
 "on" trigger's sustain window, unrelated to what the GC firmware's own internal state actually is at
 that moment — a plausible, well-evidenced explanation for "fires nonstop, then randomly stops," fixed
-by adding a dedicated faster poll (`RUMBLE_TICK_MS` in `src/bt_hid/ns2_bt_host.c`) rather than by
+by adding a dedicated faster poll (`RUMBLE_TICK_MS` in `firmware/src/bluetooth/ns2_bt_host.c`) rather than by
 touching the rumble decode itself. See `STATUS.md`'s "seventeenth pass" for the full account.
 
 **Next real evidence needed**: a capture of actual gameplay rumble traffic (Smash Bros or similar) —

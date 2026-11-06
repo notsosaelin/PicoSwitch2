@@ -2,7 +2,7 @@
 
 While the core functionality of the PicoSwitch2 (connecting Bluetooth controllers and bridging them to a Switch 2) is fully operational, several Switch 2 and hardware-specific features remain unmapped or partially implemented.
 
-## Switch 2 Console Output (`src/switch_pro2/`)
+## Switch 2 Console Output (`firmware/src/console/pro2/`)
 
 ### 1. Motion Data (IMU) Packing
 - **Status:** **✅ Implemented for genuine Pro Controller 2 passthrough and DualSense/Edge translation; length-`0x28` synthesis remains unmapped**

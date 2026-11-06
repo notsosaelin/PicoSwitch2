@@ -37,9 +37,9 @@ state retest. Broader controller-family and flash-path coverage remains pending.
 
 | Gate | Result | Coverage |
 |---|---:|---|
-| `pwsh -File tools/run_mgmt_tests.ps1` | 23/23 passed | lifecycle policy, closeout wiring, secret diagnostics, wipe transport boundary, owner LED, sparse lookup, reconnect policy, management, KB/M and adjacent seams |
+| `pwsh -File tests/run_mgmt_tests.ps1` | 23/23 passed | lifecycle policy, closeout wiring, secret diagnostics, wipe transport boundary, owner LED, sparse lookup, reconnect policy, management, KB/M and adjacent seams |
 | compiled `build/host-tests/test_*.exe` inventory | 76/76 passed | complete currently built host-test set |
-| `python tools/test_ns2_trace.py` | 5/5 passed | diagnostic trace parser regression |
+| `python tests/tools/test_ns2_trace.py` | 5/5 passed | diagnostic trace parser regression |
 | `build.ps1 pico_w,pico2_w` | both passed | production RP2040 and RP2350 firmware |
 | install-reset marker verifier | both passed | marker present below `SIZE-6S` reserved persistence start |
 | `git diff --check` | passed for checkpoint | whitespace integrity |

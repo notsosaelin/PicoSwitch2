@@ -88,8 +88,8 @@ extracts and stores the complete 64-byte result, producing CRC32 `8D337603`.
 - `ns2_v3_build_device_result()` now publishes the full 64-byte stored SRAM response.
 - `ns2_amiibo_v3_sram_response_valid()` checks the response CRC without making older research
   files impossible to inspect.
-- `tools/test_ns2_amiibo_v3.c` contains the genuine `7A C4` fixture and detects corruption in
-  either half of the response; `tools/test_ns2_v3_compat_view.mjs` checks both crypto-equivalent
+- `tests/firmware/test_ns2_amiibo_v3.c` contains the genuine `7A C4` fixture and detects corruption in
+  either half of the response; `tests/tools/test_ns2_v3_compat_view.mjs` checks both crypto-equivalent
   compatibility views and valid SRAM CRCs across all 16 supplied dumps.
 - `amiibo v3sig clear` is ordered before the generic hex parser and works as documented.
 - All 53 compiled host tests pass.

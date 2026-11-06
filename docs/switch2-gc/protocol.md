@@ -152,7 +152,7 @@ project's own Pico (GameCube personality, real hardware) proved Steam's `0x03/0x
 Report" command requests report ID **`0x05`**, never `0x0A` — this is now the Confirmed, load-bearing
 fact for anything targeting a PC/Steam host: report `0x0A` is real and implemented, but likely only
 ever consumed by an actual Switch 2 console (Stage G, still untested). **Implemented**:
-`switch_gc_encode_report05()` (`src/switch_gc/switch_gc_encode.c`) — same common bit layout as
+`switch_gc_encode_report05()` (`firmware/src/console/gamecube/switch_gc_encode.c`) — same common bit layout as
 `switch_pro2.c`'s own `ns2_build_report_05()` (A/B/X/Y, D-pad, Plus/Minus/Home/Capture/C, ZL and
 **Z in the ZR slot**), plus the GC-specific analog-trigger tail at `0x3C`/`0x3D` below.
 
@@ -182,7 +182,7 @@ slot in this format and only report `0x0A` carries them. A PC sees trigger trave
 continuous analog tail at `0x3C`/`0x3D` instead.
 
 Both reports source `Z` from `gc_extra` alone, so the console and a PC can never disagree about
-whether it is pressed; `tools/test_switch_gc_report.c` case 16 pins that parity.
+whether it is pressed; `tests/firmware/test_switch_gc_report.c` case 16 pins that parity.
 
 | Offset | Size | Field |
 |---|---|---|
@@ -362,7 +362,7 @@ previously been mined (only EP0 control requests had been). That traffic proves 
 actually matter for reaching streaming — see
 `docs/experiments/nso-gc-usb-capture-decode-2026-07-13.md` "Bulk vendor-interface (IF1) init
 sequence" for the full frame-numbered evidence. **Implemented**: `switch_gc_vendor_dispatch()` in
-`src/switch_gc/switch_gc.c`.
+`firmware/src/console/gamecube/switch_gc.c`.
 
 **Command `0x03` / Subcommand `0x03` — "Enable USB HID Reports"** (`commands.md:231, 259`): Request
 `03 91 00 03 00 04 00 00 01 00 00 00` → Response `03 01 00 03 00 F8 00 00 01 00 00 00`. **Strong**

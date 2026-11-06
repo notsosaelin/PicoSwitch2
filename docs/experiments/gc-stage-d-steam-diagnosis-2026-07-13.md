@@ -60,12 +60,12 @@ streaming from a PC host.
 
 ## Fix — Implemented
 
-- `switch_gc_encode_report05()` (`src/switch_gc/switch_gc_encode.c`): new, independent encoder for
+- `switch_gc_encode_report05()` (`firmware/src/console/gamecube/switch_gc_encode.c`): new, independent encoder for
   report `0x05`'s common layout (mirrors `switch_pro2.c`'s `ns2_build_report_05()` bit-for-bit, not
   shared code — deliberately not coupled to Pro2's module/state) plus the GC-specific analog
   trigger tail at `0x3C`/`0x3D` (documented in `docs/switch2-gc/protocol.md` "Input Report 0x05").
   Native Z and the independent L/R detents have no bit position in this format and are omitted.
-- `switch_gc_select_report()` (`src/switch_gc/switch_gc_report_select.c`, new pure/host-tested
+- `switch_gc_select_report()` (`firmware/src/console/gamecube/switch_gc_report_select.c`, new pure/host-tested
   file): decision logic for which report ID a `0x03/0x0A` command arms — accepts `0x05` or `0x0A`,
   ignores anything else (leaves the current selection, if any, unchanged).
 - `switch_gc_task()` now streams whichever of the two the host actually selected, defaulting to
@@ -73,10 +73,10 @@ streaming from a PC host.
 
 ## Tests
 
-- `tools/test_switch_gc_report.c`: 33 new report-0x05 checks (neutral, 32-bit little-endian
+- `tests/firmware/test_switch_gc_report.c`: 33 new report-0x05 checks (neutral, 32-bit little-endian
   counter, each button, sticks, analog tail at 0x3C/0x3D, no L3/R3/GL/GR/ZR/plain-shoulder
   synthesis) — all pass, alongside the existing 43 report-0x0A checks.
-- `tools/test_switch_gc_report_select.c` (new): 8 checks (select 0x05, select 0x0A, unsupported ID
+- `tests/firmware/test_switch_gc_report_select.c` (new): 8 checks (select 0x05, select 0x0A, unsupported ID
   ignored, switching between the two, an unsupported ID doesn't clear an existing selection, short
   command doesn't corrupt state) — all pass.
 - Full four-config build matrix green after reconfiguring (new source files required a `cmake`

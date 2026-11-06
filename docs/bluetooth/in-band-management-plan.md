@@ -199,7 +199,7 @@ protocol change**. Saved-pairing management (`bonds`) is the shared "Paired devi
 **Personality change (future, via app).** A `personality <pro2|gc|jcl|jcr>` command would trigger the
 **deferred** forced re-enumeration (§7.3) — behind its own safety investigation, not in the first cut.
 
-The access rules above are encoded as the pure spec in `tools/test_mgmt_access.c`
+The access rules above are encoded as the pure spec in `tests/firmware/test_mgmt_access.c`
 (`mgmt_should_advertise` / `_accept_connection` / `_accept_bonding` / `_allow_write` /
 `_should_drop_client`) and tested exhaustively; production `src/mgmt_access.{c,h}` lifts them verbatim.
 

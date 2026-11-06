@@ -103,7 +103,7 @@ have made every previously bonded gamepad an expected peer.
 ## Root cause 1 — reconnect targeting — Confirmed (code)
 
 `hid_state.last_connected_*` is a **single** reconnect identity, a one-peer-era
-abstraction. Three sites in `src/bt_hid/bt/btstack/btstack_host.c` targeted it
+abstraction. Three sites in `firmware/src/hid_host/bt/btstack/btstack_host.c` targeted it
 unconditionally:
 
 1. the BLE disconnect handler,
@@ -168,7 +168,7 @@ an architectural fact independent of any particular bond's survival.
 
 ## Fix
 
-`include/ns2_ble_reconnect.h` + `src/ns2_ble_reconnect.c` — a pure, host-testable
+`firmware/src/bluetooth/ns2_ble_reconnect.h` + `firmware/src/bluetooth/ns2_ble_reconnect.c` — a pure, host-testable
 selector over bonded candidates. Deliberately free of BTstack and Pico SDK
 dependencies so the policy is unit-testable.
 
@@ -245,14 +245,14 @@ checkpoints around a power cycle. It is **not** required to validate this fix.
 
 ## Automated validation
 
-`tools/test_ns2_ble_reconnect.c`, 11 cases: both live; A live/B absent; B live/A
+`tests/firmware/test_ns2_ble_reconnect.c`, 11 cases: both live; A live/B absent; B live/A
 absent; neither live (deterministic, then SCAN for the remainder); attempt bound;
 removed bond excluded; empty bond DB; legacy single-controller preserved; absent
 peers without stored metadata reached by discovery; a connected identity never
 returned even when pathologically flagged preferred; no arrangement of
 non-preferred bonds yields a direct connect; NULL and oversized-count safety.
 
-`tools/test_ns2_kbm.c` additionally pins the discovery-lifetime rule: partial KB/M
+`tests/firmware/test_ns2_kbm.c` additionally pins the discovery-lifetime rule: partial KB/M
 in either direction keeps discovery available, both roles retire it, a lone
 controller retires it, role loss reopens it, and completeness stays independent of
 the AUTO-derived effective mode.

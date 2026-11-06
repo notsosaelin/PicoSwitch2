@@ -9,7 +9,7 @@ paddles, DualSense Edge buttons, gyro, and rumble faithfully. Companion research
 
 > **Context.** The USB side is DONE — the dongle is a fully working native Switch 2 Pro Controller
 > (`docs/switch2/`). This migration is purely on the **Bluetooth input side** (core1). The USB /
-> report-builder side (core0, `src/switch_pro2/`, `src/switch_pro/`) is **not touched** by this work.
+> report-builder side (core0, `firmware/src/console/pro2/`, `firmware/src/console/pro/`) is **not touched** by this work.
 
 ---
 
@@ -66,7 +66,7 @@ core0 USB/report path keeps working untouched.
 
 ## 3. The seam: `switch_pro_input_t` extension
 
-Today (`include/switch_pro.h`): `buttons[3]` (Switch-1 masks), `left/right_stick[3]` (12-bit packed),
+Today (`firmware/src/console/pro/switch_pro.h`): `buttons[3]` (Switch-1 masks), `left/right_stick[3]` (12-bit packed),
 `accel[3]`, `gyro[3]`. Add an explicit extras field so the report builders can emit GL/GR/C:
 
 ```c
@@ -107,7 +107,7 @@ The migration is gated behind a **CMake option** so `main` stays shippable throu
 `option(BT_STACK_JOYPAD "Use the joypad-os bthid stack instead of bluepad32" OFF)`. bluepad32 remains
 the default until the new stack reaches parity.
 
-- **Phase 0 — Skeleton (no behavior change).** Add `src/bt_hid/` (vendored joypad-os bthid + core
+- **Phase 0 — Skeleton (no behavior change).** Add `firmware/src/hid_host/` (vendored joypad-os bthid + core
   model + attribution/LICENSE). Compile it in but keep bluepad32 driving input. Get it *building* for
   pico2_w. *Deliverable: it links.*
 - **Phase 1 — BTstack host up.** Bring up the bthid host on our existing SDK BTstack + CYW43 (replace
@@ -173,14 +173,14 @@ BLE (via `switch2_ble` driver) passes GL/GR/C straight through.
 - **Flash/RAM budget:** +~8K LOC of drivers; verify the pico2_w image still fits (it will; drivers
   are small). pico_w (RP2040) is tighter — validate.
 - **Licensing:** joypad-os is Apache-2.0 (compatible with our Apache-2.0). Vendor the ported files
-  under `src/bt_hid/` with the upstream `LICENSE` + a `THIRD_PARTY` note and per-file provenance
+  under `firmware/src/hid_host/` with the upstream `LICENSE` + a `THIRD_PARTY` note and per-file provenance
   headers. Keep bluepad32's licensing intact while it coexists.
 
 ---
 
 ## 9. Immediate next step
 
-Phase 0: create `src/bt_hid/` with the joypad-os bthid host + core button model + one driver (start
+Phase 0: create `firmware/src/hid_host/` with the joypad-os bthid host + core button model + one driver (start
 with **Xbox via the generic HID parser**, since it needs no vendor quirks) vendored with attribution,
 and get it **compiling** alongside bluepad32 behind `-DBT_STACK_JOYPAD=ON` (default OFF). No behavior
 change yet — just prove the port builds on pico2_w. Then Phase 1 brings the host up.

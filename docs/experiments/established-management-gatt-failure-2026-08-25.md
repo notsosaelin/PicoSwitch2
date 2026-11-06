@@ -107,14 +107,14 @@ adapter event-ring window, so the adapter trace cannot settle the initiating sid
 
 ### Ownership and serialization
 
-- [`ManagementOwner.kt`](../../android/companion/app/src/main/java/dev/picoswitch/companion/data/ManagementOwner.kt)
+- [`ManagementOwner.kt`](../../companions/android/app/src/main/java/dev/picoswitch/companion/data/ManagementOwner.kt)
   constructs one process-wide `AdapterRepository` and one
   `BleGattManagementTransport`. The Activity is also `singleTask` in
-  [`AndroidManifest.xml`](../../android/companion/app/src/main/AndroidManifest.xml).
-- [`SerializedManagementSession.kt`](../../android/companion/management-core/src/main/kotlin/dev/picoswitch/management/SerializedManagementSession.kt)
+  [`AndroidManifest.xml`](../../companions/android/app/src/main/AndroidManifest.xml).
+- [`SerializedManagementSession.kt`](../../companions/android/management-core/src/main/kotlin/dev/picoswitch/management/SerializedManagementSession.kt)
   puts exchanges and disconnect mutations behind the same `Mutex` and finishes an
   admitted operation in `NonCancellable` context.
-- [`BleGattManagementTransport.kt`](../../android/companion/app/src/main/java/dev/picoswitch/companion/transport/BleGattManagementTransport.kt)
+- [`BleGattManagementTransport.kt`](../../companions/android/app/src/main/java/dev/picoswitch/companion/transport/BleGattManagementTransport.kt)
   waits for each write callback, then waits for the complete newline-framed reply,
   before releasing the serialized exchange.
 - Setup operations are sequential: connect, MTU, service discovery, notification
@@ -123,7 +123,7 @@ adapter event-ring window, so the adapter trace cannot settle the initiating sid
 
 There is no second background transport or queue. The five-second
 `background-input-poll` in
-[`CompanionViewModel.kt`](../../android/companion/app/src/main/java/dev/picoswitch/companion/ui/CompanionViewModel.kt)
+[`CompanionViewModel.kt`](../../companions/android/app/src/main/java/dev/picoswitch/companion/ui/CompanionViewModel.kt)
 uses the same repository, transport, and serialized session. It is skipped during
 UI/KBM work, personality transitions, and Controller Link setup.
 

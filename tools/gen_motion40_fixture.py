@@ -35,7 +35,7 @@ import ns2_motion_reference as R
 
 ROOT = Path(__file__).resolve().parent.parent
 DUMPS = ROOT / "dumps"
-OUTPUT = ROOT / "tools" / "fixtures" / "ns2_motion40_catchup.h"
+OUTPUT = ROOT / "contracts" / "ns2_motion40_catchup.h"
 
 
 def captures():
@@ -154,7 +154,7 @@ def emit_high_rate(rows, sources):
             f"{{{data}}}}},"
         )
     lines += ["};", "", "#endif  // NS2_MOTION40_HIGH_RATE_FIXTURE_H", ""]
-    out = ROOT / "tools" / "fixtures" / "ns2_motion40_high_rate.h"
+    out = ROOT / "contracts" / "ns2_motion40_high_rate.h"
     out.write_text(chr(10).join(lines), encoding="utf-8")
     print(f"{out.relative_to(ROOT)}: {len(rows)} high-rate packets "
           f"from {len(sources)} captures")

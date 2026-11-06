@@ -26,7 +26,7 @@ repository.
 
 ## Implemented Android slice
 
-`android/companion` now:
+`companions/android` now:
 
 1. Persists the richer plaintext identity fields in each private library index record and renders
    them in both the adaptive grid and detail pane.
@@ -84,7 +84,7 @@ operation usable.
   fake transceiver to pin the complete command sequence, 540/572-byte assembly, signature fallback,
   malformed-response aborts, tag-family rejection, raw manufacturer/BCC rejection, and forbidden
   command absence.
-- `tools/test_amiibo_decrypt.mjs` both generates/checks the same dummy-key golden vector (with
+- `tests/tools/test_amiibo_decrypt.mjs` both generates/checks the same dummy-key golden vector (with
   `--write-golden`) and runs the independent portal crypto round-trip. The Android port was not
   flashed or exercised against a real adapter in this bounded change.
 - With a temporary official Temurin JDK 21, the Android module passed 85 JVM tests, lint, and debug

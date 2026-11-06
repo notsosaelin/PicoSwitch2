@@ -99,21 +99,20 @@ that module rather than decoding bytes inline anywhere else.
 ## Phase 3 — exhaust the host tests
 
 ```powershell
-cmake --build build\pico2_w --config Release --parallel
-$tests = Get-ChildItem build\host-tests -File -Filter 'test_*.exe'
-foreach ($test in $tests) { & $test.FullName; if ($LASTEXITCODE -ne 0) { throw "$($test.Name) failed" } }
-python tools/test_ns2_trace.py
-python tools/test_ns2_nfc_semantics.py
-python tools/test_amiibo_corpus.py
+cmake --build firmware\build\pico2_w --config Release --parallel
+pwsh -File tests\run_host_tests.ps1 -Group nfc
+python tests\run_tool_tests.py nfc
+python tests\run_tool_tests.py amiibo
+python tests\run_tool_tests.py trace
 ```
 
 Both NFC state machines are host-replayable, so a deterministic parsing, bounds,
 timing, state, or record-layout bug must be reproduced offline before hardware:
 
-- v3: `tools/test_ns2_amiibo_v3_runtime.c` drives the real command sequences
+- v3: `tests/firmware/test_ns2_amiibo_v3_runtime.c` drives the real command sequences
   through `ns2_amiibo_v3_runtime_step()` with a fake clock and a fake store that
   can refuse an apply or report a pending flush.
-- 540: `tools/test_ns2_virtual_nfc_runtime.c` over
+- 540: `tests/firmware/test_ns2_virtual_nfc_runtime.c` over
   `ns2_virtual_nfc_runtime_dispatch()`.
 - Layout coverage: `test_ns2_amiibo_v3.c`, `test_ns2_amiibo_v3_write.c`,
   `test_ns2_virtual_nfc.c`.
@@ -227,6 +226,6 @@ dumps/experiments/<timestamp>-<slug>/
 - The report NFC-state field is not traced, so state edges are inferred only
   from observed `0x05` replies.
 - No capture-to-fixture generator: replay scenarios are still written by hand
-  into `tools/test_ns2_amiibo_v3_runtime.c` rather than generated from a trace.
+  into `tests/firmware/test_ns2_amiibo_v3_runtime.c` rather than generated from a trace.
 - No persistence fault injector, so power-loss recovery still needs physical
   testing.

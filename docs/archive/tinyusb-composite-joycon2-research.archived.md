@@ -146,7 +146,7 @@ sidesteps this entire question because each dongle is a normal single-identity c
 
 For presenting multiple **generic** HID controllers (the mode this repo already ships), the levers:
 
-- `CFG_TUD_HID = N` in `tusb_config.h` → N HID class instances (`include/tusb_config.h:106-108`).
+- `CFG_TUD_HID = N` in `tusb_config.h` → N HID class instances (`firmware/config/tusb_config.h:106-108`).
 - Config descriptor: `bNumInterfaces = N`, then N × (Interface + HID + IN EP + OUT EP) blocks with
   distinct interface numbers and endpoint addresses (`usb_descriptors.c` `SWITCH_PRO_HID_INTERFACE`).
 - Per-instance callbacks: `tud_hid_descriptor_report_cb(instance)`,
@@ -181,10 +181,10 @@ multi-controller case, which is identity-by-interface, not identity-by-device.
   <https://deepwiki.com/hathach/tinyusb/4.3-rp2040-usb-controller>
 - Pico-PIO-USB (PIO-based USB host/device, the only multi-address research avenue):
   <https://github.com/sekigon-gonnoc/Pico-PIO-USB>
-- This repo: `src/usb_descriptors.c:160-231` (4-HID composite + IAD),
-  `include/tusb_config.h:106-134` (`CFG_TUD_HID`, CDC, endpoints),
-  `src/switch_joycon2/switch_joycon2.c:688-714` (device-level EP0 identity handshake),
-  `src/bt_hid/bt/bthid/devices/vendors/nintendo/switch2_ble.c:25-26` (JC2 L/R PIDs),
+- This repo: `firmware/src/app/usb_descriptors.c:160-231` (4-HID composite + IAD),
+  `firmware/config/tusb_config.h:106-134` (`CFG_TUD_HID`, CDC, endpoints),
+  `firmware/src/console/joycon2/switch_joycon2.c:688-714` (device-level EP0 identity handshake),
+  `firmware/src/hid_host/bt/bthid/devices/vendors/nintendo/switch2_ble.c:25-26` (JC2 L/R PIDs),
   `docs/switch2-joycon2/protocol.md` "Why not simultaneous L+R", `docs/provenance.md` (A1: the
   EP0-handshake acceptance criterion). DS5Dongle (vendored, single-controller composite reference):
   `nso-gc-refs/DS5Dongle/src/tusb_config.h`.

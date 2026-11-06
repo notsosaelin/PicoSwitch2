@@ -19,7 +19,7 @@ This project implements a native Bluetooth HID host stack based on [joypad-os](h
 
 ## Architecture & Submodules
 
-The implementation lives primarily under `src/bt_hid/` and is tied to the standard Pico SDK `btstack` (specifically `pico_btstack_ble` and `pico_btstack_classic`).
+The implementation lives primarily under `firmware/src/hid_host/` and is tied to the standard Pico SDK `btstack` (specifically `pico_btstack_ble` and `pico_btstack_classic`).
 
 ### Core Host (`ns2_bt_host.c`)
 - **Initialization:** Responsible for setting up the BTstack environment (`sm_init`, `l2cap_init`, `gatt_client_init`, etc.) and the various GATT/HIDS clients.
@@ -64,8 +64,8 @@ The implementation lives primarily under `src/bt_hid/` and is tied to the standa
 controllers. The leading hypothesis going in was a recent uncommitted refactor that changed the
 shared `report_set_rumble()`/`report_get_rumble()`/`feedback_get_state()` seam from one scalar
 amplitude (duplicated to both motors) to independent left/right values. **That hypothesis did not
-hold up** — full line-by-line review of that diff (`include/report.h`, `src/report.c`,
-`src/bt_hid/ns2_seam.c`, `src/switch_pro/switch_pro.c`, `src/switch_pro2/switch_pro2.c`) found it
+hold up** — full line-by-line review of that diff (`firmware/src/app/report.h`, `firmware/src/app/report.c`,
+`firmware/src/input/ns2_seam.c`, `firmware/src/console/pro/switch_pro.c`, `firmware/src/console/pro2/switch_pro2.c`) found it
 internally consistent: every signature change has a matching call site, the per-side decode
 offsets in both `switch_pro.c`'s `decode_rumble_motor()` and `switch_pro2.c`'s
 `ns2_rumble_motor_amp()` calls are byte-identical to what the old single-scalar code computed
@@ -79,7 +79,7 @@ stereo-rumble diff itself.**
 routing, contradicting its own comment.**
 
 ```c
-// src/bt_hid/ns2_seam.c, BEFORE this fix
+// firmware/src/input/ns2_seam.c, BEFORE this fix
 int find_player_index(int dev_addr, int instance) {
     (void)instance;
     return (dev_addr >= 0 && dev_addr < NS2_SLOTS) ? dev_addr : 0;
@@ -207,7 +207,7 @@ reference driver) rather than adding a periodic-resend mechanism.
 **4. Process failure caught by a follow-up audit: items 2 and 3's fixes were applied to
 `xbox_bt.c`/`xbox_ble.c`, which are dead code — never registered, never run.**
 
-`src/bt_hid/bt/bthid/bthid_registry.c:16` states outright: *"xbox_bt.h and xbox_ble.h no longer
+`firmware/src/hid_host/bt/bthid/bthid_registry.c:16` states outright: *"xbox_bt.h and xbox_ble.h no longer
 registered — generic driver handles all Xbox."* `xbox_bt_register()`/`xbox_ble_register()` are
 defined (`xbox_bt.c:389`, `xbox_ble.c:296`) but **never called anywhere in the tree** — confirmed by
 grepping the whole repo. Both files still compile (CMake globs `src/**/*.c`) and their driver
@@ -474,7 +474,7 @@ doesn't check VID/PID at all will always say yes, regardless of what VID/PID lat
    Repeating the same identity is intentionally idempotent, while generic parsing can refresh its
    VID-dependent quirk state and the identity log can record DIS provenance.
 5. **Host regression coverage exercises the production rebind state machine.**
-   `tools/test_bthid_late_identity.c` proves immediate input on provisional and generic drivers,
+   `tests/firmware/test_bthid_late_identity.c` proves immediate input on provisional and generic drivers,
    correction after authoritative VID/PID, transport-mask enforcement, safe fallback, repeated-DIS
    idempotence, and delivery of the first notification after rebind. The DIS query remains after
    notification setup; no GATT operation was moved earlier.
@@ -851,7 +851,7 @@ only) — dead code for this build, not a real alternate path.
    meaningfully transport-dependent for this project (one transport compiled in); can run slower
    under a busy run loop, never faster.
 3. **Differ across build configs/transports?** No — `CONTROL_TICK_MS` is a single unconditional
-   `#define`; `NS2_AUDIO`/`NS2_PRO` don't touch `src/bt_hid/**`'s scheduling.
+   `#define`; `NS2_AUDIO`/`NS2_PRO` don't touch `firmware/src/hid_host/**`'s scheduling.
 4. **Is "500ms" evidence-backed?** **No primary source found** (Phase 2, below) — treated as an
    existing, unverified project policy, not a fact.
 5. **Idempotent retries for every state?** The retry re-sends whatever `switch2_send_init_cmd()`
@@ -920,7 +920,7 @@ handshake, that should supersede this constant.
 
 ### The fix (Confirmed, build-verified, not yet hardware-validated)
 
-`src/bt_hid/bt/btstack/btstack_host.c`: `switch2_send_init_cmd()` now records
+`firmware/src/hid_host/bt/btstack/btstack_host.c`: `switch2_send_init_cmd()` now records
 `sw2_init_cmd_sent_ms = btstack_run_loop_get_time_ms()` on every send and resets
 `sw2_init_retry_count` when `sw2_init_state` differs from the last state a command was sent for.
 `switch2_retry_init_if_needed()` now checks `now - sw2_init_cmd_sent_ms >=

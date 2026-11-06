@@ -72,7 +72,7 @@ production from one successful motion gesture.
 Run:
 
 ```powershell
-python tools/test_ns2_magprobe.py
+python tests/tools/test_ns2_magprobe.py
 ./build/host-tests/build-host-test-ns2-motion-pdu.exe
 ./build/host-tests/build-host-test-ns2-ds5-motion.exe
 ```

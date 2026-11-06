@@ -57,7 +57,7 @@ Accel was already correct (`/2` matches the genuine range). Note the transient Z
 a momentary near-full-scale accel reading, not a scaling bug; monitor after the fix.
 
 ## Fix applied
-- `src/switch_pro2/switch_pro2.c` `ns2_build_report_05()`: write `time_us_32()` as the 4-byte
+- `firmware/src/console/pro2/switch_pro2.c` `ns2_build_report_05()`: write `time_us_32()` as the 4-byte
   timestamp at `p[0x2A]` (gated on `has_motion`) + `p[0x2E]=0x01`. `time_us_32()`'s ~1 MHz cadence
   matches the genuine ~0.8 MHz closely; only monotonic advance matters.
 
@@ -69,7 +69,7 @@ a momentary near-full-scale accel reading, not a scaling bug; monitor after the 
 > sample spacing when the source authors an IMU clock (DualSense, Android bridge), repeats it while
 > the same sample is re-sent, and keeps `time_us_32()` only for sources without one. The `0x01`
 > temperature value is unchanged.
-- `src/bt_hid/ns2_seam.c`: gyro scaling `/64` → `/1` (pass-through), keeping the axis transform.
+- `firmware/src/input/ns2_seam.c`: gyro scaling `/64` → `/1` (pass-through), keeping the axis transform.
 
 ## Validation plan (hardware)
 Re-flash, pair a DualSense, re-capture `ours_dongle_steam` and re-run `usb_a_confirm.py`:

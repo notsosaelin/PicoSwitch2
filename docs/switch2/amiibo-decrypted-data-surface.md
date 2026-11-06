@@ -174,7 +174,7 @@ Two safety properties, both tested:
 but leaves the write counter incrementing. Initialization zeroes it, because the request was
 factory-new state. Worth knowing if a game uses the counter to recognise a previously-seen amiibo.
 
-Tests: `tools/test_amiibo_decrypt.mjs` builds a fully populated amiibo (owner, nickname, both dates,
+Tests: `tests/tools/test_amiibo_decrypt.mjs` builds a fully populated amiibo (owner, nickname, both dates,
 write counter 300, title ID, random AppData), initializes it, and asserts both HMACs still pass,
 every field reads blank, the UID / identity block / tail are byte-identical, initializing twice is
 idempotent, and a tampered dump is refused. Plus date-decode edges (`0x0000`, `0xFFFF`, a known
@@ -270,8 +270,8 @@ AmiiboAPI supplies amiibo images but no game artwork, so this would need a separ
 source (a 3DS/Switch title database) and a second remote image fetch. Parked; the title ID needed to
 key such a lookup is already decoded and displayed, so nothing blocks it later.
 
-Tests: `tools/test_amiibo_games.mjs` extracts `amiiboAbsorbGames` from the page and runs the real
-catalog through it when `tools/fixtures/amiibo-showgames.json` is present (git-ignored, ~1.2 MB;
+Tests: `tests/tools/test_amiibo_games.mjs` extracts `amiiboAbsorbGames` from the page and runs the real
+catalog through it when `tests/fixtures/amiibo-showgames.json` is present (git-ignored, ~1.2 MB;
 fetch on demand), else a small inline fixture so it works offline. It asserts the raw arrays are
 stripped, every derived key is a 16-hex-digit title ID, name lists are deduplicated and use known
 platform labels, known lookups resolve, an unknown title ID does not, and the map stays small.
@@ -336,7 +336,7 @@ outcome of the last statement.**
 
 ### The check that would have caught it
 
-`tools/test_portal_symbols.mjs` flags calls to names that are defined nowhere in the page. The
+`tests/tools/test_portal_symbols.mjs` flags calls to names that are defined nowhere in the page. The
 portal is a single file with no build step and no type checking, so an undefined call surfaces only
 at runtime, in whatever path reaches it — here, only once someone actually initialized an amiibo.
 

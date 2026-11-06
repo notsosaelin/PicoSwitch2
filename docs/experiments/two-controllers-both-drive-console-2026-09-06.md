@@ -37,11 +37,11 @@ firmware performs it constantly:
 
 1. `bthid.c::bt_on_hid_report_with_generation()` hands **every** input report,
    from every connected peer, to `bthid_on_raw_report()` before the bound driver
-   parses it (`src/bt_hid/bt/bthid/bthid.c:688`).
+   parses it (`firmware/src/hid_host/bt/bthid/bthid.c:688`).
 2. `ns2_seam.c::bthid_on_raw_report()` calls
-   `ns2_active_input_note_connection()` (`src/bt_hid/ns2_seam.c:483`).
+   `ns2_active_input_note_connection()` (`firmware/src/input/ns2_seam.c:483`).
 3. That registers the peer with `NS2_INPUT_SOURCE_CLASS_UNKNOWN`
-   (`src/bt_hid/ns2_active_input.c:188`) — correct for a peer that has never
+   (`firmware/src/input/ns2_active_input.c:188`) — correct for a peer that has never
    reported, destructive for one that has.
 4. The owner was therefore demoted to `UNKNOWN` **on every one of its own
    reports**, dropping it below every other connected peer, and the policy
@@ -74,7 +74,7 @@ at roughly the combined report rate of the connected controllers.
 
 ## Reproduction
 
-`tools/test_ns2_input_arbiter.c::test_connection_hook_cannot_demote_a_classified_source()`
+`tests/firmware/test_ns2_input_arbiter.c::test_connection_hook_cannot_demote_a_classified_source()`
 drives the pure arbiter through the exact call sequence the firmware produces
 per report (raw hook `UNKNOWN`, then parsed event `DIRECT`) for two
 directly-paired controllers. Against the pre-fix arbiter it fails on the first
@@ -83,7 +83,7 @@ console handed to the other controller by a hook that learned nothing.
 
 ## The fix
 
-Both changes are in `src/bt_hid/ns2_input_arbiter.c`; no transport, seam, or
+Both changes are in `firmware/src/input/ns2_input_arbiter.c`; no transport, seam, or
 companion change was required.
 
 1. **Ignorance never overwrites knowledge.** `register_source()` ignores an
@@ -110,7 +110,7 @@ console owner, so both changed rules were checked against it specifically.
 **The composite never takes the UNKNOWN path.** A peer holding (or eligible for)
 a KB/M role is registered exclusively by `ns2_kbm_runtime`'s own submit, which
 always carries the composite `group_id` and always resolves to class `DIRECT`.
-`ns2_kbm_runtime_gates_connection()` (`src/bt_hid/ns2_kbm_runtime.c:512`) keeps
+`ns2_kbm_runtime_gates_connection()` (`firmware/src/input/ns2_kbm_runtime.c:512`) keeps
 the UNKNOWN-registering connection hook off those peers entirely — that gate is
 what change 1 makes redundant for them, not something it depends on. The
 upgrade direction, `UNKNOWN -> DIRECT`/`BRIDGE`, is untouched, so the mode-change

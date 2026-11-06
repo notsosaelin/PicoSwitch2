@@ -1,6 +1,6 @@
 # Android Companion
 
-The native Android client lives in [`android/companion/`](../android/companion/README.md). Its README
+The native Android client lives in [`companions/android/`](../companions/android/README.md). Its README
 is the build, architecture, protocol, responsive-layout, test, limitation, and hardware-validation
 handoff.
 
@@ -205,7 +205,7 @@ Color commit is now one happy-path action: mutate, authoritative readback, save,
 persistence completion when supported, and automatic same-personality USB re-enumeration. Only a
 partial re-enumeration failure leaves a Retry affordance. These lifecycle/color changes are
 source/JVM-tested as of 2026-08-20 and await the focused AYN Thor matrix in
-[`HARDWARE_VALIDATION.md`](../android/companion/HARDWARE_VALIDATION.md). The original app-led HID
+[`HARDWARE_VALIDATION.md`](../companions/android/HARDWARE_VALIDATION.md). The original app-led HID
 path through PicoSwitch2 into a real game remains hardware-confirmed from 2026-08-13.
 
 The application is organized around five destinations — **Adapter**, **Keyboard**, **Amiibo**,
@@ -213,7 +213,7 @@ The application is organized around five destinations — **Adapter**, **Keyboar
 than holding permanent navigation space. Layout branches on measured content width, never on
 orientation or device names. The full information architecture, shared Compose primitives,
 responsive rules, and the debug-only layout lab used to inspect them are documented in
-[`android/companion/README.md`](../android/companion/README.md).
+[`companions/android/README.md`](../companions/android/README.md).
 
 **Keyboard & Mouse** is a first-class management area covering the firmware's complete `kbm`
 surface: device and role status, input mode, both mapping profiles with a per-input editor, mouse
@@ -260,9 +260,9 @@ either way.
 by necessity and must be changed with it, or a cold launch shows a seam for one frame.
 
 Current implementation status is tracked in
-[`android/companion/FEATURE_PARITY.md`](../android/companion/FEATURE_PARITY.md). The intentionally
+[`companions/android/FEATURE_PARITY.md`](../companions/android/FEATURE_PARITY.md). The intentionally
 short eventual hardware session is
-[`android/companion/HARDWARE_VALIDATION.md`](../android/companion/HARDWARE_VALIDATION.md).
+[`companions/android/HARDWARE_VALIDATION.md`](../companions/android/HARDWARE_VALIDATION.md).
 The first AYN Thor live results and remaining end-to-end gates are preserved in
 [`experiments/android-companion-ayn-thor-live-2026-08-13.md`](experiments/android-companion-ayn-thor-live-2026-08-13.md).
 

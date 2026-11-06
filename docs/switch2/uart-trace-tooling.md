@@ -202,8 +202,8 @@ rationale: [`../re-methodology/nfc-investigation-workflow.md`](../re-methodology
 ## Automated coverage
 
 ```powershell
-python tools/test_ns2_trace.py -v
-python tools/test_ns2_nfc_semantics.py -v
+python tests/tools/test_ns2_trace.py -v
+python tests/tools/test_ns2_nfc_semantics.py -v
 ```
 
 `test_ns2_trace.py` covers known-field decoding, default redaction, 32-bit timestamp wrap, sequence

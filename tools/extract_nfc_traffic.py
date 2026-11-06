@@ -4,7 +4,7 @@
 Read-only, offline analysis tool -- scans `usbpcaptures/genuine_procon_2.pcapng` (or any
 similarly-captured USBPcap file) for the Switch 2 command envelope signature
 `[cmd=0x01][req_type=0x91][transport]` (transport 0x00=USB, 0x01=BLE, per this repo's own
-confirmed convention -- see src/switch_pro2/switch_pro2.c's ns2_dispatch()) and prints every match
+confirmed convention -- see firmware/src/console/pro2/switch_pro2.c's ns2_dispatch()) and prints every match
 with surrounding context, so real command-0x01 (NFC, per ndeadly/switch2_controller_research and
 this repo's own switch_pro2.c dispatcher) traffic already present in this repo's own capture file
 can be found and cross-checked, without capturing anything new.
