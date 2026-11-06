@@ -14,7 +14,7 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Current project state | [`../STATUS.md`](../STATUS.md) |
 | Forward roadmap | [`../PLAN.md`](../PLAN.md) |
 | Runtime architecture | [`architecture/overview.md`](architecture/overview.md) |
-| Proposed Device Appearance customization architecture | [`architecture/device-appearance-customization-hld.md`](architecture/device-appearance-customization-hld.md) |
+| Proposed Device Appearance customization architecture | `architecture/device-appearance-customization-hld.md` |
 | Proposed composable Amiibo, extraction, acquisition, and UID-alias architecture | [`architecture/amiibo-composable-library-hld.md`](architecture/amiibo-composable-library-hld.md) |
 | Single-ACL multiplane companion BLE transport research (Android carrier, audio/mic planes) | [`architecture/companion-multiplane-ble-architecture-research-2026-09-04.md`](architecture/companion-multiplane-ble-architecture-research-2026-09-04.md) |
 | Management architecture, protocol, clients, and conformance | [`management/README.md`](management/README.md) |
@@ -48,7 +48,6 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | KB/M resident upload stall: the reply was published but never notified | [`experiments/kbm-resident-upload-notify-stall-2026-08-31.md`](experiments/kbm-resident-upload-notify-stall-2026-08-31.md) |
 | Windows HOGP bridge feasibility (the Phase 6 gate) | [`experiments/windows-hogp-bridge-feasibility-2026-08-31.md`](experiments/windows-hogp-bridge-feasibility-2026-08-31.md) |
 | Retro Fighters BattlerGC Pro | [`bluetooth/retrofighters-battlergc-pro.md`](bluetooth/retrofighters-battlergc-pro.md) |
-| 8BitDo Ultimate Bluetooth paddles | [`../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md`](../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md) |
 | Pro Controller 2 USB protocol | [`switch2/usb-spec.md`](switch2/usb-spec.md) |
 | Console command surface | [`switch2/command-surface.md`](switch2/command-surface.md) |
 | Controller-side command atlas and ranked capture gaps | [`switch2/controller-command-atlas.md`](switch2/controller-command-atlas.md) |

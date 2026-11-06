@@ -31,7 +31,7 @@ HID_HOST_SHIM = ROOT / "cmake" / "btstack_hid_host_long_report.c"
 
 # Directories whose contents are ours to keep migrated. Vendored trees and
 # captured evidence are deliberately excluded.
-FIRMWARE_SOURCE_DIRS = ("src", "include", "cmake", "8Bitdo")
+FIRMWARE_SOURCE_DIRS = ("src", "include", "cmake")
 
 
 def read(path):

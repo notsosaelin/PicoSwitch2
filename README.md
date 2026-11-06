@@ -160,8 +160,8 @@ retain only wire layouts, invariants, and implementation constraints.
   length-`0x28` form remains only partially decoded and is never synthesized for Sony controllers.
 - Joy-Con 2 Left and Right are separate sideways controller personalities; they are not combined
   into one paired-controller USB identity.
-- The first-generation 8BitDo Ultimate Bluetooth controller requires the guarded custom controller
-  firmware under `8Bitdo/` to expose P1/P2 independently.
+- The first-generation 8BitDo Ultimate Bluetooth controller works on its stock firmware, but its
+  P1/P2 back paddles are not available: that firmware does not report them separately.
 - Switch 2 wake-from-sleep is implemented in Pro Controller 2 mode. After the console has entered
   sleep, the first real controller input sends the wake request automatically. Neutral reconnect
   reports never trigger wake.
