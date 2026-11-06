@@ -391,6 +391,13 @@ MT3689BCA and PN71602 only, and iFixit's published specification lists an accele
 gyroscope without naming a magnetometer. The Joy-Con 2's AK09919C is therefore not assigned to the
 Pro Controller 2 by assumption.
 
+ndeadly's `hid_reports.md` (commit `a3306b4`, 2026-09-08) now documents report `0x05` offset `0x19`
+as a feature-bit-7 magnetometer, signed int16 LE at 0.15 µT/LSB — the AK09919's nominal
+sensitivity. That is consistent with the negative Pro Controller 2 result above if the field is
+Joy-Con 2 only. A Joy-Con 2 emits both that field and length-`0x28` PDUs, so it is the controller
+on which G6/G7/G8 could be compared against a documented raw magnetometer; recorded as a lead, not
+run.
+
 ## Calibration limitation
 
 The known factory block at `0x13100` contains three float32 magnetometer-bias values followed by

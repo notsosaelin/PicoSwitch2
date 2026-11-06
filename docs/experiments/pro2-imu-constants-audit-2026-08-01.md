@@ -111,6 +111,14 @@ true 1 g.
 **To close it properly:** at-rest captures in two or more orientations (flat,
 then on its side). No console, no flash.
 
+> **External reference, 2026-11-06.** PRX-24hz's `switch2pro-telemetry` ran exactly that closure
+> on one Pro Controller 2 over USB report `0x05`: six faces, tilt divided out with
+> `acos(dominant/|g|)`. Result: gains 4090.8 / 4090.7 / 4096.3 LSB/g (mean −0.08% from nominal)
+> and offsets +10.5 / −5.2 / **+102.3** LSB, i.e. a Z-dominant positive bias. That supports the
+> bias model here over a scale error and suggests the Z-heavy offset may recur across units
+> (ours fit +233 Z) — n=2, not established. Their procedure is the template for closing this item
+> on our unit through the `imuref` path; not yet run.
+
 ## 🔵 Tick period: 1257 µs measured against 1250 assumed
 
 | capture | ticks | span | µs/tick |
@@ -126,6 +134,11 @@ Too small to matter for motion, and it is at least as likely to be the host
 clock as the controller's crystal — the host timestamp is the reference here,
 and nothing independently calibrates it. Recorded so that "800 Hz" is known to
 be nominal-and-confirmed-to-0.6%, not exact.
+
+> **External reference, 2026-11-06.** PRX-24hz measured the Pro Controller 2's report clock
+> against the host at **+10 ppm** over 658 s, and its IMU timestamp advancing in exact
+> 3750/5000 µs steps (3 or 4 × 1250 µs). A controller crystal that good cannot produce a 0.56%
+> error, so the 1257 µs here is most likely host-side timing. Not independently re-measured.
 
 (A fourth capture, `ds5-pro2-paired-pitch`, gives 748 µs/tick. It is excluded
 as an outlier: dropped notifications inflate the tick sum against wall time.)

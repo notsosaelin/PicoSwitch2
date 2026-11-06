@@ -374,6 +374,19 @@ not yet checked. **Unknown** = no basis yet either way.
     **18-byte** motion block at `0x2A`: uint32 microsecond timestamp followed by
     `temperature, accel_x/y/z, gyro_x/y/z` as int16. The viewer's `0x2E:0x3C` slice omitted the
     timestamp and temperature prefix.
+  - **Units and axes, 2026-11-06 (external, independently consistent with ours):** ndeadly's
+    `hid_reports.md` (commit `a3306b4`, 2026-09-08) documents that block as timestamp in µs,
+    temperature as a signed deviation from 25 °C at 1/126.9 °C/LSB, accel ±8 G
+    (8.0/32767 G/LSB) and gyro ±2000 dps (2000.0/32767 dps/LSB). PRX-24hz's
+    `switch2pro-telemetry` (USB, one unit, six-face gravity calibration plus gyro-integral
+    checks) measured 4092.6 LSB/g and 16.35–16.44 LSB/dps, a timestamp that advances by
+    3750/5000 µs per 4 ms frame (whole 1250 µs IMU ticks), and the body frame **+X = player's
+    right, +Y = toward the top edge/USB, +Z = out of the face**. That frame is the one our
+    DualSense seam mapping (`[X, −Z, Y]`, `src/bt_hid/ns2_seam.c`) was derived to from a genuine
+    capture, so the two were reached independently. ndeadly also lists a magnetometer at `0x19`
+    (feature bit 7, 0.15 µT/LSB); on PID `0x2069` our bit-7 probe exposed no such channel
+    ([`uart-magprobe.md`](uart-magprobe.md)), so treat that field as Joy-Con 2 (AK09919C) until
+    shown otherwise.
   - The **"Pro/GCN" format (handle `0x000E`) carries a 40-byte motion block**, now decoded as a
     timing/temperature prefix plus a 288-bit packed multi-sample IMU payload.
   - That tool's own init sequence **does** send feature-configure/enable commands

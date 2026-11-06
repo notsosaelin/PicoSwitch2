@@ -1452,6 +1452,65 @@ motion_done:
 }
 
 // Report 0x05 (common format): 4-byte buttons + DOCUMENTED accel/gyro block.
+// Report-0x05 IMU timestamp clock (offset 0x2A, microseconds).
+//
+// A genuine PC2 stamps each report with the time its IMU sample was taken. Stamping
+// the time the REPORT leaves instead pairs every gyro sample with a Bluetooth arrival
+// interval it did not occur over, which is the error switch_pro_input_t's
+// motion_timestamp exists to avoid (0.505 deg vs 0.002 deg on a 2 Hz 120 dps sweep,
+// tools/test_ns2_motion_quality.c). So: when the source authors its own IMU clock,
+// advance by the source's sample spacing (delta taken in the source's own modulus,
+// exactly as ns2_ds5_motion_update() does), and repeat the same stamp while the same
+// sample is re-sent between USB polls. Sources without a clock keep the host clock.
+// Output stays monotonic across clock changes and implausible jumps.
+typedef struct {
+    bool anchored;     // src_ts holds a sample of the current source clock
+    uint8_t unit;      // SWITCH_MOTION_TS_* of src_ts
+    uint32_t src_ts;   // last source timestamp consumed
+    uint32_t out_us;   // last emitted 0x2A value
+    uint32_t host_us;  // host time out_us was last advanced
+} ns2_r05_clock_t;
+static ns2_r05_clock_t ns2_r05_clock;
+
+#define NS2_R05_MAX_SAMPLE_GAP_US 100000u  // larger source jumps fall back to host time
+
+static uint32_t ns2_r05_source_delta_us(uint8_t unit, uint32_t now, uint32_t prev) {
+    if (unit == SWITCH_MOTION_TS_100US_16)
+        return ((now - prev) & 0xFFFFu) * 100u;
+    // DualSense 1/3 us ticks, 32-bit wrap: difference first, then rounded divide.
+    const uint32_t ticks = now - prev;
+    return ticks / 3u + ((ticks % 3u) >= 2u ? 1u : 0u);
+}
+
+static uint32_t ns2_r05_imu_timestamp(const switch_pro_input_t *in, uint32_t host_us) {
+    ns2_r05_clock_t *c = &ns2_r05_clock;
+    if (!in->motion_timestamp_valid) {
+        c->anchored = false;
+        c->out_us = host_us;
+        c->host_us = host_us;
+        return host_us;
+    }
+    if (!c->anchored || c->unit != in->motion_timestamp_unit) {
+        // First authored sample, or the source clock changed: continue from where the
+        // emitted clock already is instead of jumping to an unrelated epoch.
+        c->out_us += host_us - c->host_us;
+        c->anchored = true;
+        c->unit = in->motion_timestamp_unit;
+        c->src_ts = in->motion_timestamp;
+        c->host_us = host_us;
+        return c->out_us;
+    }
+    if (in->motion_timestamp == c->src_ts)
+        return c->out_us;  // the same sample re-sent: the same sample time
+    uint32_t delta = ns2_r05_source_delta_us(c->unit, in->motion_timestamp, c->src_ts);
+    if (delta == 0u || delta > NS2_R05_MAX_SAMPLE_GAP_US)
+        delta = host_us - c->host_us;  // source reset or long gap: stay monotonic
+    c->out_us += delta;
+    c->src_ts = in->motion_timestamp;
+    c->host_us = host_us;
+    return c->out_us;
+}
+
 // Used by the PC / Steam "Switch Pro Controller" profile (see usb-spec / hid_reports).
 static void ns2_build_report_05(uint8_t *p) {
     static uint32_t counter = 0;
@@ -1508,20 +1567,26 @@ static void ns2_build_report_05(uint8_t *p) {
     p[0x21] = 0x20;  // charge state
     p[0x29] = 0x01;  // always 0x01
 
-    // Motion block @ 0x2A: timestamp(4) temp(2) accelXYZ(6) gyroXYZ(6) — int16 LE.
-    // The IMU timestamp @0x2A is a free-running ~1 MHz counter. A real PC2 increments it every
-    // report; Steam integrates motion against it, so a frozen (all-zero) timestamp makes gyro
-    // appear stuck after one sample. Experiment A: genuine changed 19553/19553 reports, ours
-    // 0/20330 (docs/experiments/gyro-experiment-a-results.md). time_us_32() matches the genuine
-    // ~0.8 MHz cadence closely enough; only monotonic advance matters. Gated on has_motion so
-    // non-IMU pads keep an all-zero block (unchanged behavior) rather than a phantom timestamp.
+    // Motion block @ 0x2A: timestamp u32 (µs) · temperature int16 · accel XYZ int16 ·
+    // gyro XYZ int16, all LE (ndeadly hid_reports.md; PRX-24hz switch2pro-telemetry).
+    // The timestamp is the IMU SAMPLE time in microseconds — a genuine PC2 advances it by
+    // 3750/5000 µs per 4 ms frame, i.e. whole 1250 µs IMU ticks. Steam integrates motion
+    // against it, so a frozen timestamp makes gyro appear stuck after one sample
+    // (Experiment A: genuine changed 19553/19553 reports, ours 0/20330 —
+    // docs/experiments/gyro-experiment-a-results.md). See ns2_r05_imu_timestamp().
+    // Gated on has_motion so non-IMU pads keep an all-zero block rather than a phantom
+    // timestamp.
     if (in.has_motion) {
-        uint32_t ts = time_us_32();
+        uint32_t ts = ns2_r05_imu_timestamp(&in, time_us_32());
         p[0x2A] = (uint8_t)ts;
         p[0x2B] = (uint8_t)(ts >> 8);
         p[0x2C] = (uint8_t)(ts >> 16);
         p[0x2D] = (uint8_t)(ts >> 24);
-        p[0x2E] = 0x01;  // constant byte a real PC2 sends here (Experiment A)
+        // Temperature, int16 LE @0x2E: deviation from 25 °C (ndeadly: 1/126.9 °C/LSB). Not a
+        // constant byte, as Experiment A recorded it — a resting genuine PC2 just reads ~0/±1
+        // there. Raw 1 (≈25.01 °C) is kept because it is the value Experiment A captured.
+        p[0x2E] = 0x01;
+        p[0x2F] = 0x00;
         memcpy(&p[0x30], in.accel, 6);
         memcpy(&p[0x36], in.gyro, 6);
     }
@@ -1542,6 +1607,7 @@ void ns2_mount(void) {
     ns2_virtual_nfc_operation_generation = 0;
     ns2_virtual_nfc_presented_last = virtual_amiibo_store_loaded();
     ns2_imu_enabled = false;  // new host session: IMU off until the host re-enables it (0x0C/0x04)
+    memset(&ns2_r05_clock, 0, sizeof(ns2_r05_clock));
     ns2_ds5_motion_reset(&ns2_ds5_motion);
     ns2_ds5_motion_source_active = false;
     ns2_ds5_motion_last_sequence = 0;

@@ -28,7 +28,7 @@ Capture offsets (capdata[0] = report id 0x05; firmware buffer `p[k]` = capdata[k
 |---|---|---|---|
 | 0x2A | p[0x29] | const `0x01` | constant |
 | 0x2B–0x2E | **p[0x2A]** | **IMU timestamp, u32 LE** | **increments every report** |
-| 0x2F | p[0x2E] | const `0x01` | ~constant |
+| 0x2F | p[0x2E] | temperature low byte (int16 @ p[0x2E], °C − 25; see note below) | ~constant `0x01` |
 | 0x31/0x33/0x35 | p[0x30]/p[0x32]/p[0x34] | accel X/Y/Z int16 LE | moves (±5000–7000) |
 | 0x37/0x39/0x3B | p[0x36]/p[0x38]/p[0x3A] | gyro X/Y/Z int16 LE | moves (peak 7401) |
 
@@ -60,6 +60,15 @@ a momentary near-full-scale accel reading, not a scaling bug; monitor after the 
 - `src/switch_pro2/switch_pro2.c` `ns2_build_report_05()`: write `time_us_32()` as the 4-byte
   timestamp at `p[0x2A]` (gated on `has_motion`) + `p[0x2E]=0x01`. `time_us_32()`'s ~1 MHz cadence
   matches the genuine ~0.8 MHz closely; only monotonic advance matters.
+
+> **Correction, 2026-11-06.** `p[0x2E]` is not a constant: it is the low byte of the int16
+> temperature field (deviation from 25 °C, ndeadly `hid_reports.md` `a3306b4`); a resting genuine
+> controller simply reads ~0/±1 there. And the timestamp is microseconds of the **IMU sample**, not a
+> ~1 MHz free-running counter: genuine reports advance it by 3750/5000 µs (whole 1250 µs IMU ticks,
+> PRX-24hz `switch2pro-telemetry`). `ns2_build_report_05()` now advances it by the source's own
+> sample spacing when the source authors an IMU clock (DualSense, Android bridge), repeats it while
+> the same sample is re-sent, and keeps `time_us_32()` only for sources without one. The `0x01`
+> temperature value is unchanged.
 - `src/bt_hid/ns2_seam.c`: gyro scaling `/64` → `/1` (pass-through), keeping the axis transform.
 
 ## Validation plan (hardware)

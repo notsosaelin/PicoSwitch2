@@ -7,6 +7,20 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Report-`0x05` IMU timestamp now carries the sample's own time 2026-11-06 (PC/Steam path only;
+  the console reads `0x09`).** Prompted by ndeadly's `hid_reports.md` `a3306b4` and PRX-24hz's
+  `switch2pro-telemetry`, which pin the `0x2A` block as µs timestamp · temperature · accel ±8 G ·
+  gyro ±2000 dps and show the genuine stamp advancing in whole 1250 µs IMU ticks.
+  `ns2_build_report_05()` stamped the report's departure time instead, pairing each gyro sample with
+  a Bluetooth arrival interval. It now advances by the source's own sample spacing when the source
+  authors an IMU clock (DualSense, Android bridge), repeats the stamp while the same sample is
+  re-sent, and keeps `time_us_32()` for sources without one. `p[0x2E]` is re-documented as the
+  temperature low byte rather than a constant (value unchanged). PRX's six-face axis frame matches
+  our DualSense seam mapping independently. Both boards build; **not hardware-validated** — a
+  Steam gyro check on a DualSense covers it. Cross-references:
+  [`docs/switch2/ble-controller-protocol-inventory.md`](docs/switch2/ble-controller-protocol-inventory.md),
+  [`docs/experiments/pro2-imu-constants-audit-2026-08-01.md`](docs/experiments/pro2-imu-constants-audit-2026-08-01.md).
+
 - **Two controllers paired at once both drove the console 2026-09-06; the arbiter was demoting its
   own owner on every report.** A tester had a DualSense and an Xbox Elite paired together and both
   moved the console, while the companion correctly showed one active source. The one-owner rule was
