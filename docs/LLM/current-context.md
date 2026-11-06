@@ -5,13 +5,13 @@ Last reconciled: 2026-08-13
 **Start here if you are resuming v3 amiibo work:** `docs/Amiibo-v3.md` §18 is authoritative; the
 NFC boundary section below carries the short form and the open experiment.
 
-Working branch: `ns2-testing`
+Working branch: `main` (`ns2-testing` was fast-forwarded into `main` and retired on 2026-11-06)
 
-Latest published release: `v1.5.0` (2026-07-22)
+Latest published release: `v2.5.0` (2026-09-04)
 
 Always run `git status`, `git log -1`, and read `STATUS.md` at the start of a new session. This file
 deliberately does not pin the latest commit because it should remain useful after later checkpoints.
-On a new workstation, clone `ns2-testing` with `--recurse-submodules`; `third_party/opus` is a
+On a new workstation, clone `main` with `--recurse-submodules`; `third_party/opus` is a
 required Git submodule for Pico 2 W audio builds.
 
 ## Current validated baseline

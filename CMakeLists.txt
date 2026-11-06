@@ -129,7 +129,7 @@ target_compile_definitions(PicoSwitchWGA PRIVATE
 # Build target: emulate the Switch 2 Pro Controller (VID 057E / PID 2069) instead
 # of the Switch 1 Pro Controller. Adds a vendor-bulk command interface (IF1) and
 # the switch_pro2 protocol module (src/switch_pro2). See docs/switch2/usb-spec.md.
-# Default ON on the ns2-testing branch; configure -DNS2_PRO=OFF for Switch 1.
+# Default ON; configure -DNS2_PRO=OFF for Switch 1 (currently broken, see STATUS.md).
 option(NS2_PRO "Emulate the Switch 2 Pro Controller (PID 0x2069)" ON)
 if(NS2_PRO)
     target_compile_definitions(PicoSwitchWGA PRIVATE NS2_PRO=1)

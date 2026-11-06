@@ -2,7 +2,7 @@ name: Deploy web portal to GitHub Pages
 
 on:
   push:
-    branches: [main, ns2-testing]
+    branches: [main]
     paths:
       - "web/**"
       - ".github/workflows/deploy-pages.yml"

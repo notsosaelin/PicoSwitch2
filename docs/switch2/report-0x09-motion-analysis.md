@@ -737,7 +737,7 @@ Real controller orientation and axis mapping may require signs or permutations b
 
 The most useful next capture would be a controlled sequence with the controller initially still, followed by exactly one slow rotation around each physical axis separately. That would lock down axis order, sign, phase scale, and whether the phase represents body-axis integration or orientation angles.
 
-[1]: https://github.com/notsosaelin/PicoSwitch2/blob/ns2-testing/docs/switch2/report-0x09-motion.md "https://github.com/notsosaelin/PicoSwitch2/blob/ns2-testing/docs/switch2/report-0x09-motion.md"
+[1]: https://github.com/notsosaelin/PicoSwitch2/blob/main/docs/switch2/report-0x09-motion.md "https://github.com/notsosaelin/PicoSwitch2/blob/main/docs/switch2/report-0x09-motion.md"
 [2]: https://github.com/ndeadly/switch2_controller_research/blob/master/commands.md "https://github.com/ndeadly/switch2_controller_research/blob/master/commands.md"
 [3]: https://github.com/ndeadly/switch2_controller_research/blob/master/hid_reports.md "https://github.com/ndeadly/switch2_controller_research/blob/master/hid_reports.md"
 [4]: https://github.com/ndeadly/switch2_controller_research/blob/master/memory_layout.md "switch2_controller_research/memory_layout.md at master · ndeadly/switch2_controller_research · GitHub"
