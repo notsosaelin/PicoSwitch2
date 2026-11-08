@@ -151,7 +151,27 @@ reads or writes real companion data; the same variable works for the app.
    gamescope gives it, because gamescope ignores the full-screen request alone
    and would show the default window size scaled and letterboxed. That screen
    is the game resolution set in the shortcut's Properties → Game Resolution
-   (Default is the panel's native resolution).
+   (Default is the panel's native resolution). gamescope publishes no UI scale,
+   so the app sets one itself (`Display/GamescopeScale.cs`): one unit is the
+   physical size of a dp on the AYN Odin 2 Mini (about 191 per inch), measured
+   from the monitor size gamescope reports, with a floor of 1080 units of height
+   for a TV. The ROG Xbox Ally X comes out at 1.7x (1129x635 units). An
+   `AVALONIA_GLOBAL_SCALE_FACTOR` in the launch options overrides it.
+
+**Dual-mode BlueZ picks the wrong bearer.** The adapter is dual-mode (Classic
+for controllers and Controller Link, LE for management), and LE pairing also
+derives a Classic key, so BlueZ holds both bonds and `Device1.Connect` uses the
+bearer it saw the adapter on most recently. In Game Mode that was Classic every
+time (Ally, BlueZ 5.87, 2026-11-08): Connect failed `br-connection-refused`, or
+brought up a Classic link whose SDP set `ServicesResolved` with no GATT at all,
+which the transport then took for a working LE link ("did not expose its
+management service"). `PreferredBearer` and `Bearer.LE1.Connect` are
+experimental and absent there. The transport therefore judges a link by the
+management service being present, drops a link without it, and runs a short
+LE-only scan until one fresh advertisement arrives (refreshing BlueZ's LE
+"last seen"; ties go to LE) immediately before Connect.
+`AuthenticationRejected` on Pair is the adapter declining a new management bond
+outside its pairing window, by design.
 
 Settings live in `~/.local/share/PicoSwitch2` (`$XDG_DATA_HOME`).
 Amiibo backups are in `amiibo/` there. **Amiibo keys** are in `amiibo-private/`,
@@ -230,6 +250,8 @@ may appear (see §6).
 | Steam Deck: SDL HIDAPI access to the built-in controls | — | **Not yet validated** |
 | Game Mode input via Steam's virtual pad (ROG Xbox Ally X, Bazzite) | User, 2026-11-06 | Buttons and sticks work; back buttons absent (no codes on that pad) |
 | Game Mode window fills the panel (non-Steam game on the ROG Xbox Ally X, Bazzite, gamescope 3.17) | Agent over SSH, 2026-11-08: launched with `steam://rungameid`, X window geometry and the app's own `[window] full screen` log | 1920x1080 at +0+0 on a 1920x1080 screen (first pass 1200x760, filled by the 500 ms pass); not yet confirmed by eye |
+| Game Mode UI scale (same device) | Agent over SSH, 2026-11-08: the app's startup line | `monitor 1920x1080 px, 150x90 mm -> scale 1.7 (1129x635 units)`; window still fills the screen; owner to judge the size |
+| Management connect over LE on dual-mode BlueZ | `BluezManagementTransportTests` (fake BlueZ that connects Classic until an LE advertisement is seen) | Pass; **not yet confirmed against the adapter** (Game Mode logs before the fix show every connect on BR/EDR) |
 | Controller and keyboard navigation of the shell and Amiibo | Screenshot harness `--keys` / `--pad` | Pass; **not yet run with a real pad** |
 | Steam Deck-format hidraw reader (back buttons, motion) | Unit tests on captured Ally reports; user on the ROG Xbox Ally X, 2026-11-06 | Back buttons and gyro reach the console; gyro reported "very off" (open) |
 | Motion frame mapping on a real pad | — | **Not yet validated** (Hypothesis) |

@@ -265,8 +265,7 @@ internal sealed class MainWindow : Window
     /// Read from the environment, never a device name.
     /// </summary>
     private static bool UnderGamescope =>
-        Environment.GetEnvironmentVariable("GAMESCOPE_WAYLAND_DISPLAY") is { Length: > 0 } ||
-        string.Equals(Environment.GetEnvironmentVariable("XDG_CURRENT_DESKTOP"), "gamescope", StringComparison.OrdinalIgnoreCase);
+        PicoSwitch.Companion.Linux.Display.GamescopeScale.UnderGamescope(Environment.GetEnvironmentVariable);
 
     /// <summary>
     /// Full screen by size as well as by state: the screen's whole bounds, at

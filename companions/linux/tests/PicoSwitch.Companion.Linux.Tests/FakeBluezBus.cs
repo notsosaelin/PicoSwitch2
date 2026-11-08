@@ -54,6 +54,16 @@ internal sealed class FakeBluezBus : IBluezBus
 
     private Action<string, string>? disconnectReason;
 
+    /// <summary>
+    /// Dual-mode BlueZ whose most recent sighting of the adapter was Classic:
+    /// Device1.Connect goes over BR/EDR (and the adapter refuses it) until a
+    /// fresh LE advertisement is seen. The Ally in Game Mode, 2026-11-08.
+    /// </summary>
+    public bool LastSeenClassic { get; set; }
+
+    /// <summary>The live link is Classic: Connected and ServicesResolved, but no GATT at all.</summary>
+    public bool ClassicLink { get; set; }
+
     public BluezException? SubscribeFailure { get; set; }
 
     public BluezException? PairFailure { get; set; }
@@ -113,6 +123,13 @@ internal sealed class FakeBluezBus : IBluezBus
         foreach (var advertisement in Advertisements)
         {
             DeviceKnown |= advertisement.Address == PicoAddress;
+
+            // Only a received advertisement (it has an RSSI) is an LE sighting.
+            if (advertisement.Address == PicoAddress && advertisement.Rssi is not null)
+            {
+                LastSeenClassic = false;
+            }
+
             found(advertisement);
         }
 
@@ -122,6 +139,11 @@ internal sealed class FakeBluezBus : IBluezBus
     public Task ConnectAsync(string devicePath, CancellationToken cancellationToken = default)
     {
         Connects++;
+        if (LastSeenClassic)
+        {
+            throw new BluezException(BluezErrors.Failed, "br-connection-refused");
+        }
+
         if (ConnectFailure is { } failure)
         {
             Connected = ConnectFailureLeavesLinkUp;
@@ -147,6 +169,7 @@ internal sealed class FakeBluezBus : IBluezBus
     {
         Disconnects++;
         Connected = false;
+        ClassicLink = false;
         return Task.CompletedTask;
     }
 
@@ -156,6 +179,11 @@ internal sealed class FakeBluezBus : IBluezBus
 
     public Task<BluezGattService?> FindServiceAsync(string devicePath, string serviceUuid, CancellationToken cancellationToken = default)
     {
+        if (ClassicLink)
+        {
+            return Task.FromResult<BluezGattService?>(null);
+        }
+
         var characteristics = new Dictionary<string, string>
         {
             [BleManagementContract.RxUuid] = RxPath,

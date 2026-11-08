@@ -34,7 +34,11 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 - **Linux: Steam Game Mode fills the screen.** Launched as a non-Steam game, the companion showed at
   its default window size, scaled and letterboxed. It now fills the screen at the game resolution
-  Steam gives it (the panel's native resolution by default).
+  Steam gives it (the panel's native resolution by default), at a UI size matched to a handheld
+  instead of the tiny 1x it drew at before.
+- **Linux: the adapter connects after pairing.** On a computer whose Bluetooth also speaks Classic,
+  connecting could go over the wrong kind of Bluetooth link and fail with "The adapter did not
+  expose its management service". The companion now makes sure it connects over Bluetooth LE.
 
 - **Two paired controllers no longer both drive the console.** With, say, a DualSense and an Xbox
   controller paired at once, both could move the console even though the companion showed only

@@ -57,7 +57,14 @@ Software-verified, not yet hardware-validated, not yet in a release:
   full-screen request and letterboxed the default-size window; the window now
   sizes itself to the screen under gamescope. Measured as a non-Steam game on a
   ROG Xbox Ally X (1920×1080 window on the 1920×1080 screen); not yet confirmed
-  by eye.
+  by eye. It also sets its own UI scale there (gamescope publishes none, so it
+  drew at 1x): one unit is an Odin 2 Mini dp, 1.7x on the Ally.
+- **Linux management connects over LE on dual-mode BlueZ** (2026-11-08): in
+  Game Mode BlueZ sent every adapter connect over Classic (`br-connection-refused`,
+  or a Classic link with no GATT that passed for LE). The transport now checks
+  for the management service, drops a link without it, and refreshes BlueZ's LE
+  sighting with a short LE scan before Connect. Unit-tested against a fake
+  BlueZ; not yet confirmed against the adapter.
 - **Version 2.6.0** in the Android and Windows manifests (no tag; Linux takes
   its version from the tag at packaging).
 - **The adapter's amiibo shows on connect** (2026-11-08): the app read

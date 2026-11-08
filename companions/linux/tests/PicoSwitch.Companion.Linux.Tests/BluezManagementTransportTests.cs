@@ -19,7 +19,10 @@ public sealed class BluezManagementTransportTests
     private static readonly string Address = BluetoothAddressFormat.ToText(FakeBluezBus.PicoAddress)!;
 
     private static BluezManagementTransport Build(FakeBluezBus bus) =>
-        new(bus, () => Task.FromResult(BluezRadio.Describe(bus.Adapter!)));
+        new(bus, () => Task.FromResult(BluezRadio.Describe(bus.Adapter!))) { LeRefreshMillis = 100 };
+
+    private static BluezAdvertisement Fresh() =>
+        new(FakeBluezBus.DevicePath, FakeBluezBus.PicoAddress, "PicoSwitch2", -50);
 
     private static async Task<bool> WaitForAsync(Func<bool> condition)
     {
@@ -207,6 +210,77 @@ public sealed class BluezManagementTransportTests
 
         Assert.Equal("""{"id":"picoswitch","version":"2.0"}""", await transport.TransactAsync("info"));
         Assert.True(transport.Trust.BondProven);
+    }
+
+    /// <summary>
+    /// Dual-mode BlueZ picks the bearer it last saw the adapter on. A fresh LE
+    /// advertisement just before Connect steers it to LE (Ally, Game Mode,
+    /// 2026-11-08: every connect went to BR/EDR and failed br-connection-refused).
+    /// </summary>
+    [Fact]
+    public async Task AFreshLeAdvertisementBeforeConnectSteersBlueZToLe()
+    {
+        var bus = new FakeBluezBus { LastSeenClassic = true };
+        bus.Advertisements.Add(Fresh());
+        bus.Replies["info"] = """{"id":"picoswitch","version":"2.0"}""";
+        await using var transport = Build(bus);
+        transport.PrepareConnection(new ManagementConnectionContext { LogicalAttempt = 1, PairingState = "paired" });
+
+        await transport.ConnectKnownAsync(Address);
+
+        Assert.Equal(1, bus.Connects);
+        Assert.Equal("""{"id":"picoswitch","version":"2.0"}""", await transport.TransactAsync("info"));
+    }
+
+    /// <summary>A cached or connected device reported by discovery (no RSSI) is not an LE sighting.</summary>
+    [Fact]
+    public async Task ACachedDeviceReportDoesNotCountAsAnLeSighting()
+    {
+        var bus = new FakeBluezBus { LastSeenClassic = true };
+        bus.Advertisements.Add(new BluezAdvertisement(FakeBluezBus.DevicePath, FakeBluezBus.PicoAddress, "PicoSwitch2", null));
+        await using var transport = Build(bus);
+        transport.PrepareConnection(new ManagementConnectionContext { LogicalAttempt = 1, PairingState = "paired" });
+
+        var error = await Assert.ThrowsAsync<GattTransportException>(() => transport.ConnectKnownAsync(Address));
+
+        Assert.Equal(GattFailureStage.Connect, error.Stage);
+    }
+
+    /// <summary>
+    /// A Classic link reads Connected with ServicesResolved (SDP) but has no
+    /// GATT. It must not be reused, nor excuse a failed Connect: it is dropped
+    /// and LE is asked for (Ally, 2026-11-08: "services resolved; continuing",
+    /// then "did not expose its management service").
+    /// </summary>
+    [Fact]
+    public async Task AConnectedClassicLinkIsDroppedAndReplacedByLe()
+    {
+        var bus = new FakeBluezBus { Connected = true, ClassicLink = true, LastSeenClassic = true };
+        bus.Advertisements.Add(Fresh());
+        bus.Replies["info"] = """{"id":"picoswitch","version":"2.0"}""";
+        await using var transport = Build(bus);
+        transport.PrepareConnection(new ManagementConnectionContext { LogicalAttempt = 1, PairingState = "paired" });
+
+        await transport.ConnectKnownAsync(Address);
+
+        Assert.Equal(1, bus.Disconnects);
+        Assert.Equal(1, bus.Connects);
+        Assert.Equal("""{"id":"picoswitch","version":"2.0"}""", await transport.TransactAsync("info"));
+    }
+
+    /// <summary>A live LE link with the management service is reused as it is.</summary>
+    [Fact]
+    public async Task AConnectedLeLinkIsReusedWithoutReconnecting()
+    {
+        var bus = new FakeBluezBus { Connected = true };
+        bus.Replies["info"] = """{"id":"picoswitch","version":"2.0"}""";
+        await using var transport = Build(bus);
+        transport.PrepareConnection(new ManagementConnectionContext { LogicalAttempt = 1, PairingState = "paired" });
+
+        await transport.ConnectKnownAsync(Address);
+
+        Assert.Equal(0, bus.Connects);
+        Assert.Equal(0, bus.Disconnects);
     }
 
     /// <summary>The same abort with no reason (or BlueZ before 5.82) stays a link failure, never a Repair.</summary>

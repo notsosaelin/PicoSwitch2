@@ -29,6 +29,13 @@ internal static class Program
             return 0;
         }
 
+        // Before the platform starts: Avalonia reads its scale once, at startup.
+        // gamescope publishes none, so Game Mode would draw at 1x.
+        if (PicoSwitch.Companion.Linux.Display.GamescopeScale.ApplyIfUnderGamescope() is { } scaleNote)
+        {
+            Console.Error.WriteLine(scaleNote);
+        }
+
         try
         {
             return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);

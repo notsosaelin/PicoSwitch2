@@ -51,6 +51,13 @@ internal sealed class BluezManagementTransport : IManagementTransport, IControll
     internal const int ScanTimeoutMillis = 15_000;
     private const int DisconnectTimeoutMillis = 1_250;
 
+    /// <summary>
+    /// How long to wait for one fresh LE advertisement before Connect, so BlueZ
+    /// picks the LE bearer (see <see cref="RefreshLePresenceAsync"/>). The adapter
+    /// advertises several times a second; a miss only means the old behaviour.
+    /// </summary>
+    internal int LeRefreshMillis { get; init; } = 3_000;
+
     private readonly IBluezBus bus;
     private readonly Func<Task<BluetoothRadioCapabilities>> probeRadio;
     private readonly SerializedManagementSession session = new();
@@ -400,8 +407,26 @@ internal sealed class BluezManagementTransport : IManagementTransport, IControll
         var owner = new OwnedLink(this, device.Path, attemptGeneration, text, displayName ?? device.Name);
         try
         {
-            if (!device.Connected || !device.ServicesResolved)
+            // A connected device is only usable if the MANAGEMENT SERVICE is
+            // there. On a dual-mode BlueZ "Connected" and "ServicesResolved" are
+            // also true for a Classic (BR/EDR) link with SDP results, which has no
+            // GATT at all: that link is dropped, and LE is asked for instead.
+            if (device.Connected && device.ServicesResolved &&
+                await HasManagementServiceAsync(device.Path).ConfigureAwait(false))
             {
+                Log("open", "reusing the connected LE link");
+            }
+            else
+            {
+                if (device.Connected)
+                {
+                    Log("open", "connected without the management service (a Classic link); dropping it for LE");
+                    await GuardAsync(GattFailureStage.Connect,
+                        "Bluetooth could not drop a stale connection to the adapter.",
+                        () => bus.DisconnectAsync(device.Path)).ConfigureAwait(false);
+                }
+
+                await RefreshLePresenceAsync(adapter.Path, address, cancellationToken).ConfigureAwait(false);
                 await ConnectDeviceAsync(device.Path, cancellationToken).ConfigureAwait(false);
             }
 
@@ -721,7 +746,7 @@ internal sealed class BluezManagementTransport : IManagementTransport, IControll
             if (await LeLinkUsableAsync(devicePath).ConfigureAwait(false))
             {
                 Log("open", $"connect reported {error.ErrorName} '{error.Message}' but the LE link is up " +
-                            "with services resolved; continuing (Classic half refused)");
+                            "with the management service; continuing (Classic half refused)");
                 return;
             }
 
@@ -742,13 +767,18 @@ internal sealed class BluezManagementTransport : IManagementTransport, IControll
     /// <summary>How long a failed Connect may wait for the LE half to finish resolving.</summary>
     private const int LeLinkGraceMillis = 4000;
 
-    /// <summary>True when the device is connected with its GATT services resolved.</summary>
+    /// <summary>
+    /// True when the device is connected with the management service present.
+    /// ServicesResolved alone is not enough: a Classic link's SDP sets it too
+    /// (Ally, 2026-11-08: "continuing" on a BR/EDR link, then no service).
+    /// </summary>
     private async Task<bool> LeLinkUsableAsync(string devicePath)
     {
         using var grace = new CancellationTokenSource(LeLinkGraceMillis);
         try
         {
-            return await bus.WaitServicesResolvedAsync(devicePath, grace.Token).ConfigureAwait(false);
+            return await bus.WaitServicesResolvedAsync(devicePath, grace.Token).ConfigureAwait(false) &&
+                   await HasManagementServiceAsync(devicePath).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -757,6 +787,80 @@ internal sealed class BluezManagementTransport : IManagementTransport, IControll
         catch (BluezException)
         {
             return false;
+        }
+    }
+
+    /// <summary>Whether BlueZ holds the management GATT service for this device right now.</summary>
+    private async Task<bool> HasManagementServiceAsync(string devicePath)
+    {
+        try
+        {
+            return await bus.FindServiceAsync(devicePath, BleManagementContract.ServiceUuid).ConfigureAwait(false)
+                is not null;
+        }
+        catch (BluezException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Makes BlueZ see the adapter over LE immediately before Connect.
+    /// </summary>
+    /// <remarks>
+    /// The adapter is dual-mode (Classic for controllers and Controller Link, LE
+    /// for management) and LE pairing derives a Classic key too, so BlueZ holds
+    /// both bonds. Device1.Connect then picks the bearer it saw the device on
+    /// MOST RECENTLY, and anything Classic (an inquiry, a failed Classic attempt)
+    /// makes that BR/EDR: Connect fails with "br-connection-refused", or brings
+    /// up a Classic link that has no GATT. Measured on the Ally (Steam Game
+    /// Mode, BlueZ 5.87, 2026-11-08): every connect went to BR/EDR.
+    /// PreferredBearer and Bearer.LE1.Connect would name the bearer outright but
+    /// are experimental and absent there.
+    ///
+    /// One advertisement received by an LE-only discovery updates BlueZ's LE
+    /// "last seen", and BlueZ breaks a tie toward LE, so a Connect right after it
+    /// goes over LE. Only a FRESH advertisement counts: the discovery's report of
+    /// a cached or already-connected device carries no RSSI. If none arrives in
+    /// <see cref="LeRefreshMillis"/> (the adapter is serving another host and not
+    /// advertising, say), Connect runs anyway, exactly as before.
+    /// </remarks>
+    private async Task RefreshLePresenceAsync(string adapterPath, ulong address, CancellationToken cancellationToken)
+    {
+        var seen = new TaskCompletionSource<short>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var window = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        window.CancelAfter(LeRefreshMillis);
+        IAsyncDisposable? scan = null;
+        try
+        {
+            scan = await bus.StartDiscoveryAsync(adapterPath, BleManagementContract.ServiceUuid, advertisement =>
+            {
+                if (advertisement.Address == address && advertisement.Rssi is { } rssi)
+                {
+                    seen.TrySetResult(rssi);
+                }
+            }, window.Token).ConfigureAwait(false);
+
+            using (window.Token.Register(() => seen.TrySetCanceled()))
+            {
+                var rssi = await seen.Task.ConfigureAwait(false);
+                Log("open", $"seen over LE (rssi={rssi}) just before connect");
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            Log("open", $"no LE advertisement within {LeRefreshMillis} ms; connecting anyway");
+        }
+        catch (BluezException error)
+        {
+            Log("open", $"LE refresh scan unavailable ({error.ErrorName}); connecting anyway");
+        }
+        finally
+        {
+            if (scan is not null)
+            {
+                await scan.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
 

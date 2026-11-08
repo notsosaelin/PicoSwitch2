@@ -92,7 +92,11 @@ while the navigation was hidden closed the app.
   `XDG_CURRENT_DESKTOP=gamescope`) the Linux window also sizes itself to the
   screen's bounds at its origin, when it opens, again 500 ms later, and
   whenever the screens change. Measured on a ROG Xbox Ally X as a non-Steam
-  game: the first pass saw 1200×760, the second filled 1920×1080.
+  game: the first pass saw 1200×760, the second filled 1920×1080. gamescope
+  publishes no UI scale either, so Avalonia drew at 1x — far too small on a
+  handheld (owner, 2026-11-08). The app sets the scale from the monitor's
+  physical size so one unit is an Odin 2 Mini dp (about 191 per inch; at
+  least 1080 units high on a TV): 1.7x on the Ally.
 
 | Platform | Navigation status |
 |---|---|
