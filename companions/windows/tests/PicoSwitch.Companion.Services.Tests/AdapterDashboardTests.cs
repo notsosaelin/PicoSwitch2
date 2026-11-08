@@ -1,6 +1,6 @@
 using PicoSwitch.Bridge.Protocol;
 using PicoSwitch.Companion.Services.Presentation;
-using PicoSwitch.Companion.Windows.Bluetooth;
+using PicoSwitch.Companion.Platform.Bluetooth;
 using PicoSwitch.Management;
 using Xunit;
 

@@ -1,34 +1,9 @@
+using PicoSwitch.Companion.Platform.Bluetooth;
 using PicoSwitch.Management;
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Enumeration;
 
 namespace PicoSwitch.Companion.Windows.Bluetooth;
-
-/// <summary>What a pairing attempt did, in the app's own vocabulary.</summary>
-public enum AdapterPairingOutcome
-{
-    Paired,
-
-    /// <summary>Already paired before the attempt; nothing was done.</summary>
-    AlreadyPaired,
-
-    /// <summary>The user or the peer declined. Retryable.</summary>
-    Rejected,
-
-    /// <summary>The adapter never answered. Usually its pairing window was not open.</summary>
-    TimedOut,
-
-    Failed,
-}
-
-public sealed record AdapterPairingResult(
-    AdapterPairingOutcome Outcome,
-    DevicePairingResultStatus Status,
-    string Message)
-{
-    public bool Succeeded =>
-        Outcome is AdapterPairingOutcome.Paired or AdapterPairingOutcome.AlreadyPaired;
-}
 
 /// <summary>
 /// The Windows pairing ceremony, and the one place the app is allowed to unpair.
@@ -69,7 +44,7 @@ public static class WindowsAdapterPairing
     /// "paired" would let the bond-mismatch signature fire on a device that was
     /// never paired at all.
     /// </summary>
-    public static async Task<WindowsPairingSnapshot> ReadByAddressAsync(
+    public static async Task<HostPairingSnapshot> ReadByAddressAsync(
         ulong bluetoothAddress,
         CancellationToken cancellationToken = default)
     {
@@ -80,18 +55,18 @@ public static class WindowsAdapterPairing
                 .AsTask(cancellationToken).ConfigureAwait(false);
             if (device is null)
             {
-                return new WindowsPairingSnapshot(WindowsPairingKnown.Unknown, false, null);
+                return new HostPairingSnapshot(HostPairingKnown.Unknown, false, null);
             }
 
             var pairing = device.DeviceInformation.Pairing;
-            return new WindowsPairingSnapshot(
-                pairing.IsPaired ? WindowsPairingKnown.Paired : WindowsPairingKnown.NotPaired,
+            return new HostPairingSnapshot(
+                pairing.IsPaired ? HostPairingKnown.Paired : HostPairingKnown.NotPaired,
                 pairing.CanPair,
                 device.Name);
         }
         catch (Exception)
         {
-            return new WindowsPairingSnapshot(WindowsPairingKnown.Unknown, false, null);
+            return new HostPairingSnapshot(HostPairingKnown.Unknown, false, null);
         }
     }
 
@@ -105,7 +80,7 @@ public static class WindowsAdapterPairing
         {
             return new AdapterPairingResult(
                 AdapterPairingOutcome.Failed,
-                DevicePairingResultStatus.Failed,
+                nameof(DevicePairingResultStatus.Failed),
                 "Windows could not open that adapter to pair with it.");
         }
 
@@ -114,7 +89,7 @@ public static class WindowsAdapterPairing
         {
             return new AdapterPairingResult(
                 AdapterPairingOutcome.AlreadyPaired,
-                DevicePairingResultStatus.AlreadyPaired,
+                nameof(DevicePairingResultStatus.AlreadyPaired),
                 "This PC is already paired with the adapter.");
         }
 
@@ -210,25 +185,25 @@ public static class WindowsAdapterPairing
     {
         DevicePairingResultStatus.Paired => new AdapterPairingResult(
             AdapterPairingOutcome.Paired,
-            status,
+            status.ToString(),
             "Paired. The link is bonded and encrypted."),
 
         DevicePairingResultStatus.AlreadyPaired => new AdapterPairingResult(
             AdapterPairingOutcome.AlreadyPaired,
-            status,
+            status.ToString(),
             "This PC is already paired with the adapter."),
 
         DevicePairingResultStatus.RejectedByHandler or
         DevicePairingResultStatus.PairingCanceled => new AdapterPairingResult(
             AdapterPairingOutcome.Rejected,
-            status,
+            status.ToString(),
             "The pairing request was declined."),
 
         DevicePairingResultStatus.AuthenticationTimeout or
         DevicePairingResultStatus.ConnectionRejected or
         DevicePairingResultStatus.Failed => new AdapterPairingResult(
             AdapterPairingOutcome.TimedOut,
-            status,
+            status.ToString(),
 
             // The adapter admits a new management-client bond ONLY while its
             // physical double-tap window is open. Naming that turns a mysterious
@@ -237,76 +212,26 @@ public static class WindowsAdapterPairing
 
         _ => new AdapterPairingResult(
             AdapterPairingOutcome.Failed,
-            status,
+            status.ToString(),
             $"Windows could not pair with the adapter ({status})."),
     };
 }
 
-/// <summary>
-/// What an unpair actually did.
-///
-/// A bool cannot carry this. "Windows could not resolve the device" and "Windows
-/// removed the pairing" both used to return false and true respectively, with no
-/// way to distinguish either from "there was nothing paired" — and Repair has to
-/// tell them apart, because only a genuine removal may clear the repair flag.
-/// </summary>
-public enum AdapterUnpairResult
+/// <summary>The real one. No logic of its own — every rule lives in the static it calls.</summary>
+public sealed class WindowsPairingGateway : IAdapterPairingGateway
 {
-    /// <summary>The pairing existed and was removed.</summary>
-    Unpaired,
+    public Task<HostPairingSnapshot> ReadAsync(
+        ulong bluetoothAddress,
+        CancellationToken cancellationToken = default) =>
+        WindowsAdapterPairing.ReadByAddressAsync(bluetoothAddress, cancellationToken);
 
-    /// <summary>Windows held no pairing for this adapter. Idempotent success.</summary>
-    AlreadyUnpaired,
+    public Task<AdapterPairingResult> PairAsync(
+        ulong bluetoothAddress,
+        CancellationToken cancellationToken = default) =>
+        WindowsAdapterPairing.PairAsync(bluetoothAddress, cancellationToken);
 
-    /// <summary>Windows could not open the device at all — usually radio-off.</summary>
-    Unresolved,
-
-    AccessDenied,
-
-    Failed,
+    public Task<AdapterUnpairResult> UnpairAsync(
+        ulong bluetoothAddress,
+        CancellationToken cancellationToken = default) =>
+        WindowsAdapterPairing.UnpairByAddressAsync(bluetoothAddress, cancellationToken);
 }
-
-public static class AdapterUnpairResults
-{
-    /// <summary>
-    /// Whether Windows now holds no pairing for the adapter.
-    ///
-    /// The ONLY condition under which Repair may clear the repair flag: reporting
-    /// a repair that did not happen is what the 2026-08-29 run actually did.
-    /// </summary>
-    public static bool TrustRemoved(this AdapterUnpairResult value) =>
-        value is AdapterUnpairResult.Unpaired or AdapterUnpairResult.AlreadyUnpaired;
-
-    public static string DiagnosticName(this AdapterUnpairResult value) => value switch
-    {
-        AdapterUnpairResult.Unpaired => "removed",
-        AdapterUnpairResult.AlreadyUnpaired => "already-unpaired",
-        AdapterUnpairResult.Unresolved => "unresolved",
-        AdapterUnpairResult.AccessDenied => "access-denied",
-        _ => "failed",
-    };
-
-    public static string Message(this AdapterUnpairResult value) => value switch
-    {
-        AdapterUnpairResult.Unpaired or AdapterUnpairResult.AlreadyUnpaired =>
-            "Pairing removed. Pair the adapter again.",
-        AdapterUnpairResult.Unresolved =>
-            "Windows could not reach that adapter to remove its pairing. " +
-            "Check that Bluetooth is on and try again.",
-        AdapterUnpairResult.AccessDenied =>
-            "Windows refused to remove the pairing for this adapter.",
-        _ => "Windows could not remove the pairing for this adapter.",
-    };
-}
-
-public enum WindowsPairingKnown
-{
-    Unknown,
-    NotPaired,
-    Paired,
-}
-
-public readonly record struct WindowsPairingSnapshot(
-    WindowsPairingKnown State,
-    bool CanPair,
-    string? DeviceName);

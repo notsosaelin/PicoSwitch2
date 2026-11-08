@@ -62,6 +62,27 @@ public static partial class ManagementCommands
     /// </summary>
     public const string ControllerLinkStatus = "clink status";
 
+    /// <summary>
+    /// Companion audio downlink control plane (EXPERIMENTAL). Same shape as
+    /// Controller Link: <c>status</c> is the read-only capability probe, and a
+    /// refused <c>start</c> answers with the status block whose <c>admit</c>
+    /// field names the reason. Firmware without the plane answers
+    /// <c>unknown command</c>.
+    /// </summary>
+    public const string CompanionAudioStart = "caudio start";
+
+    /// <summary>
+    /// Start (or, on a running session, re-plug) companion audio with the
+    /// companion's microphone: the adapter advertises a headset rather than
+    /// headphones and accepts the MIC-UP uplink. Refused with
+    /// <c>admit = mic_unsupported</c> by a build that cannot decode it.
+    /// </summary>
+    public const string CompanionAudioStartMic = "caudio start mic";
+
+    public const string CompanionAudioStop = "caudio stop";
+
+    public const string CompanionAudioStatus = "caudio status";
+
     public const string KbmResetAll = "kbm reset all";
     public const string AmiiboCancel = "amiibo cancel";
     public const string AmiiboPersist = "amiibo persist";

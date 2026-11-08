@@ -67,7 +67,10 @@ $tests = @(
     @{ g='management'; n='test_ns2_ble_reconnect';                  src='tests/firmware/test_ns2_ble_reconnect.c firmware/src/bluetooth/ns2_ble_reconnect.c';                       flags='' }
     @{ g='management'; n='test_ns2_bt_lifecycle';                   src='tests/firmware/test_ns2_bt_lifecycle.c firmware/src/bluetooth/ns2_bt_lifecycle.c';                         flags='' }
     @{ g='management'; n='test_ns2_companion_link';                 src='tests/firmware/test_ns2_companion_link.c firmware/src/management/ns2_companion_link.c firmware/src/hid_host/bt/bthid/devices/generic/bthid_gamepad.c firmware/src/hid_host/bt/bthid/devices/generic/bthid_gamepad_quirks.c firmware/src/hid_host/bt/bthid/devices/generic/quirks/bitdo/bthid_gamepad_quirk_bitdo_ngc_modkit.c firmware/src/hid_host/bt/bthid/devices/generic/bthid_android_bridge.c firmware/src/hid_host/usb/usbh/hid/devices/generic/hid_parser.c firmware/src/input/ns2_remap.c'; flags='-Itests/firmware/host_stubs -Ifirmware/src/hid_host -Wno-unused-parameter -ffunction-sections -fdata-sections "-Wl,--gc-sections"' }
-    @{ g='management'; n='test_ns2_bt_health';                      src='tests/firmware/test_ns2_bt_health.c firmware/src/bluetooth/ns2_bt_health.c';                               flags='' }
+    @{ g='management'; n='test_ns2_companion_audio';                src='tests/firmware/test_ns2_companion_audio.c firmware/src/management/ns2_companion_audio.c';                  flags='-Ifirmware/src/audio' }
+    # Companion microphone wire contract, playout ring and its 1-hour link simulation.
+    @{ g='management'; n='test_ns2_companion_mic';                  src='tests/firmware/test_ns2_companion_mic.c firmware/src/management/ns2_companion_mic.c';                      flags=''; libs='-lm' }
+    @{ g='management'; n='test_ns2_bt_health';                     src='tests/firmware/test_ns2_bt_health.c firmware/src/bluetooth/ns2_bt_health.c';                               flags='' }
     # Model-based lifecycle test: deterministic seeded operation sequences over
     # the pure policy objects, invariants checked after every transition. Pure
     # policy only -- BTstack wiring is guarded by the structural Python tests.
@@ -173,6 +176,10 @@ $tests = @(
     # only referenced by the live-audio paths, so they are unused here.
     @{ g='audio'; n='test_ds5_audio_control';                       src='tests/firmware/test_ds5_audio_control.c firmware/src/audio/ds5_audio_bridge.c';                        flags='-Ifirmware/src/hid_host -Wno-unused-function' }
     @{ g='audio'; n='test_ds5_audio_resample';                      src='tests/firmware/test_ds5_audio_resample.c firmware/src/audio/ds5_audio_resample.c';                     flags='' }
+    # Companion microphone, end to end with the firmware's own CELT decoder
+    # (libopus float build, the Pico 2 W configuration) against the vectors the
+    # Windows companion's encoder wrote (contracts/companion_mic_vectors.txt).
+    @{ g='audio'; n='test_companion_mic_decode';                    src='tests/firmware/test_companion_mic_decode.c firmware/src/audio/companion_mic_decode.c firmware/src/management/ns2_companion_mic.c firmware/third_party/opus/celt/bands.c firmware/third_party/opus/celt/celt.c firmware/third_party/opus/celt/celt_decoder.c firmware/third_party/opus/celt/cwrs.c firmware/third_party/opus/celt/entcode.c firmware/third_party/opus/celt/entdec.c firmware/third_party/opus/celt/entenc.c firmware/third_party/opus/celt/kiss_fft.c firmware/third_party/opus/celt/laplace.c firmware/third_party/opus/celt/mathops.c firmware/third_party/opus/celt/mdct.c firmware/third_party/opus/celt/modes.c firmware/third_party/opus/celt/pitch.c firmware/third_party/opus/celt/celt_lpc.c firmware/third_party/opus/celt/quant_bands.c firmware/third_party/opus/celt/rate.c firmware/third_party/opus/celt/vq.c'; flags='-DNS2_COMPANION_MIC_DECODE_HOST -DOPUS_BUILD -DVAR_ARRAYS -DHAVE_LRINTF -D_USE_MATH_DEFINES -Ifirmware/third_party/opus/include -Ifirmware/third_party/opus/celt -Ifirmware/third_party/opus/silk'; libs='-lm' }
     @{ g='audio'; n='test_switch2_pro2_audio_transport';            src='tests/firmware/test_switch2_pro2_audio_transport.c firmware/src/audio/switch2_pro2_audio_transport.c'; flags='-Ifirmware/src/hid_host' }
 
     # -- Amiibo / NFC ----------------------------------------------------------
@@ -232,7 +239,8 @@ $built = 0; $pass = 0; $failed = @()
 foreach ($t in $selected) {
     $exe = Join-Path $out "$($t.n).exe"
     Write-Host "== $($t.n) ==" -ForegroundColor Cyan
-    Invoke-Expression "gcc $common $($t.flags) $($t.src) -o `"$exe`""
+    # Libraries follow the sources so a linker that resolves in order finds them.
+    Invoke-Expression "gcc $common $($t.flags) $($t.src) $($t.libs) -o `"$exe`""
     if ($LASTEXITCODE -ne 0) { $failed += "$($t.n) (build)"; continue }
     if (-not (Test-Path $exe)) { $failed += "$($t.n) (no executable)"; continue }
     $built++

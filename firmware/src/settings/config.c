@@ -34,8 +34,12 @@
 #include "ns2_kbm_runtime.h"   // live KB/M configuration + status
 #include "ns2_kbm_status.h"    // shared KB/M status JSON formatter
 #include "bt/btstack/btstack_host.h"  // bonds list/remove (management)
+#include "ns2_companion_audio.h"      // caudio frame geometry for the status reply
+#include "ns2_companion_mic.h"        // caudio microphone geometry
+#include "companion_mic_bridge.h"     // caudio mic diagnostics
 #ifdef NS2_PRO
 #include "ns2_nfc_mirror.h"  // amiibo reader (controller-as-reader backup)
+#include "ns2_player_led.h"  // player number for the personality reply
 #endif
 
 #include <string.h>
@@ -150,12 +154,24 @@ static bool consume_install_marker_and_erase_persistence(void)
     // Erase durable state first; a power loss before consuming the marker
     // simply repeats the safe erase on the next boot.
     uint32_t interrupts = save_and_disable_interrupts();
+#if defined(NS2_INSTALL_RESET)
     flash_range_erase(PERSISTENT_FLASH_START, PERSISTENT_FLASH_SIZE);
+#endif
     flash_range_program(marker_offset, consumed, sizeof(consumed));
     restore_interrupts(interrupts);
+#if defined(NS2_INSTALL_RESET)
     printf("[CONFIG] New firmware image: settings, amiibo slots, wake identity, "
            "and Bluetooth bonds reset\n");
     return true;
+#else
+    // The default since 2026-11-08: an update keeps everything. The marker is
+    // still consumed so this boot is logged once as a new image, and so a
+    // build with NS2_INSTALL_RESET keeps working unchanged. No erase happened,
+    // so this is not an install reset and pairing admission is not locked.
+    printf("[CONFIG] New firmware image: settings, amiibo slots and "
+           "Bluetooth pairings kept\n");
+    return false;
+#endif
 }
 
 static void load_defaults(void) {
@@ -936,13 +952,18 @@ static void cmd_input_sources(void) {
                      status.awaiting_fresh ? "true" : "false",
                      (unsigned long)status.transition_count);
     unsigned shown = status.source_count < 4u ? status.source_count : 4u;
-    for (unsigned i = 0; i < shown && j < (int)sizeof(out) - 96; ++i) {
+    // `out` is larger than the 512-byte wireless response slot, so the bound is
+    // the slot: an entry is started only while a worst-case entry (95 bytes)
+    // plus the worst-case tail ("more" and "console", 60 bytes) still fit.
+    // Past that the list stops and "more" says so; with typical small ids all
+    // four sources fit.
+    enum { SOURCE_ENTRY_MAX = 96, SOURCES_TAIL_MAX = 64, WIRELESS_SLOT = 511 };
+    unsigned written = 0;
+    for (unsigned i = 0; i < shown && j <= WIRELESS_SLOT - SOURCE_ENTRY_MAX - SOURCES_TAIL_MAX; ++i) {
         const ns2_input_source_info_t *source = &status.sources[i];
         // 16 characters, not 12: "Controller Link" is the truthful name for a
         // source with no Bluetooth name of its own (ns2_input_source_display_name),
-        // and 12 cut it to "Controller L". Four sources cost at most 16 extra
-        // bytes, well inside this reply's remaining room in the 512-byte
-        // wireless slot, and the per-entry headroom check below is unchanged.
+        // and 12 cut it to "Controller L"; the entry bound above counts it.
         char name[17];
         unsigned n = 0;
         for (; source->name[n] && n < sizeof(name) - 1u; ++n) {
@@ -962,9 +983,28 @@ static void cmd_input_sources(void) {
             j = (int)sizeof(out) - 1;
             break;
         }
+        written = i + 1u;
     }
+    // "console": what the console itself has told the adapter, carried on the
+    // reply the companion already polls every few seconds, so showing it costs
+    // no extra management traffic. 2026-11-08; optional for older companions.
+    //   player        1-4 from the player-LED command (0x09), 0 when unassigned
+    //                 or not on a console;
+    //   amiibo_wanted the console has an NFC scan running: a game is waiting for
+    //                 an amiibo. Pro Controller 2 only (the other personalities
+    //                 have no virtual reader).
+    // The loop above leaves room for this tail inside the wireless slot.
+    uint8_t led_mask = 0, player = 0;
+    uint32_t led_generation = 0;
+    report_get_player_leds(0, &led_mask, &led_generation);
+    const bool on_console = tud_mounted();
+    if (!on_console || !ns2_player_led_decode(led_mask, &player)) player = 0;
+    const bool amiibo_wanted = on_console &&
+        g_usb_personality == USB_PERSONALITY_SWITCH2_PRO2 && ns2_pro2_nfc_scan_active();
     snprintf(out + j, sizeof(out) - (size_t)j,
-             "],\"more\":%s}", status.source_count > shown ? "true" : "false");
+             "],\"more\":%s,\"console\":{\"player\":%u,\"amiibo_wanted\":%s}}",
+             status.source_count > written ? "true" : "false",
+             (unsigned)player, amiibo_wanted ? "true" : "false");
     reply(out);
 }
 
@@ -2001,6 +2041,204 @@ static void cmd_clink(const char *arg) {
     reply("{\"error\":\"usage: clink start|stop|status\"}");
 }
 
+// Companion audio downlink (EXPERIMENTAL) control plane. Same shape as
+// `clink`: `status` doubles as the capability probe, and a refused `start`
+// replies with the status block whose `admit` field carries the reason
+// (unsupported, no_link, untrusted, mtu, encoder_busy, controller_headset,
+// rate). The frame geometry is reported here because the companion decoder
+// must be told it out of band; frame_bytes follows `kbps`.
+//
+// `caudio start mic` starts the session with the companion's microphone
+// (ns2_companion_mic.h); on a running session it re-plugs the accessory.
+// `caudio mic` reports the microphone path end to end: writes, decode, the
+// playout ring and the USB stream.
+//
+// `caudio lock on|off` toggles the exclusive companion encode used while a
+// Classic HID link shares the radio (ds5_audio_bridge.h), for A/B tests.
+// `caudio diag` answers where a
+// glitch came from: the encoder (session block), the send cadence (gaps), or
+// the link the companion negotiated (link). It is separate from `status` so
+// the status reply stays inside the 511-byte wireless reply limit.
+// See ns2_companion_audio.h.
+static void reply_caudio_status(void) {
+    btstack_host_companion_audio_diag_t d;
+    btstack_host_companion_audio_diag(&d);
+    // Worst case ~480 bytes (every counter at ten digits, the longest stop
+    // reason): inside the 511-byte wireless reply limit.
+    char out[512];
+    snprintf(out, sizeof(out),
+             "{\"caudio\":{\"supported\":%s,\"active\":%s,\"subscribed\":%s,"
+             "\"mic\":%s,\"mic_supported\":%s,"
+             "\"usb_speaker\":%s,\"version\":%u,\"codec\":\"opus\","
+             "\"sample_rate\":%u,\"channels\":%u,\"frame_ms\":%u,"
+             "\"kbps\":%u,"
+             "\"frame_bytes\":%u,\"att_mtu\":%u,\"min_att_mtu\":%u,"
+             "\"generation\":%lu,\"admit\":\"%s\",\"last_stop\":\"%s\","
+             "\"frames\":{\"sent\":%lu,\"busy\":%lu,\"failed\":%lu,"
+             "\"rejected\":%lu},\"send_max_gap_us\":%lu}}",
+             d.supported ? "true" : "false",
+             d.active ? "true" : "false",
+             d.subscribed ? "true" : "false",
+             d.mic ? "true" : "false",
+             d.mic_supported ? "true" : "false",
+             d.usb_speaker_active ? "true" : "false",
+             d.version,
+             (unsigned)NS2_COMPANION_AUDIO_SAMPLE_RATE,
+             (unsigned)NS2_COMPANION_AUDIO_CHANNELS,
+             (unsigned)NS2_COMPANION_AUDIO_FRAME_MS,
+             (unsigned)d.kbps,
+             d.frame_bytes, d.att_mtu, d.min_att_mtu,
+             (unsigned long)d.generation,
+             d.last_admit ? d.last_admit : "",
+             d.last_stop ? d.last_stop : "",
+             (unsigned long)d.frames_sent,
+             (unsigned long)d.notify_busy,
+             (unsigned long)d.notify_failed,
+             (unsigned long)d.encode_rejected,
+             (unsigned long)d.send_max_gap_us);
+    reply(out);
+}
+
+static void reply_caudio_diag(void) {
+    btstack_host_companion_audio_diag_t d;
+    btstack_host_companion_audio_diag(&d);
+    ds5_audio_bridge_companion_diag_t e;
+    ds5_audio_bridge_companion_diag(&e);
+    char out[560];
+    snprintf(out, sizeof(out),
+             "{\"caudio\":\"diag\",\"active\":%s,\"kbps\":%u,"
+             "\"source_headset\":%u,\"controller_link\":%s,\"source\":\"%s\","
+             "\"classic_link\":%s,\"lock\":%s,\"lock_applies\":%s,"
+             "\"link\":{\"interval_us\":%lu,\"tx_octets\":%u,\"att_mtu\":%u},"
+             "\"send\":{\"sent\":%lu,\"max_gap_us\":%lu,\"over_30ms\":%lu,"
+             "\"over_60ms\":%lu},"
+             "\"encoder\":{\"frames\":%lu,\"max_us\":%lu,\"over_20ms\":%lu,"
+             "\"pcm_dropped\":%lu,\"queue_dropped\":%lu}}",
+             d.active ? "true" : "false",
+             (unsigned)d.kbps,
+             (unsigned)d.source_headset,
+             d.controller_link ? "true" : "false",
+             d.source_kind == DS5_AUDIO_SOURCE_COMPANION ? "companion"
+             : d.source_kind == DS5_AUDIO_SOURCE_OTHER   ? "other"
+                                                         : "none",
+             d.classic_link ? "true" : "false",
+             ds5_audio_bridge_companion_exclusive_encode() ? "true" : "false",
+             ds5_audio_bridge_companion_exclusive_applies() ? "true" : "false",
+             (unsigned long)d.conn_interval_us, (unsigned)d.le_tx_octets,
+             (unsigned)d.att_mtu,
+             (unsigned long)d.frames_sent,
+             (unsigned long)d.send_max_gap_us,
+             (unsigned long)d.gaps_over_30ms,
+             (unsigned long)d.gaps_over_60ms,
+             (unsigned long)e.frames,
+             (unsigned long)e.encode_max_us,
+             (unsigned long)e.encode_over_20ms,
+             (unsigned long)e.pcm_dropped,
+             (unsigned long)e.queue_dropped);
+    reply(out);
+}
+
+// Microphone session and playout. Split from `caudio mic decode` so each
+// reply stays inside the 511-byte wireless limit with every counter maxed.
+static void reply_caudio_mic(void) {
+    btstack_host_companion_audio_diag_t d;
+    btstack_host_companion_audio_diag(&d);
+    companion_mic_bridge_diag_t m;
+    companion_mic_bridge_diag(&m);
+    char out[512];
+    snprintf(out, sizeof(out),
+             "{\"caudio\":\"mic\",\"supported\":%s,\"active\":%s,"
+             "\"replug\":%s,\"usb_mic\":%s,\"playing\":%s,"
+             "\"kbps\":%u,\"frame_bytes\":%u,"
+             "\"target_ms\":%u,\"queued_ms\":%lu,\"gain_q15\":%u,"
+             "\"playout\":{\"underruns\":%lu,\"shed\":%lu,\"grown\":%lu,"
+             "\"concealed\":%lu,\"drift_frames\":%ld},\"heap_free\":%lu}",
+             m.supported ? "true" : "false",
+             d.mic ? "true" : "false",
+             d.replugging ? "true" : "false",
+             m.usb_active ? "true" : "false",
+             m.playing ? "true" : "false",
+             (unsigned)NS2_COMPANION_MIC_KBPS,
+             (unsigned)NS2_COMPANION_MIC_FRAME_BYTES,
+             (unsigned)m.target_blocks * NS2_COMPANION_MIC_FRAME_MS,
+             (unsigned long)(m.queued_frames / 48u),
+             (unsigned)m.gain_q15,
+             (unsigned long)m.underruns,
+             (unsigned long)m.ring_dropped,
+             (unsigned long)m.extensions,
+             (unsigned long)m.concealed,
+             (long)m.frames_adjusted,
+             (unsigned long)m.heap_free);
+    reply(out);
+}
+
+// Microphone frames from the write handler to the decoder: where a packet
+// stopped, if one did.
+static void reply_caudio_mic_decode(void) {
+    btstack_host_companion_audio_diag_t d;
+    btstack_host_companion_audio_diag(&d);
+    companion_mic_bridge_diag_t m;
+    companion_mic_bridge_diag(&m);
+    char out[512];
+    snprintf(out, sizeof(out),
+             "{\"caudio\":\"mic_decode\","
+             "\"writes\":{\"in\":%lu,\"refused\":%lu,\"rejected\":%lu,"
+             "\"last_reject\":\"%s\"},"
+             "\"decode\":{\"in\":%lu,\"inactive\":%lu,\"queue_dropped\":%lu,"
+             "\"stale\":%lu,\"lost\":%lu,\"restarts\":%lu,\"ok\":%lu,"
+             "\"errors\":%lu,\"max_us\":%lu}}",
+             (unsigned long)d.mic_writes,
+             (unsigned long)d.mic_refused,
+             (unsigned long)d.mic_rejected,
+             d.mic_last_reject ? d.mic_last_reject : "",
+             (unsigned long)m.received,
+             (unsigned long)m.inactive,
+             (unsigned long)m.queue_dropped,
+             (unsigned long)m.stale,
+             (unsigned long)m.lost,
+             (unsigned long)m.discontinuities,
+             (unsigned long)m.decoded,
+             (unsigned long)m.decode_errors,
+             (unsigned long)m.decode_max_us);
+    reply(out);
+}
+
+static void cmd_caudio(const char *arg) {
+    if (arg == NULL || strcmp(arg, "status") == 0) {
+        reply_caudio_status();
+        return;
+    }
+    if (strcmp(arg, "diag") == 0) {
+        reply_caudio_diag();
+        return;
+    }
+    if (strcmp(arg, "mic") == 0) {
+        reply_caudio_mic();
+        return;
+    }
+    if (strcmp(arg, "mic decode") == 0) {
+        reply_caudio_mic_decode();
+        return;
+    }
+    if (strcmp(arg, "lock on") == 0 || strcmp(arg, "lock off") == 0) {
+        ds5_audio_bridge_set_companion_exclusive_encode(arg[6] == 'n');
+        reply_caudio_diag();
+        return;
+    }
+
+    if (strcmp(arg, "start") == 0 || strcmp(arg, "start mic") == 0) {
+        (void)btstack_host_companion_audio_start(arg[5] != '\0');
+        reply_caudio_status();
+        return;
+    }
+    if (strcmp(arg, "stop") == 0) {
+        btstack_host_companion_audio_stop("stopped");
+        reply_caudio_status();
+        return;
+    }
+    reply("{\"error\":\"usage: caudio start [mic]|stop|status|diag|mic [decode]|lock on|lock off\"}");
+}
+
 // Remote controller pairing. Drives the SAME pairing state machine the BOOTSEL
 // gesture drives -- there is no second flow -- and differs only in authority:
 // a request arriving over the air opens controller discovery without admitting
@@ -2304,6 +2542,10 @@ static void handle_line(char *cmd) {
         cmd_peers(cmd + 6);
     } else if (strncmp(cmd, "pairing ", 8) == 0) {
         cmd_pairing(cmd + 8);
+    } else if (strcmp(cmd, "caudio") == 0) {
+        cmd_caudio(NULL);
+    } else if (strncmp(cmd, "caudio ", 7) == 0) {
+        cmd_caudio(cmd + 7);
     } else if (strcmp(cmd, "clink") == 0) {
         cmd_clink(NULL);
     } else if (strncmp(cmd, "clink ", 6) == 0) {

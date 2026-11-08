@@ -1,6 +1,7 @@
 using PicoSwitch.Bridge.Core;
-using PicoSwitch.Companion.Windows.Bluetooth;
-using PicoSwitch.Companion.Windows.ControllerLink;
+using PicoSwitch.Companion.Platform.Bluetooth;
+using PicoSwitch.Companion.Platform.CompanionAudio;
+using PicoSwitch.Companion.Platform.ControllerLink;
 using PicoSwitch.Management;
 
 namespace PicoSwitch.Companion.Services;
@@ -1205,6 +1206,34 @@ public sealed class AdapterRepository(IManagementTransport transport)
     public Task<ControllerLinkState> ControllerLinkStatusAsync(
         CancellationToken cancellationToken = default) =>
         client.ControllerLinkStatusAsync(cancellationToken);
+
+    /// <summary>
+    /// The companion audio downlink on the live management session, when the
+    /// transport can provide one. Same boundary as <see cref="DataPlanes"/>.
+    /// </summary>
+    public ICompanionAudioDownlinkProvider? AudioDownlinks =>
+        transport as ICompanionAudioDownlinkProvider;
+
+    /// <summary>The companion microphone uplink on the live session, same boundary.</summary>
+    public ICompanionMicUplinkProvider? MicUplinks =>
+        transport as ICompanionMicUplinkProvider;
+
+    public Task<CompanionAudioState> StartCompanionAudioAsync(
+        CancellationToken cancellationToken = default) =>
+        client.StartCompanionAudioAsync(cancellationToken);
+
+    public Task<CompanionAudioState> StartCompanionAudioAsync(
+        bool microphone,
+        CancellationToken cancellationToken = default) =>
+        client.StartCompanionAudioAsync(microphone, cancellationToken);
+
+    public Task<CompanionAudioState> StopCompanionAudioAsync(
+        CancellationToken cancellationToken = default) =>
+        client.StopCompanionAudioAsync(cancellationToken);
+
+    public Task<CompanionAudioState> CompanionAudioStatusAsync(
+        CancellationToken cancellationToken = default) =>
+        client.CompanionAudioStatusAsync(cancellationToken);
 
     private async Task SafeDisconnectAsync()
     {

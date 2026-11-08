@@ -28,6 +28,7 @@ Why the system is shaped the way it is.
 - [Bridge contract](bridge/PROTOCOL.md) and [implementing a platform backend](bridge/PLATFORM_BACKEND.md)
 - [Native Android companion](android-companion.md), and the [Windows companion](../companions/windows/docs/README.md)
 - [Composable amiibo library](architecture/amiibo-composable-library-hld.md), [KB/M profile system](architecture/kbm-profile-system-hld.md), [companion library interaction](architecture/companion-library-interaction.md)
+- [Nintendo Switch App features in the companion (research record, shelved)](architecture/nintendo-switch-app-design.md)
 - [Single-ACL multiplane companion BLE research](architecture/companion-multiplane-ble-architecture-research-2026-09-04.md)
 - [What we discovered versus inherited](provenance.md)
 

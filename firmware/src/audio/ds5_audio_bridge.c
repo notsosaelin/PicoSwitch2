@@ -38,6 +38,86 @@ uint8_t ds5_audio_bridge_switch2_pro2_complexity(void) {
                            __ATOMIC_ACQUIRE);
 }
 
+// Companion audio state shared by every build variant (ns2_companion_audio.h).
+static volatile uint8_t source_headset_state;
+static volatile uint8_t source_kind;
+static volatile uint8_t android_companion_conn = 0xFFu;
+static volatile bool classic_link_present;
+static volatile uint16_t companion_packet_bytes = SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN;
+static volatile uint32_t companion_diag_frames;
+static volatile uint32_t companion_diag_encode_max_us;
+static volatile uint32_t companion_diag_encode_over_20ms;
+static volatile uint32_t companion_diag_pcm_dropped;
+static volatile uint32_t companion_diag_queue_dropped;
+static volatile bool companion_exclusive_encode = true;
+
+void ds5_audio_bridge_set_companion_exclusive_encode(bool enabled) {
+    companion_exclusive_encode = enabled;
+}
+
+bool ds5_audio_bridge_companion_exclusive_encode(void) {
+    return companion_exclusive_encode;
+}
+
+void ds5_audio_bridge_note_source_headset(uint8_t state) {
+    source_headset_state = state;
+}
+
+uint8_t ds5_audio_bridge_source_headset(void) {
+    return source_headset_state;
+}
+
+void ds5_audio_bridge_note_source_kind(uint8_t kind) {
+    source_kind = kind;
+}
+
+uint8_t ds5_audio_bridge_source_kind(void) {
+    return source_kind;
+}
+
+void ds5_audio_bridge_note_android_companion(uint8_t conn_index) {
+    android_companion_conn = conn_index;
+}
+
+void ds5_audio_bridge_forget_android_companion(uint8_t conn_index) {
+    if (android_companion_conn == conn_index) android_companion_conn = 0xFFu;
+}
+
+bool ds5_audio_bridge_android_companion_present(void) {
+    return android_companion_conn != 0xFFu;
+}
+
+void ds5_audio_bridge_set_classic_link_present(bool present) {
+    classic_link_present = present;
+}
+
+bool ds5_audio_bridge_classic_link_present(void) {
+    return classic_link_present;
+}
+
+void ds5_audio_bridge_set_companion_packet_bytes(uint16_t bytes) {
+    if (bytes < 2u || bytes > SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN)
+        bytes = SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN;
+    companion_packet_bytes = bytes;
+}
+
+static inline void companion_diag_reset(void) {
+    companion_diag_frames = 0;
+    companion_diag_encode_max_us = 0;
+    companion_diag_encode_over_20ms = 0;
+    companion_diag_pcm_dropped = 0;
+    companion_diag_queue_dropped = 0;
+}
+
+void ds5_audio_bridge_companion_diag(ds5_audio_bridge_companion_diag_t *out) {
+    if (!out) return;
+    out->frames = companion_diag_frames;
+    out->encode_max_us = companion_diag_encode_max_us;
+    out->encode_over_20ms = companion_diag_encode_over_20ms;
+    out->pcm_dropped = companion_diag_pcm_dropped;
+    out->queue_dropped = companion_diag_queue_dropped;
+}
+
 void ds5_audio_bridge_set_switch2_pro2_analysis(bool enabled) {
     __atomic_store_n(&switch2_pro2_encoder_analysis, enabled,
                      __ATOMIC_RELEASE);
@@ -86,6 +166,11 @@ static volatile uint32_t diag_opus_gaps_over_20ms;
 static volatile uint32_t diag_opus_encode_max_us;
 static volatile uint32_t diag_pipeline_resets;
 static volatile uint32_t diag_codec_calls_total;
+// Where the codec core is, for a core that stops answering: the last stage it
+// entered (ds5_audio_codec_stage_t). Written by core 1, read by the UART.
+static volatile uint32_t diag_codec_stage;
+static volatile uint32_t diag_codec_stage_entered_us;
+static volatile uint32_t diag_encoder_reserve_short;
 static volatile uint32_t diag_codec_no_encoder;
 static volatile uint32_t diag_codec_disconnected;
 static volatile uint32_t diag_codec_usb_inactive;
@@ -185,6 +270,13 @@ void ds5_audio_diag_note_pipeline_reset(void) {
     diag_pipeline_resets++;
 }
 
+static inline void codec_stage(uint32_t stage) {
+#ifdef NS2_DS5_AUDIO
+    diag_codec_stage_entered_us = time_us_32();
+#endif
+    diag_codec_stage = stage;
+}
+
 static void ds5_audio_diag_note_codec_call(uint32_t now_us) {
     diag_codec_calls_total++;
     if (diag_codec_call_last_us) {
@@ -209,6 +301,19 @@ static void ds5_audio_diag_note_usb_speaker(bool active, uint32_t now_us) {
     diag_usb_speaker_last_edge_us = now_us;
     if (active) diag_usb_speaker_on_edges++;
     else diag_usb_speaker_off_edges++;
+}
+
+const char *ds5_audio_codec_stage_name(uint32_t stage) {
+    switch ((ds5_audio_codec_stage_t)stage) {
+        case DS5_CODEC_STAGE_IDLE: return "idle";
+        case DS5_CODEC_STAGE_MIC: return "mic";
+        case DS5_CODEC_STAGE_PREPARE: return "prepare";
+        case DS5_CODEC_STAGE_SYNC: return "sync";
+        case DS5_CODEC_STAGE_ENCODE: return "encode";
+        case DS5_CODEC_STAGE_RADIO_LOCK: return "radio_lock";
+        case DS5_CODEC_STAGE_ENCODE_LOCKED: return "encode_locked";
+        default: return "none";
+    }
 }
 
 void ds5_audio_diag_get(ds5_audio_diag_t *out) {
@@ -237,6 +342,13 @@ void ds5_audio_diag_get(ds5_audio_diag_t *out) {
     out->opus_encode_max_us = diag_opus_encode_max_us;
     out->pipeline_resets = diag_pipeline_resets;
     out->codec_calls_total = diag_codec_calls_total;
+    out->codec_stage = diag_codec_stage;
+#ifdef NS2_DS5_AUDIO
+    out->codec_stage_age_us = time_us_32() - diag_codec_stage_entered_us;
+#else
+    out->codec_stage_age_us = 0;
+#endif
+    out->encoder_reserve_short = diag_encoder_reserve_short;
     out->codec_no_encoder = diag_codec_no_encoder;
     out->codec_disconnected = diag_codec_disconnected;
     out->codec_usb_inactive = diag_codec_usb_inactive;
@@ -569,12 +681,24 @@ bool ds5_audio_bridge_speaker_requested(void) {
 
 void ds5_audio_bridge_set_switch2_pro2_active(bool active) { (void)active; }
 bool ds5_audio_bridge_switch2_pro2_active(void) { return false; }
+void ds5_audio_bridge_set_companion_active(bool active) { (void)active; }
+bool ds5_audio_bridge_companion_active(void) { return false; }
+bool ds5_audio_bridge_companion_supported(void) { return false; }
 bool ds5_audio_bridge_usb_speaker_active(void) { return false; }
 bool ds5_audio_bridge_peek_switch2_pro2_frame(
     uint8_t frame[SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN]) {
     (void)frame;
     return false;
 }
+bool ds5_audio_bridge_peek_companion_frame(
+    uint8_t frame[SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN], uint16_t *length,
+    uint32_t *index) {
+    (void)frame;
+    (void)length;
+    (void)index;
+    return false;
+}
+bool ds5_audio_bridge_companion_exclusive_applies(void) { return false; }
 void ds5_audio_bridge_commit_switch2_pro2_frame(void) {}
 void ds5_audio_bridge_note_switch2_pro2_idle_frame(void) {}
 
@@ -584,6 +708,8 @@ void ds5_audio_bridge_note_switch2_pro2_idle_frame(void) {}
 #include "celt.h"
 #include "cpu_support.h"
 #include "analysis.h"
+#include "companion_mic_bridge.h"
+#include "hardware/sync.h"
 #include "pico/time.h"
 #include "pico/util/queue.h"
 #include "pico/async_context.h"
@@ -607,6 +733,12 @@ int is_digital_silence(const opus_res *pcm, int frame_size, int channels,
 
 #define PCM_USB_PACKET_BYTES 192u
 #define PCM_BLOCK_QUEUE_DEPTH 2u
+// Companion audio only: four blocks (42.7 ms) of source PCM may wait for the
+// encoder. The first DualSense Edge session dropped 150 source blocks with a
+// 52.7 ms worst-case encode, i.e. core 1 was away for longer than two blocks.
+// The controller-headset paths keep their validated depth of two: they are
+// latency-bound by the controller's own buffer, the companion is not.
+#define PCM_BLOCK_QUEUE_COMPANION_DEPTH 4u
 #define ENCODED_FRAME_QUEUE_DEPTH 2u
 #define PCM_INPUT_FRAMES DS5_AUDIO_RESAMPLE_INPUT_FRAMES
 #define PCM_OUTPUT_FRAMES DS5_AUDIO_RESAMPLE_OUTPUT_FRAMES
@@ -628,6 +760,10 @@ typedef struct {
 
 typedef struct {
     uint32_t generation;
+    // Companion only: this frame's place in the encoded timeline, for the wire
+    // sequence (ns2_companion_audio_sequence). Unused by the genuine Pro2 path.
+    uint32_t index;
+    uint16_t length;  // 240 for the genuine Pro2 path; the session size for companion
     uint8_t data[SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN];
 } pro2_encoded_frame_t;
 
@@ -645,6 +781,10 @@ static volatile bool usb_mic_active;
 static volatile bool bridge_connected;
 static volatile uint8_t bridge_conn_index;
 static volatile bool pro2_bridge_active;
+// Companion audio downlink (ns2_companion_audio.h). Shares the Pro Controller 2
+// encoder geometry, encoded-frame queue and transport slot. Exclusive with
+// pro2_bridge_active by admission, and suppresses the DualSense speaker path.
+static volatile bool companion_audio_active;
 static volatile uint32_t pro2_idle_frames_pending;
 
 // TinyUSB/core0 owns this accumulator. This is deliberately the same
@@ -655,6 +795,34 @@ static pcm_block_t producer_pcm_block;
 static pcm_block_t producer_discard_block;
 static uint16_t producer_samples;
 
+// ONE static buffer for the speaker encoder, whichever format it runs.
+//
+// Why not malloc: the Pro Controller 2 / companion configuration needs one
+// contiguous ~31.8 KB block (CELT stereo state 10,068 B + 7,680 B of PCM +
+// TonalityAnalysisState 14,004 B), requested on core 1 the first time
+// companion audio plays, after the DualSense-format state was freed. The SDK's
+// malloc PANICS on failure (PICO_MALLOC_PANIC), and a panic on core 1 halts
+// the BTstack interrupt that runs there: Bluetooth dies, core 0 and the UART
+// live on. That is what the adapter did on 2026-11-07 with the companion
+// microphone build (core1 and HCI silent, codec_calls 1, codec_blocks 0); the
+// microphone's static decoder and SRAM-relocated code had cut the heap that
+// the linker-map estimate (≈15 KB margin) never saw runtime allocations take.
+// The two formats are never live together (bridge_configure_encoder destroys
+// one before building the other), so one buffer serves both, its cost is
+// checked at link time, and nothing is left to fragment. Do not go back to a
+// runtime allocation here.
+#define SPEAKER_ENCODER_STATE_RESERVE 10240u  // celt_encoder_get_size(2): 10,068 (RP2350, libopus 1.5)
+#define SPEAKER_ENCODER_PCM_BYTES (PRO2_PCM_SAMPLES * sizeof(float))
+#define SPEAKER_ENCODER_ANALYSIS_OFFSET                                        \
+    ((SPEAKER_ENCODER_STATE_RESERVE + SPEAKER_ENCODER_PCM_BYTES +             \
+      _Alignof(TonalityAnalysisState) - 1u) &                                 \
+     ~(_Alignof(TonalityAnalysisState) - 1u))
+#define SPEAKER_ENCODER_BYTES                                                  \
+    (SPEAKER_ENCODER_ANALYSIS_OFFSET + sizeof(TonalityAnalysisState))
+_Static_assert(PCM_OUTPUT_FRAMES * PCM_CHANNELS <= PRO2_PCM_SAMPLES,
+               "the DualSense layout must fit the shared encoder buffer");
+static uint8_t speaker_encoder_storage[SPEAKER_ENCODER_BYTES]
+    __attribute__((aligned(8)));
 static void *ds5_encoder_allocation;
 static CELTEncoder *ds5_encoder;
 static float *ds5_encoder_pcm;
@@ -675,6 +843,10 @@ static encoded_frame_t codec_discard_frame;
 static encoded_frame_t transport_pair[2];
 static uint8_t transport_pair_count;
 static pro2_encoded_frame_t pro2_codec_frame;
+// One per 20 ms block the encoder takes for the companion, encoded or not, so
+// a block that fails to encode or is shed later is a gap on the wire. Core 1
+// only; it reaches core 0 inside the frame.
+static uint32_t companion_frame_index;
 static pro2_encoded_frame_t pro2_discard_frame;
 static pro2_encoded_frame_t pro2_transport_frame;
 static bool pro2_transport_valid;
@@ -727,11 +899,10 @@ static bool bridge_encoder_available(bridge_encoder_mode_t mode) {
 }
 
 static void bridge_destroy_encoder(void) {
-    free(ds5_encoder_allocation);
+    // Static storage: nothing to free, only the views to drop.
     ds5_encoder_allocation = NULL;
     ds5_encoder = NULL;
     ds5_encoder_pcm = NULL;
-    free(pro2_encoder_allocation);
     pro2_encoder_allocation = NULL;
     pro2_encoder = NULL;
     pro2_encoder_pcm = NULL;
@@ -754,25 +925,19 @@ static bool __not_in_flash_func(bridge_configure_encoder)(
     if (mode == BRIDGE_ENCODER_PRO2) {
         int const encoder_size = celt_encoder_get_size(PCM_CHANNELS);
         if (encoder_size <= 0) return false;
-        size_t const encoder_alignment = _Alignof(float);
-        size_t const encoder_bytes =
-            ((size_t)encoder_size + encoder_alignment - 1u) &
-            ~(encoder_alignment - 1u);
-        size_t const pcm_bytes =
-            PRO2_PCM_SAMPLES * sizeof(*pro2_encoder_pcm);
-        size_t const analysis_alignment = _Alignof(TonalityAnalysisState);
-        size_t const analysis_offset =
-            (encoder_bytes + pcm_bytes + analysis_alignment - 1u) &
-            ~(analysis_alignment - 1u);
-        size_t const allocation_bytes =
-            analysis_offset + sizeof(*pro2_analysis);
-        pro2_encoder_allocation = malloc(allocation_bytes);
-        if (!pro2_encoder_allocation) return false;
+        if ((size_t)encoder_size > SPEAKER_ENCODER_STATE_RESERVE) {
+            // A libopus whose state outgrew the reserve: refuse, visibly,
+            // rather than overrun the PCM that follows it.
+            diag_encoder_reserve_short++;
+            return false;
+        }
+        pro2_encoder_allocation = speaker_encoder_storage;
         uint8_t *const allocation = pro2_encoder_allocation;
         pro2_encoder = (CELTEncoder *)allocation;
-        pro2_encoder_pcm = (float *)(allocation + encoder_bytes);
-        pro2_analysis =
-            (TonalityAnalysisState *)(allocation + analysis_offset);
+        pro2_encoder_pcm =
+            (float *)(allocation + SPEAKER_ENCODER_STATE_RESERVE);
+        pro2_analysis = (TonalityAnalysisState *)(
+            allocation + SPEAKER_ENCODER_ANALYSIS_OFFSET);
         if (celt_encoder_init(pro2_encoder, 48000, PCM_CHANNELS,
                               opus_select_arch()) != OPUS_OK) {
             bridge_destroy_encoder();
@@ -781,17 +946,15 @@ static bool __not_in_flash_func(bridge_configure_encoder)(
     } else if (mode == BRIDGE_ENCODER_DS5) {
         int const encoder_size = celt_encoder_get_size(PCM_CHANNELS);
         if (encoder_size <= 0) return false;
-        size_t const encoder_alignment = _Alignof(float);
-        size_t const encoder_bytes =
-            ((size_t)encoder_size + encoder_alignment - 1u) &
-            ~(encoder_alignment - 1u);
-        size_t const pcm_bytes =
-            PCM_OUTPUT_FRAMES * PCM_CHANNELS * sizeof(*ds5_encoder_pcm);
-        ds5_encoder_allocation = malloc(encoder_bytes + pcm_bytes);
-        if (!ds5_encoder_allocation) return false;
+        if ((size_t)encoder_size > SPEAKER_ENCODER_STATE_RESERVE) {
+            diag_encoder_reserve_short++;
+            return false;
+        }
+        ds5_encoder_allocation = speaker_encoder_storage;
         uint8_t *const allocation = ds5_encoder_allocation;
         ds5_encoder = (CELTEncoder *)allocation;
-        ds5_encoder_pcm = (float *)(allocation + encoder_bytes);
+        ds5_encoder_pcm =
+            (float *)(allocation + SPEAKER_ENCODER_STATE_RESERVE);
         if (celt_encoder_init(ds5_encoder, 48000, PCM_CHANNELS,
                               opus_select_arch()) != OPUS_OK) {
             bridge_destroy_encoder();
@@ -885,6 +1048,14 @@ static void __not_in_flash_func(bridge_encode_pro2_pcm)(
         pro2_encoder_applied_complexity = requested_complexity;
         pro2_encoder_applied_analysis = analysis_enabled;
     }
+    // Companion sessions cap the CBR packet below the Pro2 size. CELT CBR emits
+    // exactly min(buffer, bitrate bytes), so the cap IS the bitrate and the
+    // encoder configuration itself never changes. The genuine Pro2 consumer
+    // always gets the full validated 240 bytes.
+    bool const companion_consumer = companion_audio_active && !pro2_bridge_active;
+    uint16_t const packet_bytes = companion_consumer
+        ? companion_packet_bytes
+        : (uint16_t)SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN;
     uint8_t discard[SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN];
     uint32_t pending_idle = __atomic_exchange_n(
         &pro2_idle_frames_pending, 0, __ATOMIC_ACQ_REL);
@@ -913,10 +1084,8 @@ static void __not_in_flash_func(bridge_encode_pro2_pcm)(
             discard[0] = 0xFC;
             int const idle_bytes = celt_encode_with_ec(
                 pro2_encoder, pro2_encoder_pcm, PRO2_PCM_FRAMES,
-                discard + 1, SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN - 1u,
-                NULL);
-            if (idle_bytes !=
-                (int)SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN - 1) return;
+                discard + 1, packet_bytes - 1u, NULL);
+            if (idle_bytes != (int)packet_bytes - 1) return;
         }
     }
 
@@ -945,22 +1114,30 @@ static void __not_in_flash_func(bridge_encode_pro2_pcm)(
     pro2_codec_frame.data[0] = 0xFC;
     int const payload_bytes = celt_encode_with_ec(
         pro2_encoder, pro2_encoder_pcm, PRO2_PCM_FRAMES,
-        pro2_codec_frame.data + 1,
-        SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN - 1u, NULL);
+        pro2_codec_frame.data + 1, packet_bytes - 1u, NULL);
     uint32_t const encode_end_us = time_us_32();
     int const encoded_bytes =
         payload_bytes < 0 ? payload_bytes : payload_bytes + 1;
-    bool const success =
-        encoded_bytes == SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN;
-    ds5_audio_diag_note_opus_frame(encode_end_us,
-                                   encode_end_us - encode_start_us, success);
+    bool const success = encoded_bytes == (int)packet_bytes;
+    uint32_t const encode_us = encode_end_us - encode_start_us;
+    uint32_t const index = companion_consumer ? companion_frame_index++ : 0u;
+    ds5_audio_diag_note_opus_frame(encode_end_us, encode_us, success);
+    if (companion_consumer) {
+        if (encode_us > companion_diag_encode_max_us)
+            companion_diag_encode_max_us = encode_us;
+        if (encode_us > 20000u) companion_diag_encode_over_20ms++;
+    }
     if (!success || generation != pipeline_reset_generation) return;
 
     pro2_codec_frame.generation = generation;
+    pro2_codec_frame.index = index;
+    pro2_codec_frame.length = packet_bytes;
     if (queue_is_full(&pro2_encoded_frame_queue)) {
         queue_try_remove(&pro2_encoded_frame_queue, &pro2_discard_frame);
+        if (companion_consumer) companion_diag_queue_dropped++;
     }
     queue_try_add(&pro2_encoded_frame_queue, &pro2_codec_frame);
+    if (companion_consumer) companion_diag_frames++;
 }
 
 static void __not_in_flash_func(bridge_consume_pro2_block)(
@@ -1009,7 +1186,8 @@ static void bridge_clear_pipeline(void) {
 }
 
 static bool __not_in_flash_func(bridge_prepare_encoder)(void) {
-    bridge_encoder_mode_t const requested_mode = pro2_bridge_active
+    bridge_encoder_mode_t const requested_mode =
+        (pro2_bridge_active || companion_audio_active)
         ? BRIDGE_ENCODER_PRO2 : BRIDGE_ENCODER_DS5;
     if (!bridge_configure_encoder(requested_mode)) return false;
     if (requested_mode == BRIDGE_ENCODER_DS5 && !silent_frames_ready) {
@@ -1060,8 +1238,10 @@ static uint32_t __not_in_flash_func(bridge_sync_encoder_generation)(void) {
 
 void ds5_audio_bridge_init(void) {
     ds5_audio_bridge_set_speaker_control(false, 0);
+    // Allocated at the companion depth; the producer enforces the smaller
+    // validated depth for every other consumer.
     queue_init(&speaker_pcm_block_queue, sizeof(pcm_block_t),
-               PCM_BLOCK_QUEUE_DEPTH);
+               PCM_BLOCK_QUEUE_COMPANION_DEPTH);
     queue_init(&speaker_encoded_frame_queue, sizeof(encoded_frame_t),
                ENCODED_FRAME_QUEUE_DEPTH);
     queue_init(&pro2_encoded_frame_queue, sizeof(pro2_encoded_frame_t),
@@ -1071,6 +1251,7 @@ void ds5_audio_bridge_init(void) {
     bridge_connected = false;
     bridge_conn_index = 0xFF;
     pro2_bridge_active = false;
+    companion_audio_active = false;
     pro2_idle_frames_pending = 0;
     producer_samples = 0;
     producer_pcm_block.nonzero = false;
@@ -1092,6 +1273,7 @@ void ds5_audio_bridge_init(void) {
     pro2_encoder_applied_analysis = false;
     speaker_encoder_mode = BRIDGE_ENCODER_NONE;
     silent_frames_ready = false;
+    companion_mic_bridge_init();
 }
 
 void ds5_audio_bridge_set_usb_streams(bool speaker_active, bool mic_active) {
@@ -1137,10 +1319,16 @@ void ds5_audio_bridge_submit_speaker_pcm(const uint8_t *data, uint16_t len) {
         source_samples -= copy_samples;
 
         if (producer_samples == PCM_BLOCK_SAMPLES) {
-            if (queue_is_full(&speaker_pcm_block_queue)) {
+            bool const companion_consumer =
+                companion_audio_active && !pro2_bridge_active;
+            uint32_t const depth = companion_consumer
+                ? PCM_BLOCK_QUEUE_COMPANION_DEPTH
+                : PCM_BLOCK_QUEUE_DEPTH;
+            if (queue_get_level(&speaker_pcm_block_queue) >= depth) {
                 queue_try_remove(&speaker_pcm_block_queue,
                                  &producer_discard_block);
                 dropped = true;
+                if (companion_consumer) companion_diag_pcm_dropped++;
             }
             queue_try_add(&speaker_pcm_block_queue, &producer_pcm_block);
             producer_samples = 0;
@@ -1179,7 +1367,7 @@ void __not_in_flash_func(ds5_audio_bridge_codec_task)(void) {
         return;
     }
     uint32_t const requested_generation = bridge_sync_encoder_generation();
-    bool const pro2_active = pro2_bridge_active;
+    bool const pro2_active = pro2_bridge_active || companion_audio_active;
     if (!bridge_connected && !pro2_active) {
         diag_codec_disconnected++;
         return;
@@ -1213,16 +1401,33 @@ void __not_in_flash_func(ds5_audio_bridge_codec_worker)(void) {
     // BTstack timer callback.
     (void)bridge_prepare_encoder();
     for (;;) {
-        queue_remove_blocking(&speaker_pcm_block_queue, &codec_pcm_block);
+        // Speaker first, always: a waiting speaker block is encoded before
+        // any companion microphone packet is decoded, so the microphone can
+        // never delay the speaker (companion_mic_bridge.h). With nothing to
+        // do, sleep until an event: the producers' queue_try_add() signals
+        // one (SEV), and the Bluetooth IRQ that submits microphone packets
+        // wakes this core by itself -- the same wake-up queue_remove_blocking()
+        // used here before the microphone existed.
+        if (!queue_try_remove(&speaker_pcm_block_queue, &codec_pcm_block)) {
+            codec_stage(DS5_CODEC_STAGE_MIC);
+            if (companion_mic_bridge_service()) continue;
+            codec_stage(DS5_CODEC_STAGE_IDLE);
+            __wfe();
+            continue;
+        }
         ds5_audio_diag_note_codec_call(time_us_32());
 
+        codec_stage(DS5_CODEC_STAGE_PREPARE);
         if (!bridge_prepare_encoder()) {
             diag_codec_no_encoder++;
             continue;
         }
+        codec_stage(DS5_CODEC_STAGE_SYNC);
         uint32_t const requested_generation =
             bridge_sync_encoder_generation();
-        bool const pro2_active = pro2_bridge_active;
+        codec_stage(DS5_CODEC_STAGE_ENCODE);
+        // Companion audio uses the Pro Controller 2 geometry and consumer path.
+        bool const pro2_active = pro2_bridge_active || companion_audio_active;
         if (!bridge_connected && !pro2_active) {
             diag_codec_disconnected++;
             continue;
@@ -1233,7 +1438,27 @@ void __not_in_flash_func(ds5_audio_bridge_codec_worker)(void) {
         }
 
         diag_codec_blocks_dequeued++;
-        if (pro2_active)
+        if (pro2_active && ds5_audio_bridge_companion_exclusive_applies()) {
+            // Companion audio with a Bluetooth Classic HID link on the same
+            // radio (the Android companion's Controller Link, or a Classic
+            // controller). Hardware 2026-11-07, DualSense Edge: preempted
+            // encodes stretched to 52-59 ms of wall time (normally <= 10 ms)
+            // and the source queue overflowed -- audible gaps. Same remedy,
+            // and the same trade, as the production DualSense speaker path
+            // below: the CYW43 worker defers for one encode (<= ~10 ms) and
+            // then drains everything pending, instead of preempting the encode
+            // over and over. The all-BLE case (Windows/Linux Controller Link)
+            // measured clean and keeps the preemptible encode. The genuine
+            // Pro2 path is never locked (pro2_bridge_active excludes it).
+            async_context_t *const radio_context =
+                cyw43_arch_async_context();
+            codec_stage(DS5_CODEC_STAGE_RADIO_LOCK);
+            async_context_acquire_lock_blocking(radio_context);
+            codec_stage(DS5_CODEC_STAGE_ENCODE_LOCKED);
+            bridge_consume_pro2_block(&codec_pcm_block,
+                                      requested_generation);
+            async_context_release_lock(radio_context);
+        } else if (pro2_active)
             bridge_consume_pro2_block(&codec_pcm_block,
                                       requested_generation);
         else if (ds5_audio_bridge_ds5_exclusive_encode()) {
@@ -1293,6 +1518,32 @@ bool ds5_audio_bridge_switch2_pro2_active(void) {
     return pro2_bridge_active;
 }
 
+void ds5_audio_bridge_set_companion_active(bool active) {
+    if (companion_audio_active == active) return;
+    if (active) {
+        ds5_audio_pcm_capture_stop();
+        companion_diag_reset();
+    }
+    companion_audio_active = active;
+    // Same lock-free reset as the Pro Controller 2 setter, and for the same
+    // reason: this runs in BTstack's background IRQ on core1, which may have
+    // preempted the codec worker while it holds a queue lock.
+    pipeline_reset_generation++;
+    pro2_transport_valid = false;
+    ds5_audio_diag_note_pipeline_reset();
+}
+
+bool ds5_audio_bridge_companion_active(void) {
+    return companion_audio_active;
+}
+
+bool ds5_audio_bridge_companion_supported(void) { return true; }
+
+bool ds5_audio_bridge_companion_exclusive_applies(void) {
+    return companion_exclusive_encode && companion_audio_active &&
+           !pro2_bridge_active && classic_link_present;
+}
+
 bool ds5_audio_bridge_usb_speaker_active(void) {
     return usb_speaker_active;
 }
@@ -1308,6 +1559,25 @@ bool ds5_audio_bridge_peek_switch2_pro2_frame(
     }
     memcpy(frame, pro2_transport_frame.data,
            SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN);
+    return true;
+}
+
+bool ds5_audio_bridge_peek_companion_frame(
+    uint8_t frame[SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN], uint16_t *length,
+    uint32_t *index) {
+    if (!frame || !length) return false;
+    while (!pro2_transport_valid) {
+        if (!queue_try_remove(&pro2_encoded_frame_queue,
+                              &pro2_transport_frame)) return false;
+        if (pro2_transport_frame.generation == pipeline_reset_generation)
+            pro2_transport_valid = true;
+    }
+    uint16_t n = pro2_transport_frame.length;
+    if (n > SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN)
+        n = SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN;
+    memcpy(frame, pro2_transport_frame.data, n);
+    *length = n;
+    if (index) *index = pro2_transport_frame.index;
     return true;
 }
 
@@ -1329,7 +1599,11 @@ bool ds5_audio_bridge_get_silent_pair(
 }
 
 bool ds5_audio_bridge_speaker_requested(void) {
-    return usb_speaker_active && bridge_connected;
+    // While companion audio owns the console speaker stream the DualSense must
+    // stay on its ordinary rumble path: it receives no speaker frames, and
+    // reserving report 0x39 for audio that never arrives would only take
+    // ordinary rumble away from it.
+    return usb_speaker_active && bridge_connected && !companion_audio_active;
 }
 
 bool ds5_audio_bridge_mic_active(void) {
@@ -1370,12 +1644,24 @@ bool ds5_audio_bridge_peek_speaker_pair(
 void ds5_audio_bridge_commit_speaker_pair(void) {}
 void ds5_audio_bridge_set_switch2_pro2_active(bool active) { (void)active; }
 bool ds5_audio_bridge_switch2_pro2_active(void) { return false; }
+void ds5_audio_bridge_set_companion_active(bool active) { (void)active; }
+bool ds5_audio_bridge_companion_active(void) { return false; }
+bool ds5_audio_bridge_companion_supported(void) { return false; }
 bool ds5_audio_bridge_usb_speaker_active(void) { return false; }
 bool ds5_audio_bridge_peek_switch2_pro2_frame(
     uint8_t frame[SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN]) {
     (void)frame;
     return false;
 }
+bool ds5_audio_bridge_peek_companion_frame(
+    uint8_t frame[SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN], uint16_t *length,
+    uint32_t *index) {
+    (void)frame;
+    (void)length;
+    (void)index;
+    return false;
+}
+bool ds5_audio_bridge_companion_exclusive_applies(void) { return false; }
 void ds5_audio_bridge_commit_switch2_pro2_frame(void) {}
 void ds5_audio_bridge_note_switch2_pro2_idle_frame(void) {}
 bool ds5_audio_bridge_mic_active(void) { return false; }

@@ -235,6 +235,18 @@ public sealed record KeyboardMouseView
     /// </remarks>
     public bool CanSave => DraftState == KbmDraftState.Dirty || EditingBuiltin;
 
+    /// <summary>
+    /// What the Save button says. Saved or not is said BY the button rather than
+    /// by a status chip beside it, which cost the toolbar its one line on a
+    /// landscape handheld: "Saved" (and disabled) when there is nothing to write,
+    /// "Save" for an edit, "Save as new" for the built-in template, which is
+    /// never written into. <see cref="StatusText"/> stays the button's tooltip
+    /// and accessible state; the states it alone names have their own notice.
+    /// </summary>
+    public string SaveLabel => EditingBuiltin
+        ? "Save as new"
+        : DraftState == KbmDraftState.Dirty ? "Save" : "Saved";
+
     /// <summary>Whether the open draft is the built-in template.</summary>
     public required bool EditingBuiltin { get; init; }
 

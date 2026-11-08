@@ -20,6 +20,8 @@
 #include "switch_pro2_encode.h"
 #include "controller_battery.h"
 #include "ds5_audio_bridge.h"
+#include "ns2_companion_audio.h"  // the companion's virtual headset jack
+#include "companion_mic_bridge.h"  // the companion's microphone, EP 0x83
 #include "switch_pro2.h"
 #include "ns2_firmware_profile.h"
 #include "ns2_protocol_trace.h"
@@ -1211,6 +1213,12 @@ static void ns2_dispatch(const uint8_t *c, uint32_t n) {
 static uint32_t ns2_pipe_report_count;
 static uint32_t ns2_pipe_last_report_us;
 uint32_t ns2_pro2_report_count(void) { return ns2_pipe_report_count; }
+bool ns2_pro2_nfc_scan_active(void) {
+    // A plain read of a bool the vendor-command path owns: the management
+    // reply is advisory UI state, so a value one command stale is harmless.
+    return ns2_virtual_nfc_runtime.scan_active;
+}
+
 uint32_t ns2_pro2_last_report_age_ms(void) {
     uint32_t u = ns2_pipe_last_report_us;
     return u ? (time_us_32() - u) / 1000u : UINT32_MAX;
@@ -1261,11 +1269,20 @@ static void ns2_build_report(uint8_t *p) {
     p[0x0B] = 0x30;
     // 0x0C NFC.
 #ifdef NS2_DS5_AUDIO
-    // Only advertise a headset while the source controller's physical jack is
-    // occupied; otherwise the Switch must not open its audio stream and route
-    // ordinary console audio to a bare DualSense speaker.
-    p[0x0D] = controller_headset_switch2_state(in.headset_state,
-                                               report_counter);
+    // Only advertise a headset while a jack is occupied: the source
+    // controller's physical one, or the companion's virtual one (Headset on).
+    // Otherwise the Switch must not open its audio stream and route ordinary
+    // console audio to a bare DualSense speaker.
+    //
+    // The companion jack is resolved HERE, per report, not in the input seam:
+    // Headset on/off must behave exactly like plugging a headset into the
+    // controller and pulling it out, immediately, whether or not any source
+    // controller is currently sending input (ns2_companion_audio.h).
+    p[0x0D] = controller_headset_switch2_state(
+        ns2_companion_audio_headset_state(in.headset_state,
+                                          ds5_audio_bridge_companion_active(),
+                                          companion_mic_bridge_active()),
+        report_counter);
 #endif
 
     // Motion (IMU) — report-0x09 30-byte block (docs/switch2/report-0x09-motion.md):
@@ -1556,7 +1573,12 @@ static void ns2_build_report_05(uint8_t *p) {
     if (in.extra & SWITCH_EXTRA_GL) p[0x7] |= 0x02;
     if (in.extra & SWITCH_EXTRA_GR) p[0x7] |= 0x01;
 #ifdef NS2_DS5_AUDIO
-    if (in.headset_state != CONTROLLER_HEADSET_NONE) p[0x7] |= 0x10;
+    // Same resolution as report 0x09's jack byte: physical or companion.
+    if (ns2_companion_audio_headset_state(in.headset_state,
+                                          ds5_audio_bridge_companion_active(),
+                                          companion_mic_bridge_active()) !=
+        CONTROLLER_HEADSET_NONE)
+        p[0x7] |= 0x10;
 #endif
 
     memcpy(&p[0x0A], in.left_stick, 3);
@@ -1904,8 +1926,14 @@ static const uint8_t ns2_audio_mic_ep_desc[] = {
 
 CFG_TUD_MEM_SECTION CFG_TUSB_MEM_ALIGN
 static uint8_t ns2_audio_speaker_packet[NS2_AUDIO_PACKET_SIZE];
+// One microphone packet. The controller copies it into USB packet memory when
+// the transfer is armed, so it is refilled for the next packet only after the
+// previous transfer completed. Silence unless a companion microphone session
+// is playing (companion_mic_bridge.h).
 CFG_TUD_MEM_SECTION CFG_TUSB_MEM_ALIGN
-static uint8_t ns2_audio_mic_silence[NS2_AUDIO_PACKET_SIZE];
+static uint8_t ns2_audio_mic_packet[NS2_AUDIO_PACKET_SIZE];
+_Static_assert(NS2_AUDIO_PACKET_SIZE == COMPANION_MIC_BRIDGE_USB_PACKET_BYTES,
+               "the microphone bridge fills exactly one USB packet");
 
 static uint8_t ns2_audio_alt_speaker;
 static uint8_t ns2_audio_alt_mic;
@@ -2001,7 +2029,7 @@ static bool ns2_audio_set_alt(uint8_t rhport, uint8_t itf, uint8_t alt) {
         current_alt = &ns2_audio_alt_mic;
         ep_addr = NS2_AUDIO_MIC_EP;
         ep_desc = (tusb_desc_endpoint_t const *)ns2_audio_mic_ep_desc;
-        packet = ns2_audio_mic_silence;
+        packet = ns2_audio_mic_packet;
         activated = &ns2_audio_mic_activated;
         armed = &ns2_audio_mic_armed;
     } else {
@@ -2033,6 +2061,7 @@ static bool ns2_audio_set_alt(uint8_t rhport, uint8_t itf, uint8_t alt) {
         // completed while inactive, the callback cleared `armed` and we
         // safely queue a new one here.
         if (!*armed) {
+            if (itf == NS2_AUDIO_MIC_ITF) companion_mic_bridge_read_usb(packet);
             if (!usbd_edpt_xfer(rhport, ep_addr, packet,
                                 NS2_AUDIO_PACKET_SIZE)) {
 #ifndef TUP_DCD_EDPT_ISO_ALLOC
@@ -2047,6 +2076,7 @@ static bool ns2_audio_set_alt(uint8_t rhport, uint8_t itf, uint8_t alt) {
     }
     ds5_audio_bridge_set_usb_streams(ns2_audio_alt_speaker != 0,
                                      ns2_audio_alt_mic != 0);
+    companion_mic_bridge_set_usb_active(ns2_audio_alt_mic != 0);
     return true;
 }
 
@@ -2107,6 +2137,12 @@ static bool ns2_audio_control(uint8_t rhport, uint8_t stage,
                 ds5_audio_bridge_set_speaker_control(
                     ns2_audio_speaker_feature.mute != 0,
                     ns2_audio_speaker_feature.volume);
+            } else if (unit_id == 0x05) {
+                // The console's microphone mute and level, applied to the
+                // companion's microphone as a headset's own would be.
+                companion_mic_bridge_set_control(
+                    ns2_audio_mic_feature.mute != 0,
+                    ns2_audio_mic_feature.volume);
             }
         }
         return true;
@@ -2165,8 +2201,9 @@ static bool ns2_audio_xfer(uint8_t rhport, uint8_t ep_addr, xfer_result_t result
     if (ep_addr == NS2_AUDIO_MIC_EP) {
         ns2_audio_mic_armed = false;
         if (ns2_audio_alt_mic == 0) return true;
+        companion_mic_bridge_read_usb(ns2_audio_mic_packet);
         bool const armed =
-            usbd_edpt_xfer(rhport, ep_addr, ns2_audio_mic_silence,
+            usbd_edpt_xfer(rhport, ep_addr, ns2_audio_mic_packet,
                            NS2_AUDIO_PACKET_SIZE);
         ns2_audio_mic_armed = armed;
         config_wireless_task();
@@ -2186,8 +2223,10 @@ static void ns2_audio_init(void) {
     ns2_audio_speaker_feature = (ns2_audio_feature_state_t){0, 0};
     ns2_audio_mic_feature = (ns2_audio_feature_state_t){0, 0};
     ds5_audio_bridge_set_speaker_control(false, 0);
-    memset(ns2_audio_mic_silence, 0, sizeof(ns2_audio_mic_silence));
+    companion_mic_bridge_set_control(false, 0);
+    memset(ns2_audio_mic_packet, 0, sizeof(ns2_audio_mic_packet));
     ds5_audio_bridge_set_usb_streams(false, false);
+    companion_mic_bridge_set_usb_active(false);
 }
 
 static void ns2_audio_reset(uint8_t rhport) {

@@ -181,15 +181,18 @@ Do not reintroduce:
 
 Use the repository's current external portal tooling.
 
-## Install-reset marker
+## Install marker
 
-Every releaseable UF2 must preserve the install-reset marker behavior.
-
-A newly flashed image performs the intended first-install reset.
+Every releaseable UF2 carries the install marker. The standard (update) UF2
+keeps settings, amiibo and pairings across a flash; the clean-install UF2
+(`firmware\build.ps1 -Wipe`, `NS2_INSTALL_RESET=ON`, `-wipe.uf2`) erases them
+on its first boot. See `docs/bluetooth/PERSISTENCE.md`, "Install marker".
 
 An ordinary reboot must not behave like a new installation.
 
-Do not modify persistence/reset semantics incidentally.
+A change to the persistence layout that the previous release cannot read must
+ship the clean-install behavior. Do not modify persistence/reset semantics
+incidentally.
 
 ## Firmware/application compatibility
 
@@ -240,6 +243,7 @@ Important locations include:
 - `firmware/src/console/pro2/` — Pro Controller 2 console-facing behavior
 - `companions/android/` — Android companion and platform-neutral bridge modules
 - `companions/windows/` — Windows companion (C#/WinUI 3); see `companions/windows/docs/README.md`
+- `companions/linux/` — Linux companion (C#/Avalonia, single-file executable for x64 and arm64); compiles the portable projects under `companions/windows/src/`; see `companions/linux/README.md`
 - `web/` — browser management interface
 - `contracts/` — wire contracts shared verbatim by firmware, companions and tests
 - `tests/` — host tests (`tests/firmware/`), tool tests (`tests/tools/`), fixtures; see `tests/README.md`
@@ -388,7 +392,7 @@ to determine additional required validation.
 
 # Install-Reset Marker Validation
 
-For releaseable firmware artifacts, preserve the install-reset marker.
+For releaseable firmware artifacts (update and clean-install), preserve the install marker.
 
 Current verification tooling:
 
@@ -480,6 +484,16 @@ Current implementation state and the design it implements:
 
 - `companions/windows/docs/README.md`
 - `WINDOWS_PASS.md`
+
+# Linux Companion Validation
+
+If the task changes `companions/linux/` or a portable project under `companions/windows/src/`:
+
+- the portable projects (Bridge.Core, Management.Core, Companion.Platform, Companion.Services) are SHARED with the Linux companion; a change there must keep `companions/windows/build.ps1` green AND the Linux suite: `dotnet test companions/linux/tests/PicoSwitch.Companion.Linux.Tests`
+- BlueZ/D-Bus/SDL code lives only in `PicoSwitch.Companion.Linux`; `LayeringGuardTests` enforces it
+- the Linux release is `companions/linux/packaging/build-linux.sh` (Linux only): one self-contained single-file executable per architecture. Not an AppImage: Steam Game Mode cannot mount one (see the script header); do not reintroduce it or a launch-option workaround
+- the Windows release is `companions/windows/build.ps1 -Zip -Configuration Release -Platform x64|arm64`; Android is `./gradlew :app:assembleDebug` (release signing resolves only from outside the repository)
+- Linux hardware validation is still pending; `companions/linux/README.md` §5–6 is the record and the open questions
 
 # Web / Management Validation
 

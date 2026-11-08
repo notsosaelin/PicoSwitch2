@@ -1,5 +1,8 @@
 #include "ns2_uart_diag.h"
 
+#include <malloc.h>  // mallinfo, for the `heap` command
+#include "ns2_core_fault.h"
+
 #ifdef NS2_UART_DIAG
 
 #include "ns2_firmware_profile.h"
@@ -2325,6 +2328,8 @@ static void handle_command(void) {
                  "\"opus_encode_max_us\":%lu,\"opus_gap_max_us\":%lu,"
                  "\"opus_over_20ms\":%lu,\"pipeline_resets\":%lu,"
                  "\"codec_calls\":%lu,\"codec_blocks\":%lu,"
+                 "\"codec_stage\":\"%s\",\"codec_stage_age_ms\":%lu,"
+                 "\"encoder_reserve_short\":%lu,"
                  "\"codec_no_encoder\":%lu,\"codec_no_pcm\":%lu,"
                  "\"codec_disconnected\":%lu,\"codec_usb_inactive\":%lu,"
                  "\"codec_gap_max_us\":%lu,\"codec_over_10ms\":%lu,"
@@ -2357,6 +2362,9 @@ static void handle_command(void) {
                  (unsigned long)d.pipeline_resets,
                  (unsigned long)d.codec_calls_total,
                  (unsigned long)d.codec_blocks_dequeued,
+                 ds5_audio_codec_stage_name(d.codec_stage),
+                 (unsigned long)(d.codec_stage_age_us / 1000u),
+                 (unsigned long)d.encoder_reserve_short,
                  (unsigned long)d.codec_no_encoder,
                  (unsigned long)d.codec_no_pcm,
                  (unsigned long)d.codec_disconnected,
@@ -2374,6 +2382,27 @@ static void handle_command(void) {
                  (unsigned long)d.usb_speaker_off_edges,
                  (unsigned long)d.usb_speaker_active_us,
                  (unsigned long)ns2_audio_core1_stack_free_bytes());
+        queue_text(trace_format_response);
+    } else if (strcmp(rx_line, "fault") == 0) {
+        ns2_core_fault_format(trace_format_response, sizeof(trace_format_response));
+        queue_text(trace_format_response);
+    } else if (strcmp(rx_line, "heap") == 0) {
+        // Its own command: mallinfo() takes the malloc lock, which `audio`
+        // must never wait on.
+        extern char __end__;
+        extern char __HeapLimit;
+        struct mallinfo const info = mallinfo();
+        uint32_t const heap_total = (uint32_t)(&__HeapLimit - &__end__);
+        uint32_t const arena = (uint32_t)info.arena;
+        uint32_t const never_used = heap_total > arena ? heap_total - arena : 0u;
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"heap\":true,\"total\":%lu,\"arena\":%lu,"
+                 "\"in_use\":%lu,\"free_in_arena\":%lu,"
+                 "\"never_used\":%lu,\"free\":%lu}",
+                 (unsigned long)heap_total, (unsigned long)arena,
+                 (unsigned long)info.uordblks, (unsigned long)info.fordblks,
+                 (unsigned long)never_used,
+                 (unsigned long)(never_used + (uint32_t)info.fordblks));
         queue_text(trace_format_response);
     } else if (strcmp(rx_line, "audio clear") == 0) {
         ds5_audio_diag_reset();
@@ -2628,7 +2657,7 @@ static void handle_command(void) {
         queue_text("{\"ok\":true,\"save\":\"queued\"}");
     } else if (strcmp(rx_line, "help") == 0) {
         queue_text("{\"commands\":[\"ping\",\"fwreads\",\"status\",\"clear\","
-                   "\"profile\",\"profile default\","
+                   "\"profile\",\"profile default\",\"heap\",\"fault\","
                    "\"profile C.M.m B.M.m D.M.m\",\"btversion request\","
                    "\"btversion\",\"trace status\",\"trace clear\","
                    "\"trace start\",\"trace start bulk\",\"trace start nfc\",\"trace stop\",\"trace dump\","

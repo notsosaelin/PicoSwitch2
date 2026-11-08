@@ -6,6 +6,9 @@
 #   build.ps1 pico_w         # build only pico_w
 #   build.ps1 pico2_w        # build only pico2_w
 #   build.ps1 -Clean         # wipe build dirs first, then build
+#   build.ps1 -Wipe          # the clean-install UF2: its first boot erases
+#                              settings, amiibo and pairings
+#                              (build/<board>_wipe/PicoSwitchWGA-<board>-wipe.uf2)
 #   build.ps1 pico2_w -NoUartDiag # omit the GP0/GP1 live diagnostic channel
 #   build.ps1 pico2_w -MgmtOn     # compatibility alias; management now boots on
 #   build.ps1 pico2_w -NS2FirmwareVersion 2.1.4 `
@@ -20,7 +23,9 @@
 #   build.ps1 -AudioOverclock # 200 MHz non-working comparison
 #   build.ps1 -AudioOverclock300 # compatibility alias for pico2_w
 #
-# Output: build/<dir>/PicoSwitchWGA-<board>.uf2
+# Output: build/<dir>/PicoSwitchWGA-<board>.uf2 -- the update UF2, which keeps
+# settings, amiibo and pairings across the flash. -Wipe builds the
+# clean-install one instead (docs/bluetooth/PERSISTENCE.md, "Install marker").
 param(
     [string[]]$Boards = @('pico_w', 'pico2_w'),
     [string]$NS2FirmwareVersion = '2.1.4',
@@ -29,6 +34,7 @@ param(
     [switch]$NoUartDiag,
     [switch]$MgmtOn,
     [switch]$Clean,
+    [switch]$Wipe,
     [switch]$Tone,
     [switch]$Audio,
     [switch]$AudioOverclock,
@@ -98,7 +104,11 @@ $extraArgs += @("-DNS2_PRO_FIRMWARE_VERSION=$NS2FirmwareVersion",
                 "-DNS2_UART_DIAG=$(if ($NoUartDiag) { 'OFF' } else { 'ON' })",
                 # Keep ordinary builds deterministic even if an older build
                 # directory cached the former diagnostic default.
-                "-DNS2_MGMT_DEFAULT_ON=ON")
+                "-DNS2_MGMT_DEFAULT_ON=ON",
+                # Explicit so a cached wipe setting can never leak into an
+                # update UF2, or the reverse.
+                "-DNS2_INSTALL_RESET=$(if ($Wipe) { 'ON' } else { 'OFF' })")
+if ($Wipe) { $dirSuffix += '_wipe' }
 
 foreach ($b in $Boards) {
     $boardArgs = @($extraArgs)
@@ -140,5 +150,13 @@ foreach ($b in $Boards) {
     & $cmake --build $bdir 2>&1 | ForEach-Object { "$_" }
     if ($LASTEXITCODE -ne 0) { throw "build failed for $b$dirSuffix" }
     $uf2 = "$bdir\PicoSwitchWGA-$b.uf2"
-    if (Test-Path $uf2) { Write-Host "OK -> $uf2" -ForegroundColor Green } else { throw "missing uf2 for $b$dirSuffix" }
+    if (-not (Test-Path $uf2)) { throw "missing uf2 for $b$dirSuffix" }
+    if ($Wipe) {
+        # A distinct file name, so the clean-install image can never be
+        # mistaken for the update image once it leaves the build directory.
+        $wipeUf2 = "$bdir\PicoSwitchWGA-$b-wipe.uf2"
+        Copy-Item -Force $uf2 $wipeUf2
+        $uf2 = $wipeUf2
+    }
+    Write-Host "OK -> $uf2" -ForegroundColor Green
 }

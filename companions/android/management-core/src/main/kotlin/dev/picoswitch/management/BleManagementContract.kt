@@ -33,6 +33,17 @@ object BleManagementContract {
      * Firmware side is `config_ble_cl_out_uuid`.
      */
     const val CONTROLLER_LINK_OUT_UUID = "6b33e18a-c45d-470e-b291-7f0c88ae3914"
+    /**
+     * Companion audio downlink (EXPERIMENTAL): notify-only, one Opus frame per
+     * notification ([CompanionAudioDataPlane]). Firmware `config_ble_audio_down_uuid`.
+     */
+    const val COMPANION_AUDIO_DOWN_UUID = "a31d6e52-9b04-4c8f-8e27-d5613af0b94c"
+    /**
+     * Companion microphone uplink (EXPERIMENTAL): write-without-response, one
+     * Opus frame per write ([dev.picoswitch.management.audio.CompanionMicDataPlane]).
+     * Firmware `config_ble_mic_up_uuid`.
+     */
+    const val COMPANION_MIC_UP_UUID = "d4a7c3e1-5b2f-4e86-9c0d-71e3a5b8f2c6"
     const val ATT_PAYLOAD_WITH_DEFAULT_MTU = 20
     const val MAX_REPLY_PAYLOAD_BYTES = 511
 

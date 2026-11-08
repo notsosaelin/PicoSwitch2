@@ -1,7 +1,6 @@
-using PicoSwitch.Companion.Windows.Bluetooth;
-using PicoSwitch.Companion.Windows.Storage;
+using PicoSwitch.Companion.Platform.Bluetooth;
+using PicoSwitch.Companion.Platform.Storage;
 using PicoSwitch.Management;
-using Windows.Devices.Enumeration;
 using Xunit;
 
 namespace PicoSwitch.Companion.Services.Tests;
@@ -139,7 +138,7 @@ public sealed class RepairPairingTests
         await Assert.ThrowsAnyAsync<Exception>(() => fixture.Service.ConnectAsync(fixture.Id));
 
         fixture.Pairing.UnpairResult = AdapterUnpairResult.Unpaired;
-        fixture.Pairing.StateAfterUnpair = WindowsPairingKnown.Paired;
+        fixture.Pairing.StateAfterUnpair = HostPairingKnown.Paired;
 
         var error = await Assert.ThrowsAsync<ManagementException>(
             () => fixture.Service.RepairAsync(fixture.Id));
@@ -197,7 +196,7 @@ public sealed class RepairPairingTests
         fixture.Transport.FailScanConnect = null;
         fixture.Pairing.PairResult = new AdapterPairingResult(
             AdapterPairingOutcome.Paired,
-            DevicePairingResultStatus.Paired,
+            "Paired",
             "Paired. The link is bonded and encrypted.");
 
         Assert.Equal(fixture.Id, await fixture.Service.PairNewAdapterAsync());
@@ -236,7 +235,7 @@ public sealed class PairingCeremonyTests
         // to connect, which then failed. A pairing operation that reused an old bond
         // must not be indistinguishable from one that formed a new one.
         using var fixture = new ConnectionServiceFixture();
-        fixture.Pairing.State = WindowsPairingKnown.Paired;
+        fixture.Pairing.State = HostPairingKnown.Paired;
         fixture.Transport.WindowsPaired = true;
         fixture.Transport.PeerObserved = true;
         fixture.Transport.FailDirectConnect = new GattTransportException(
@@ -258,7 +257,7 @@ public sealed class PairingCeremonyTests
         Assert.Contains(
             fixture.Diagnostics.Snapshot(),
             entry => entry.Source == "pair" &&
-                entry.Message.Contains("Windows already holds a pairing", StringComparison.Ordinal));
+                entry.Message.Contains("this computer already holds a pairing", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -268,7 +267,7 @@ public sealed class PairingCeremonyTests
         // "the adapter did not expose its management service" sent the user round
         // the same loop four times.
         using var fixture = new ConnectionServiceFixture();
-        fixture.Pairing.State = WindowsPairingKnown.Paired;
+        fixture.Pairing.State = HostPairingKnown.Paired;
         fixture.Transport.WindowsPaired = true;
         fixture.Transport.PeerObserved = true;
         fixture.Transport.FailDirectConnect = new GattTransportException(
@@ -298,10 +297,10 @@ public sealed class PairingCeremonyTests
         // 2026-08-29, both directions: TimedOut with the window shut, Paired with it
         // open.
         using var fixture = new ConnectionServiceFixture();
-        fixture.Pairing.State = WindowsPairingKnown.NotPaired;
+        fixture.Pairing.State = HostPairingKnown.NotPaired;
         fixture.Pairing.PairResult = new AdapterPairingResult(
             AdapterPairingOutcome.TimedOut,
-            DevicePairingResultStatus.AuthenticationTimeout,
+            "AuthenticationTimeout",
             "The adapter did not complete pairing. Double-tap its pairing button and try again.");
 
         var error = await Assert.ThrowsAsync<ManagementException>(
@@ -320,7 +319,7 @@ public sealed class PairingCeremonyTests
         // or about a stale one -- is how a reused OS pairing reads as a repair.
         var reused = new AdapterPairingResult(
             AdapterPairingOutcome.AlreadyPaired,
-            DevicePairingResultStatus.AlreadyPaired,
+            "AlreadyPaired",
             "This PC is already paired with the adapter.");
 
         Assert.DoesNotContain("bonded and encrypted", reused.Message);
@@ -354,16 +353,16 @@ public sealed class PairingCeremonyTests
 /// </summary>
 public sealed class FakePairingGateway : IAdapterPairingGateway
 {
-    public WindowsPairingKnown State { get; set; } = WindowsPairingKnown.NotPaired;
+    public HostPairingKnown State { get; set; } = HostPairingKnown.NotPaired;
 
     /// <summary>What a read returns AFTER an unpair, for the "claimed but did not honour" case.</summary>
-    public WindowsPairingKnown? StateAfterUnpair { get; set; }
+    public HostPairingKnown? StateAfterUnpair { get; set; }
 
     public AdapterUnpairResult UnpairResult { get; set; } = AdapterUnpairResult.Unpaired;
 
     public AdapterPairingResult PairResult { get; set; } = new(
         AdapterPairingOutcome.Paired,
-        DevicePairingResultStatus.Paired,
+        "Paired",
         "Paired. The link is bonded and encrypted.");
 
     public int Unpairs { get; set; }
@@ -372,12 +371,12 @@ public sealed class FakePairingGateway : IAdapterPairingGateway
 
     public ulong? LastUnpairedAddress { get; private set; }
 
-    public Task<WindowsPairingSnapshot> ReadAsync(
+    public Task<HostPairingSnapshot> ReadAsync(
         ulong bluetoothAddress,
         CancellationToken cancellationToken = default) =>
-        Task.FromResult(new WindowsPairingSnapshot(
+        Task.FromResult(new HostPairingSnapshot(
             State,
-            CanPair: State != WindowsPairingKnown.Paired,
+            CanPair: State != HostPairingKnown.Paired,
             DeviceName: "PicoSwitch2"));
 
     public Task<AdapterPairingResult> PairAsync(
@@ -387,7 +386,7 @@ public sealed class FakePairingGateway : IAdapterPairingGateway
         Pairs += 1;
         if (PairResult.Succeeded)
         {
-            State = WindowsPairingKnown.Paired;
+            State = HostPairingKnown.Paired;
         }
 
         return Task.FromResult(PairResult);
@@ -400,7 +399,7 @@ public sealed class FakePairingGateway : IAdapterPairingGateway
         Unpairs += 1;
         LastUnpairedAddress = bluetoothAddress;
         State = StateAfterUnpair ??
-            (UnpairResult.TrustRemoved() ? WindowsPairingKnown.NotPaired : State);
+            (UnpairResult.TrustRemoved() ? HostPairingKnown.NotPaired : State);
         return Task.FromResult(UnpairResult);
     }
 }

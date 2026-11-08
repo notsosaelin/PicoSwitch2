@@ -39,6 +39,46 @@ public sealed partial class AdapterPage : Page
         InitializeComponent();
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
+        SizeChanged += (_, _) => ApplyShortWindow();
+    }
+
+    /// <summary>
+    /// Under this window height the page takes its short-window arrangement: the
+    /// same 560 as Android's LayoutTokens.ShortWindowHeight, measured on the window.
+    /// </summary>
+    private const double ShortWindowHeight = 560;
+
+    private bool? shortWindow;
+
+    /// <summary>
+    /// One row of chrome instead of three on a short window, as on Android and
+    /// Linux: the tabs join the header and the adapter's name, which the title
+    /// bar already shows, is dropped.
+    /// </summary>
+    private void ApplyShortWindow()
+    {
+        var isShort = (XamlRoot?.Size.Height ?? double.PositiveInfinity) < ShortWindowHeight;
+        if (shortWindow == isShort)
+        {
+            return;
+        }
+
+        shortWindow = isShort;
+        HeaderTabsSlot.Child = null;
+        PageTabsSlot.Child = null;
+        AdapterTitle.Visibility = isShort ? Visibility.Collapsed : Visibility.Visible;
+        HeaderTabsSlot.Visibility = isShort ? Visibility.Visible : Visibility.Collapsed;
+        PageTabsSlot.Visibility = isShort ? Visibility.Collapsed : Visibility.Visible;
+        Tabs.Margin = isShort ? new Thickness(0) : new Thickness(0, 8, 0, 4);
+        PageGrid.Padding = isShort ? new Thickness(32, 4, 32, 8) : new Thickness(32, 12, 32, 32);
+        if (isShort)
+        {
+            HeaderTabsSlot.Child = Tabs;
+        }
+        else
+        {
+            PageTabsSlot.Child = Tabs;
+        }
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -49,11 +89,11 @@ public sealed partial class AdapterPage : Page
         adapters.Relationship.Changed += OnStateChanged;
         adapters.Radio.Changed += OnStateChanged;
 
-        // The console buttons are gated on Controller Link streaming, which this
-        // page does not otherwise observe — without this they would stay disabled
-        // until some unrelated adapter event happened to repaint.
+        // The dashboard projection takes Controller Link streaming as an input,
+        // so a change in it must repaint this page too.
         AppServices.ControllerLink.View.Changed += OnStateChanged;
 
+        ShowTab();
         Render();
         await SafeAsync(() => adapters.ProbeRadioAsync());
     }
@@ -68,6 +108,37 @@ public sealed partial class AdapterPage : Page
         adapters.Relationship.Changed -= OnStateChanged;
         adapters.Radio.Changed -= OnStateChanged;
         AppServices.ControllerLink.View.Changed -= OnStateChanged;
+    }
+
+    /// <summary>The tab last shown this session; null until the page first opens.</summary>
+    private static int? selectedTab;
+
+    private void OnTabChanged(SelectorBar sender, SelectorBarSelectionChangedEventArgs args)
+    {
+        // The markup's IsSelected raises this during InitializeComponent, before
+        // the panels exist and before the first-visit rule has run.
+        if (!IsLoaded)
+        {
+            return;
+        }
+
+        selectedTab = sender.Items.IndexOf(sender.SelectedItem);
+        ShowTab();
+    }
+
+    private void ShowTab()
+    {
+        // First visit with nothing remembered: the Adapters tab, where adding
+        // one is. After that, wherever the user last was.
+        selectedTab ??= adapters.Registry.Value.Records.Count == 0 ? 2 : 0;
+        if (Tabs.Items.IndexOf(Tabs.SelectedItem) != selectedTab)
+        {
+            Tabs.SelectedItem = Tabs.Items[selectedTab.Value];
+        }
+
+        ConsolePanel.Visibility = selectedTab == 0 ? Visibility.Visible : Visibility.Collapsed;
+        ControllersPanel.Visibility = selectedTab == 1 ? Visibility.Visible : Visibility.Collapsed;
+        AdaptersPanel.Visibility = selectedTab == 2 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     // Every observable this page watches is written from a WinRT pool thread.
@@ -90,33 +161,6 @@ public sealed partial class AdapterPage : Page
 
     private async void OnRefresh(object sender, RoutedEventArgs e) =>
         await SafeAsync(() => adapters.RefreshAsync());
-
-    private async void OnWake(object sender, RoutedEventArgs e) =>
-        await SafeAsync(async () =>
-        {
-            var status = await adapters.WakeConsoleAsync();
-
-            // Unknown means the adapter could not tell us -- older firmware has no
-            // `wake status`. Reporting that as failure would be a lie about the
-            // console, so it is reported as exactly what it is.
-            Report(
-                status.Result switch
-                {
-                    WakeResult.ConsoleAwake => "The console is awake.",
-                    WakeResult.Advertised => "Wake sent. The console should wake shortly.",
-                    WakeResult.NoIdentity =>
-                        "The adapter has no saved console identity, so it cannot wake one. " +
-                        "Connect it to the console once first.",
-                    WakeResult.RadioBusy =>
-                        "The adapter's radio was busy. Try again in a moment.",
-                    WakeResult.Unknown =>
-                        "Wake was sent, but this adapter's firmware cannot report the result.",
-                    _ => "The adapter is still trying to wake the console.",
-                },
-                status.Result is WakeResult.ConsoleAwake or WakeResult.Advertised
-                    ? InfoBarSeverity.Success
-                    : InfoBarSeverity.Informational);
-        });
 
     private async void OnSwitchPersonality(object sender, RoutedEventArgs e)
     {
@@ -154,54 +198,6 @@ public sealed partial class AdapterPage : Page
         });
     }
 
-    private async void OnEditBody(object sender, RoutedEventArgs e) =>
-        await EditColorAsync(ColorTarget.Body, view?.Appearance.Body);
-
-    private async void OnEditLeft(object sender, RoutedEventArgs e) =>
-        await EditColorAsync(ColorTarget.LeftAccent, view?.Appearance.LeftAccent);
-
-    private async void OnEditRight(object sender, RoutedEventArgs e) =>
-        await EditColorAsync(ColorTarget.RightAccent, view?.Appearance.RightAccent);
-
-    private async Task EditColorAsync(ColorTarget target, RgbColor? current)
-    {
-        var picker = new ColorPicker
-        {
-            IsAlphaEnabled = false,
-            IsColorSliderVisible = true,
-            IsHexInputVisible = true,
-            Color = current is { } value
-                ? Color.FromArgb(255, (byte)value.Red, (byte)value.Green, (byte)value.Blue)
-                : Colors.Black,
-        };
-
-        var dialog = new ContentDialog
-        {
-            XamlRoot = XamlRoot,
-            Title = "Choose a colour",
-            Content = picker,
-            PrimaryButtonText = "Set",
-            CloseButtonText = "Cancel",
-            DefaultButton = ContentDialogButton.Primary,
-        };
-
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
-        {
-            return;
-        }
-
-        var chosen = picker.Color;
-        await SafeAsync(() =>
-            adapters.SetColorAsync(target, new RgbColor(chosen.R, chosen.G, chosen.B)));
-    }
-
-    private async void OnApplyAppearance(object sender, RoutedEventArgs e) =>
-        await SafeAsync(async () =>
-        {
-            await adapters.ApplyAppearanceAsync();
-            Report("The console now sees the new colours.", InfoBarSeverity.Success);
-        });
-
     private async void OnSetInput(object sender, RoutedEventArgs e)
     {
         if (InputBox.SelectedIndex < 0 || InputBox.SelectedIndex >= inputIds.Count)
@@ -212,6 +208,184 @@ public sealed partial class AdapterPage : Page
         var id = inputIds[InputBox.SelectedIndex];
         await SafeAsync(() => adapters.SetActiveInputAsync(id));
     }
+
+    /* ------------------------------------------------------------- adapters */
+
+    private async void OnPair(object sender, RoutedEventArgs e) =>
+        await SafeAsync(() => adapters.PairNewAdapterAsync());
+
+    private async void OnConnectRow(object sender, RoutedEventArgs e)
+    {
+        if (RowId(sender) is { } id)
+        {
+            await SafeAsync(() => adapters.ConnectAsync(id));
+        }
+    }
+
+    private async void OnRenameRow(object sender, RoutedEventArgs e)
+    {
+        if (RowId(sender) is not { } id ||
+            adapters.Registry.Value.Record(id) is not { } record)
+        {
+            return;
+        }
+
+        var input = new TextBox
+        {
+            Text = record.UserAlias ?? string.Empty,
+            PlaceholderText = record.LastKnownName,
+            MaxLength = 64,
+        };
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "Rename adapter",
+            Content = input,
+            PrimaryButtonText = "Save",
+            SecondaryButtonText = "Clear name",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+
+        var result = await dialog.ShowAsync();
+        if (result == ContentDialogResult.None)
+        {
+            return;
+        }
+
+        // A local nickname only. It never reaches the adapter and is never part of
+        // its identity, which stays the Bluetooth address.
+        var alias = result == ContentDialogResult.Primary ? input.Text : null;
+        await SafeAsync(() => adapters.RenameAsync(id, alias));
+    }
+
+    private async void OnRepairRow(object sender, RoutedEventArgs e)
+    {
+        if (RowId(sender) is not { } id)
+        {
+            return;
+        }
+
+        // Unpairing destroys a trust relationship, so it is never automatic and
+        // the confirmation names the consequence.
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "Repair pairing?",
+            Content =
+                "Windows drops its pairing with this adapter, then you pair again with " +
+                "the adapter's pairing window open.\n\n" +
+                "The adapter stays in this list, and its name and controller history are kept.",
+            PrimaryButtonText = "Repair pairing",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Close,
+        };
+
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+        {
+            await SafeAsync(() => adapters.RepairAsync(id));
+        }
+    }
+
+    private async void OnRemoveRow(object sender, RoutedEventArgs e)
+    {
+        if (RowId(sender) is not { } id)
+        {
+            return;
+        }
+
+        // States both halves. This copy previously promised the Windows pairing
+        // was untouched, which stopped being true when Remove was corrected to
+        // match §16.2 — a confirmation that misdescribes its own action is worse
+        // than none, because it is the one place the user is deciding.
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "Remove this adapter?",
+            Content =
+                "This app forgets the adapter and its controller history, and Windows " +
+                "drops its pairing with it. You will need to pair again, with the " +
+                "adapter's pairing window open.\n\n" +
+                "The controllers paired to the adapter itself are not affected.",
+            PrimaryButtonText = "Remove and unpair",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Close,
+        };
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        await SafeAsync(async () =>
+        {
+            var removal = await adapters.RemoveAsync(id);
+            if (removal.LeftOrphanPairing)
+            {
+                throw new ManagementException(
+                    "The adapter was removed from this app, but Windows could not drop its " +
+                    "pairing. Remove it from Windows Bluetooth settings as well.");
+            }
+        });
+    }
+
+    /* ---------------------------------------------------------- controllers */
+
+    private async void OnForgetPeer(object sender, RoutedEventArgs e)
+    {
+        if (PeerIdOf(sender) is not { } peerId)
+        {
+            return;
+        }
+
+        // The confirmation says what happens to the controller AND what happens to
+        // the row, because "it disappeared entirely" is the surprise otherwise.
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "Forget this controller?",
+            Content =
+                "The adapter deletes its pairing with the controller. If the controller is " +
+                "connected it will disconnect.\n\n" +
+                "It stays in this list under Recent, so you can see it was here.",
+            PrimaryButtonText = "Forget",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Close,
+        };
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        await SafeAsync(async () =>
+        {
+            var outcome = await adapters.ForgetControllerAsync(peerId);
+
+            // already_absent is an idempotent success. incomplete stays visible
+            // rather than being smoothed over: the adapter is telling us it did
+            // not finish, and hiding that produces a list nobody can trust.
+            if (outcome.Result == PeerForgetResult.Incomplete)
+            {
+                Report(
+                    "The adapter reported that it could not fully remove that controller. " +
+                    "Refresh and check the list.",
+                    InfoBarSeverity.Warning);
+            }
+        });
+    }
+
+    private async void OnRemoveHistory(object sender, RoutedEventArgs e)
+    {
+        if (PeerIdOf(sender) is { } peerId)
+        {
+            await SafeAsync(() => adapters.RemoveFromHistoryAsync(peerId));
+        }
+    }
+
+    private async void OnPairController(object sender, RoutedEventArgs e) =>
+        await new ControllerPairingDialog(adapters) { XamlRoot = XamlRoot }.RunAsync();
 
     /* ------------------------------------------------------------- painting */
 
@@ -243,40 +417,73 @@ public sealed partial class AdapterPage : Page
         ContractBar.Message = view.Contract.Summary;
 
         AdapterTitle.Text = view.Title;
-        PhaseText.Text = view.PhaseText;
-        SetOptionalText(PhaseDetail, view.PhaseDetail);
+        // Only a real message (why a connect failed). "Add one below." used to
+        // sit here, repeating the Adapters tab's "Add an adapter" card.
+        SetOptionalText(PhaseDetail, view.Connected ? null : view.PhaseDetail);
         SetOptionalText(FirmwareText, view.FirmwareLine);
 
         ControllerText.Text = view.ControllerLine;
         SetOptionalText(BatteryText, view.BatteryLine);
 
+        // One of Connect / Disconnect at a time, as Play shows Start or Stop.
+        ConnectButton.Visibility = view.Connected ? Visibility.Collapsed : Visibility.Visible;
+        DisconnectButton.Visibility = view.Connected ? Visibility.Visible : Visibility.Collapsed;
         ConnectButton.IsEnabled = selected is not null && !view.Connected;
         DisconnectButton.IsEnabled = view.Connected;
         RefreshButton.IsEnabled = view.Connected;
-        WakeButton.IsEnabled = view.Connected;
-        NoAdapterHint.Visibility = selected is null ? Visibility.Visible : Visibility.Collapsed;
 
         RenderPersonality(view.ControllerMode);
-        RenderAppearance(view.Appearance);
         RenderInput(view.ConsoleInput);
 
-        ConsoleButtonsReason.Text = view.ConsoleButtons.DisabledReason ?? string.Empty;
-        HomeButton.IsEnabled = view.ConsoleButtons.Enabled;
-        CaptureButton.IsEnabled = view.ConsoleButtons.Enabled;
-        CButton.IsEnabled = view.ConsoleButtons.Enabled;
+        RenderLists();
     }
 
-    // Home / Capture / C are pressed BY this PC through Controller Link, so they
-    // go through the same input session everything else does rather than a
-    // side-channel to the adapter: one thing decides what the console sees.
-    private async void OnConsoleHome(object sender, RoutedEventArgs e) =>
-        await AppServices.TapConsoleButtonAsync(ControllerButton.Home);
+    /// <summary>This PC's adapters, and the controllers paired to the adapter.</summary>
+    private void RenderLists()
+    {
+        var rows = adapters.RememberedAdapters();
+        AdapterList.ItemsSource = rows;
+        // No "No adapters yet." line: the "Add an adapter" card already says so.
 
-    private async void OnConsoleCapture(object sender, RoutedEventArgs e) =>
-        await AppServices.TapConsoleButtonAsync(ControllerButton.Capture);
+        var controllers = adapters.Controllers();
+        PeersUnsupported.IsOpen = !controllers.Visible;
+        PeersUnsupported.Message = controllers.HiddenReason ?? string.Empty;
+        PeerSections.Visibility = controllers.Visible ? Visibility.Visible : Visibility.Collapsed;
 
-    private async void OnConsoleC(object sender, RoutedEventArgs e) =>
-        await AppServices.TapConsoleButtonAsync(ControllerButton.C);
+        PairControllerButton.IsEnabled = controllers.CanPairNewController;
+        PairControllerReason.Text = controllers.PairDisabledReason ?? string.Empty;
+        PairControllerReason.Visibility = controllers.PairDisabledReason is null
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+
+        var inventory = controllers.Inventory;
+        Fill(ConnectedSection, ConnectedList, inventory.Connected, controllers.CanForget);
+        Fill(PairedSection, PairedList, inventory.Paired, controllers.CanForget);
+
+        // Recent rows never offer Forget: there is no adapter credential left to
+        // delete, only a local history row.
+        Fill(RecentSection, RecentList, inventory.Recent, canForget: false);
+
+        PeersEmpty.Visibility = inventory.HasControllers ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private static void Fill(
+        StackPanel section,
+        ItemsControl list,
+        IReadOnlyList<PeerListing> listings,
+        bool canForget)
+    {
+        section.Visibility = listings.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        list.ItemsSource = PeerRows.Project(listings, canForget);
+    }
+
+    private static AdapterId? RowId(object sender) =>
+        sender is FrameworkElement { Tag: string value } ? AdapterId.FromAddress(value) : null;
+
+    private static string? PeerIdOf(object sender) =>
+        sender is FrameworkElement { Tag: string value } && !string.IsNullOrWhiteSpace(value)
+            ? value
+            : null;
 
     private void RenderPersonality(ControllerModeSection section)
     {
@@ -291,15 +498,6 @@ public sealed partial class AdapterPage : Page
 
         PersonalityBox.SelectedIndex = personalities.IndexOf(section.Current);
         Gate(section.Availability, PersonalityReason, PersonalityBox, PersonalityApply);
-    }
-
-    private void RenderAppearance(AppearanceSection section)
-    {
-        AppearanceHint.Text = section.ApplyHint;
-        Paint(BodySwatch, section.Body);
-        Paint(LeftSwatch, section.LeftAccent);
-        Paint(RightSwatch, section.RightAccent);
-        Gate(section.Availability, AppearanceReason, BodyEdit, LeftEdit, RightEdit, AppearanceApply);
     }
 
     private void RenderInput(ConsoleInputSection section)
@@ -336,10 +534,6 @@ public sealed partial class AdapterPage : Page
 
         SetOptionalText(reason, availability.DisabledReason);
     }
-
-    private static void Paint(Border swatch, RgbColor color) =>
-        swatch.Background = new SolidColorBrush(
-            Color.FromArgb(255, (byte)color.Red, (byte)color.Green, (byte)color.Blue));
 
     private static void SetOptionalText(TextBlock block, string? text)
     {

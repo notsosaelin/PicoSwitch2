@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using PicoSwitch.Companion.Services;
 using PicoSwitch.Companion.Services.Presentation;
@@ -119,16 +120,56 @@ public sealed partial class KeyboardMousePage : Page
     private KeyboardMouseView? view;
     private bool suppressSelection;
 
+    /// <summary>Below this page width the Profiles tab's two columns stack.</summary>
+    private const double StackProfilesBelow = 1100;
+
+    /// <summary>Below this page width the Mouse tab is one column.</summary>
+    private const double StackMouseBelow = 760;
+
+    /// <summary>Two slider columns of about 220 px each, plus the gap: Android's TuningTwoColumnWidth.</summary>
+    private const double TuningTwoColumnWidth = 460;
+
+    /// <summary>
+    /// The smallest key the fit will draw: Android's MinKeyUnit. Below it the
+    /// keys become mis-taps, so the keyboard keeps this size and scrolls.
+    /// </summary>
+    private const double MinKeyUnit = 28;
+
+    /// <summary>
+    /// Under this window height the page takes its short-window arrangement
+    /// (companion-shell-layout.md): the same 560 as Android's
+    /// LayoutTokens.ShortWindowHeight, measured on the window, never by device.
+    /// </summary>
+    private const double ShortWindowHeight = 560;
+
+    /// <summary>A profile, layout or mode selector on a short window.</summary>
+    private const double ShortSelectorWidth = 136;
+
+    /// <summary>A header text line beside the tabs on a short window, before it trims.</summary>
+    private const double ShortHeaderTextWidth = 200;
+
+    private bool shortWindow;
+    private bool shortApplied;
+
     public KeyboardMousePage()
     {
         InitializeComponent();
+        SizeChanged += (_, e) =>
+        {
+            LayProfiles(e.NewSize.Width);
+            ApplyShortWindow();
+            FitKeyboard();
+        };
+        MouseCard.SizeChanged += (_, e) => LayMouse(e.NewSize.Width < StackMouseBelow);
+        TuningGrid.SizeChanged += (_, e) => LayTuning(e.NewSize.Width >= TuningTwoColumnWidth);
+        KeyboardScroller.SizeChanged += (_, _) => FitKeyboard();
 
         // Save is the primary action of the profile row and is styled as such.
         // Applied here rather than in markup because a Page.Resources style that
         // is BasedOn a framework theme style does not resolve at markup-compile
         // time, and the page already reaches for this resource the same way to
         // mark a changed key.
-        SaveButton.Style = (Style)Application.Current.Resources["AccentButtonStyle"];
+        SaveButton.Style = (Style)Application.Current.Resources["AccentCommandButtonStyle"];
 
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
@@ -263,6 +304,9 @@ public sealed partial class KeyboardMousePage : Page
         // where the row shows which position it acts on -- an "apply" button
         // beside Save invited exactly the confusion the two-layer model removes.
         SaveButton.IsEnabled = view.CanSave;
+        SaveButton.Content = view.SaveLabel;
+        ToolTipService.SetToolTip(SaveButton, view.StatusText);
+        AutomationProperties.SetHelpText(SaveButton, view.StatusText);
         DiscardButton.IsEnabled = view.Dirty;
         DuplicateButton.IsEnabled = view.SelectedProfile is not null &&
                                     view.DraftState != KbmDraftState.Disconnected;
@@ -271,7 +315,6 @@ public sealed partial class KeyboardMousePage : Page
         NewButton.IsEnabled = view.ProfilesSupported &&
                               view.DraftState != KbmDraftState.Disconnected;
 
-        ProfileStatus.Text = view.StatusText;
         DraftBar.IsOpen = view.StatusDetail is not null;
         DraftBar.Message = view.StatusDetail ?? string.Empty;
         DraftBar.Severity = view.DraftState switch
@@ -927,6 +970,215 @@ public sealed partial class KeyboardMousePage : Page
 
     /* ------------------------------------------------------------- painting */
 
+    /// <summary>
+    /// The tab last shown, kept for the session so returning to the page does
+    /// not throw the user back to Mapping after they went to tune the mouse.
+    /// </summary>
+    private static int selectedTab;
+
+    /// <summary>
+    /// Two columns when there is room, one when there is not: the right-hand
+    /// cards (Reset, switch keys) move under their left-hand partners.
+    /// </summary>
+    private void LayProfiles(double width)
+    {
+        var stacked = width < StackProfilesBelow;
+        ProfilesPanel.ColumnDefinitions[1].Width = stacked
+            ? new GridLength(0)
+            : new GridLength(2, GridUnitType.Star);
+        ProfilesPanel.ColumnSpacing = stacked ? 0 : 12;
+        Place(ResetCard, stacked ? 2 : 0, stacked ? 0 : 1);
+        Place(SwitchCard, stacked ? 3 : 1, stacked ? 0 : 1);
+        Grid.SetRow(CountersExpander, stacked ? 4 : 2);
+        if (stacked && ProfilesPanel.RowDefinitions.Count < 5)
+        {
+            ProfilesPanel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        }
+
+        static void Place(FrameworkElement element, int row, int column)
+        {
+            Grid.SetRow(element, row);
+            Grid.SetColumn(element, column);
+        }
+    }
+
+    /// <summary>
+    /// MORE KEYS SWITCHES THE CARD to the ISO and international keys and any
+    /// bound key this build does not draw, rather than stacking them under the
+    /// keyboard: on a short window there is no height to share.
+    /// </summary>
+    private void OnMoreKeysToggled(object sender, RoutedEventArgs e) => ShowMoreKeys();
+
+    private void ShowMoreKeys()
+    {
+        var more = MoreKeysToggle.IsChecked == true;
+        KeyboardScroller.Visibility = more ? Visibility.Collapsed : Visibility.Visible;
+        OtherKeysSection.Visibility = more ? Visibility.Visible : Visibility.Collapsed;
+        UndrawnSection.Visibility = more && view is { Undrawn.Count: > 0 } ? Visibility.Visible : Visibility.Collapsed;
+        FitKeyboard();
+    }
+
+    /// <summary>
+    /// The short-window arrangement, as on Android and Linux: under
+    /// <see cref="ShortWindowHeight"/> the tabs move up into the header in place
+    /// of the title, the open profile takes the toolbar's left and the Mapping
+    /// actions its right, so the keyboard keeps the height. Two rows of chrome
+    /// above six key rows were what made the page scroll on a landscape handheld.
+    /// </summary>
+    private void ApplyShortWindow()
+    {
+        var height = XamlRoot?.Size.Height ?? double.PositiveInfinity;
+        var isShort = height < ShortWindowHeight;
+        if (shortApplied && isShort == shortWindow)
+        {
+            return;
+        }
+
+        shortApplied = true;
+        shortWindow = isShort;
+
+        // The tighter rhythm Android's PageFrame uses on a short window.
+        PageGrid.Padding = isShort ? new Thickness(32, 4, 32, 8) : new Thickness(32, 12, 32, 32);
+        PageStack.Spacing = isShort ? 8 : 12;
+
+        PageTitle.Visibility = isShort ? Visibility.Collapsed : Visibility.Visible;
+        HeaderTabsSlot.Visibility = isShort ? Visibility.Visible : Visibility.Collapsed;
+        ModeSeparator.Visibility = isShort ? Visibility.Collapsed : Visibility.Visible;
+        ModeLine.Orientation = isShort ? Orientation.Vertical : Orientation.Horizontal;
+        foreach (var line in new[] { ModeText, DevicesText })
+        {
+            line.MaxWidth = isShort ? ShortHeaderTextWidth : double.PositiveInfinity;
+        }
+
+        foreach (var box in new[] { ProfileSelector, ProfileBox, ModeBox })
+        {
+            box.Width = isShort ? ShortSelectorWidth : double.NaN;
+        }
+
+        ProfileRow.HorizontalAlignment = isShort ? HorizontalAlignment.Left : HorizontalAlignment.Right;
+        PlaceChrome();
+        RenderDisabledReason();
+        if (view is { } current)
+        {
+            BuildSliders(current, current.Availability.Enabled);
+            BuildMouseToggles(current, current.Availability.Enabled);
+        }
+    }
+
+    /// <summary>Moves the tabs and the Mapping actions to the slots this window size uses.</summary>
+    private void PlaceChrome()
+    {
+        HeaderTabsSlot.Child = null;
+        ToolbarTabsSlot.Child = null;
+        ToolbarActionsSlot.Child = null;
+        CardActionsSlot.Child = null;
+        MappingHeader.Visibility = shortWindow ? Visibility.Collapsed : Visibility.Visible;
+        if (shortWindow)
+        {
+            HeaderTabsSlot.Child = Tabs;
+            ToolbarActionsSlot.Child = selectedTab == 0 ? MappingActions : null;
+        }
+        else
+        {
+            ToolbarTabsSlot.Child = Tabs;
+            CardActionsSlot.Child = MappingActions;
+        }
+    }
+
+    /// <summary>
+    /// Why the mode cannot be changed. Under the mode line normally; on a short
+    /// window, where two header lines is all there is room for, the selector's
+    /// tooltip instead.
+    /// </summary>
+    private void RenderDisabledReason()
+    {
+        var reason = view?.Availability.DisabledReason;
+        DisabledReason.Text = reason ?? string.Empty;
+        DisabledReason.Visibility = reason is null || shortWindow ? Visibility.Collapsed : Visibility.Visible;
+        ToolTipService.SetToolTip(ModeBox, reason ?? "What the adapter does with a keyboard and mouse");
+        if (view is { } current)
+        {
+            ToolTipService.SetToolTip(ModeLine, $"{current.ModeText} · {current.DevicesText}");
+        }
+    }
+
+    /// <summary>
+    /// Scale the keyboard to the width it has, and on a short window to the
+    /// height left under the chrome too, so all six rows are on screen; never
+    /// above its drawn size and never below <see cref="MinKeyUnit"/> a key,
+    /// where the scroller takes over instead.
+    /// </summary>
+    private void FitKeyboard()
+    {
+        if (KeyboardHost.Children.Count == 0 || KeyboardScroller.Visibility != Visibility.Visible ||
+            KeyboardScroller.ActualWidth <= 0)
+        {
+            return;
+        }
+
+        KeyboardHost.Measure(new global::Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+        var natural = KeyboardHost.DesiredSize;
+        if (natural.Width <= 0 || natural.Height <= 0)
+        {
+            return;
+        }
+
+        var scale = Math.Min(1, KeyboardScroller.ActualWidth / natural.Width);
+        if (shortWindow)
+        {
+            // Under the keyboard inside the page: the card's bottom padding and
+            // border, and the page's own bottom padding.
+            var top = KeyboardScroller.TransformToVisual(PageScroller).TransformPoint(default).Y;
+            var room = PageScroller.ViewportHeight - top - 16 - 1 - PageGrid.Padding.Bottom;
+            scale = Math.Min(scale, room / natural.Height);
+        }
+
+        scale = Math.Max(scale, MinKeyUnit / KeyUnit);
+        KeyboardBox.Width = natural.Width * scale;
+        KeyboardBox.Height = natural.Height * scale;
+    }
+
+    private void LayMouse(bool stacked)
+    {
+        MouseCard.ColumnDefinitions[1].Width = stacked ? new GridLength(0) : new GridLength(2, GridUnitType.Star);
+        MouseCard.ColumnSpacing = stacked ? 0 : 12;
+        Grid.SetRow(TuningCard, stacked ? 1 : 0);
+        Grid.SetColumn(TuningCard, stacked ? 0 : 1);
+    }
+
+    /// <summary>Two slider columns when the card is wide enough; stacked, it was taller than a short window.</summary>
+    private void LayTuning(bool twoColumns)
+    {
+        TuningGrid.ColumnDefinitions[1].Width = twoColumns ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+        TuningGrid.ColumnSpacing = twoColumns ? 28 : 0;
+        Grid.SetColumn(DirectionHost, twoColumns ? 1 : 0);
+        Grid.SetRow(DirectionHost, twoColumns ? 0 : 1);
+    }
+
+    private void OnTabChanged(SelectorBar sender, SelectorBarSelectionChangedEventArgs args)
+    {
+        selectedTab = sender.Items.IndexOf(sender.SelectedItem);
+        ShowTab(view?.ShowEditor ?? false);
+    }
+
+    /// <summary>
+    /// One tab's panel at a time, and none of them outside the Ready state: the
+    /// tabs belong to the editor, which the not-ready card replaces entirely.
+    /// </summary>
+    private void ShowTab(bool ready)
+    {
+        if (Tabs.SelectedItem is null || Tabs.Items.IndexOf(Tabs.SelectedItem) != selectedTab)
+        {
+            Tabs.SelectedItem = Tabs.Items[Math.Clamp(selectedTab, 0, Tabs.Items.Count - 1)];
+        }
+
+        Tabs.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
+        MappingPanel.Visibility = ready && selectedTab == 0 ? Visibility.Visible : Visibility.Collapsed;
+        MouseCard.Visibility = ready && selectedTab == 1 ? Visibility.Visible : Visibility.Collapsed;
+        ProfilesPanel.Visibility = ready && selectedTab == 2 ? Visibility.Visible : Visibility.Collapsed;
+        PlaceChrome();
+    }
+
     private void Render()
     {
         var connected = adapters.Connection.Value.Connected;
@@ -967,8 +1219,8 @@ public sealed partial class KeyboardMousePage : Page
 
         EditorCard.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
         BankCard.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
-        MouseCard.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
         ResetCard.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
+        ShowTab(ready);
 
         BusyRing.IsActive = adapters.KeyboardMouseBusy.Value;
         ModeText.Text = ready ? view.ModeText : view.NotReadyTitle;
@@ -1011,10 +1263,7 @@ public sealed partial class KeyboardMousePage : Page
         ResetProfile.IsEnabled = interactive;
         ResetAll.IsEnabled = interactive;
 
-        DisabledReason.Text = view.Availability.DisabledReason ?? string.Empty;
-        DisabledReason.Visibility = view.Availability.DisabledReason is null
-            ? Visibility.Collapsed
-            : Visibility.Visible;
+        RenderDisabledReason();
 
         MappingSummary.Text = view.Loaded
             ? $"{view.BoundCount} of {view.MappableCount} inputs mapped"
@@ -1041,8 +1290,8 @@ public sealed partial class KeyboardMousePage : Page
         BuildSliders(view, enabled);
         BuildMouseToggles(view, enabled);
 
-        UndrawnSection.Visibility = view.Undrawn.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         UndrawnList.ItemsSource = view.Undrawn;
+        ShowMoreKeys();
     }
 
     /// <summary>
@@ -1066,6 +1315,10 @@ public sealed partial class KeyboardMousePage : Page
         {
             OtherKeysHost.Children.Add(KeyButton(cell, enabled, fixedGeometry: false));
         }
+
+        // Counted, because a binding the user cannot see is one they cannot remove.
+        var hidden = current.OtherKeys.Cells.Count(cell => cell.Bound) + current.Undrawn.Count;
+        MoreKeysToggle.Content = hidden > 0 ? $"More keys ({hidden})" : "More keys";
     }
 
     private Canvas ClusterCanvas(KeyClusterCells cluster, bool enabled)
@@ -1094,12 +1347,11 @@ public sealed partial class KeyboardMousePage : Page
 
     private void BuildMouseButtons(KeyboardMouseView current, bool enabled)
     {
-        // Hidden entirely in the keyboard-only profile: those bindings can never
-        // fire there, and five dead controls invite a binding that silently does
-        // nothing.
-        MouseButtonSection.Visibility = current.ShowMouseButtons
-            ? Visibility.Visible
-            : Visibility.Collapsed;
+        // The tiles are hidden in the keyboard-only profile: those bindings can
+        // never fire there, and five dead controls invite a binding that silently
+        // does nothing. The card says where they are mapped instead.
+        MouseButtonHost.Visibility = current.ShowMouseButtons ? Visibility.Visible : Visibility.Collapsed;
+        MouseButtonsNote.Visibility = current.ShowMouseButtons ? Visibility.Collapsed : Visibility.Visible;
 
         MouseButtonHost.Children.Clear();
         if (!current.ShowMouseButtons)
@@ -1109,8 +1361,11 @@ public sealed partial class KeyboardMousePage : Page
 
         foreach (var cell in current.MouseButtons)
         {
-            MouseButtonHost.Children.Add(KeyButton(cell, enabled, width: cell.Cap.Width,
-                                                   mouse: true, fixedGeometry: false));
+            // Tiles like the keys, as on Android: the binding is on the tile.
+            var tile = KeyButton(cell, enabled, width: cell.Cap.Width, mouse: true, fixedGeometry: false);
+            tile.Width = 104;
+            tile.Height = 48;
+            MouseButtonHost.Children.Add(tile);
         }
     }
 
@@ -1125,15 +1380,25 @@ public sealed partial class KeyboardMousePage : Page
                              bool mouse = false, bool fixedGeometry = true)
     {
         var caption = new StackPanel { Spacing = 0 };
-        caption.Children.Add(new TextBlock
+        var label = new TextBlock
         {
             Text = cell.Cap.Label,
             HorizontalAlignment = HorizontalAlignment.Center,
-            // Only the grid clips. Elsewhere the button grows instead.
-            TextTrimming = fixedGeometry
-                ? TextTrimming.CharacterEllipsis
-                : TextTrimming.None,
-        });
+        };
+        // On the grid a long name on a one-unit key ("Home", "Pause", "Down")
+        // SHRINKS to fit rather than trimming to "Ho...": an ellipsis on a key
+        // cap hides which key it is, which is the one thing the cap is for.
+        // DownOnly, so short labels keep the normal size. Elsewhere the button
+        // grows instead.
+        caption.Children.Add(fixedGeometry
+            ? new Viewbox
+            {
+                Child = label,
+                Stretch = Stretch.Uniform,
+                StretchDirection = StretchDirection.DownOnly,
+                HorizontalAlignment = HorizontalAlignment.Center,
+            }
+            : label);
 
         // The binding is shown ON the key. A keyboard where you have to hover to
         // discover the mapping is a list with extra steps.
@@ -1462,14 +1727,18 @@ public sealed partial class KeyboardMousePage : Page
     /// </remarks>
     private void BuildSliders(KeyboardMouseView current, bool enabled)
     {
-        SliderHost.Children.Clear();
+        FeelHost.Children.Clear();
+        DirectionHost.Children.Clear();
         foreach (var model in current.MouseSliders)
         {
             var panel = new StackPanel { Spacing = 4 };
 
             var heading = new Grid();
-            heading.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            // The NAME keeps its width and the value trims: in the two-column
+            // tuning card a long value used to squeeze the name.
             heading.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            heading.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            heading.ColumnSpacing = 12;
 
             var label = new TextBlock
             {
@@ -1488,8 +1757,9 @@ public sealed partial class KeyboardMousePage : Page
                 HorizontalAlignment = HorizontalAlignment.Right,
                 VerticalAlignment = VerticalAlignment.Center,
                 TextAlignment = TextAlignment.Right,
-                MinWidth = 96,
+                TextTrimming = TextTrimming.CharacterEllipsis,
             };
+            ToolTipService.SetToolTip(value, model.ValueText);
             Grid.SetColumn(value, 1);
             heading.Children.Add(value);
             panel.Children.Add(heading);
@@ -1515,6 +1785,9 @@ public sealed partial class KeyboardMousePage : Page
             slider.ValueChanged += (s, _) => ScheduleMouseCommit(field, (int)((Slider)s).Value);
             panel.Children.Add(slider);
 
+            // On a short window the description is the slider's tooltip rather
+            // than a paragraph under it: three of them were taller than the page.
+            ToolTipService.SetToolTip(slider, model.Description);
             panel.Children.Add(new TextBlock
             {
                 Text = model.Description,
@@ -1522,53 +1795,41 @@ public sealed partial class KeyboardMousePage : Page
                 Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
                 TextWrapping = TextWrapping.Wrap,
                 Margin = new Thickness(0, -4, 0, 0),
+                Visibility = shortWindow ? Visibility.Collapsed : Visibility.Visible,
             });
 
-            SliderHost.Children.Add(panel);
+            // Anti-deadzone joins the direction group, above the invert chips;
+            // the rest are the stick's feel.
+            (model.Field == KbmMouseField.AntiDeadzone ? DirectionHost : FeelHost).Children.Add(panel);
         }
     }
 
     /// <summary>
-    /// The invert switches, each with its one-line description beneath it.
+    /// The two inverts as toggle chips on one row, as on Android and Linux: each
+    /// is a word, and a row apiece with a description under it was a row of
+    /// height each on a short window. What each does is the chip's tooltip.
     /// </summary>
-    /// <remarks>
-    /// Stacked rather than side by side: two checkboxes on one row cannot carry
-    /// descriptions without the second column's text wrapping against the first
-    /// one's, and "invert vertical" is exactly the setting a user is unsure about.
-    /// </remarks>
     private void BuildMouseToggles(KeyboardMouseView current, bool enabled)
     {
-        ToggleHost.Children.Clear();
+        var chips = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         foreach (var model in current.MouseToggles)
         {
-            var panel = new StackPanel { Spacing = 0 };
-            var box = new CheckBox
+            var chip = new ToggleButton
             {
                 Content = model.Label,
                 IsChecked = model.Value,
                 IsEnabled = enabled,
-                MinWidth = 0,
             };
-            AutomationProperties.SetName(box, model.Label);
+            AutomationProperties.SetName(chip, model.Label);
+            ToolTipService.SetToolTip(chip, model.Description);
 
             var field = model.Field;
-            box.Click += async (s, _) => await SafeAsync(() => adapters.SetMouseAsync(
-                field, ((CheckBox)s).IsChecked == true ? 1 : 0));
-
-            panel.Children.Add(box);
-            panel.Children.Add(new TextBlock
-            {
-                Text = model.Description,
-                Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
-                Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
-                TextWrapping = TextWrapping.Wrap,
-                // Line the description up under the checkbox's label, not under
-                // its box.
-                Margin = new Thickness(30, 0, 0, 0),
-            });
-
-            ToggleHost.Children.Add(panel);
+            chip.Click += async (s, _) => await SafeAsync(() => adapters.SetMouseAsync(
+                field, ((ToggleButton)s).IsChecked == true ? 1 : 0));
+            chips.Children.Add(chip);
         }
+
+        DirectionHost.Children.Add(chips);
     }
 
     /// <summary>

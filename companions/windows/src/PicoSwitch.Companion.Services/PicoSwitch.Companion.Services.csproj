@@ -5,21 +5,32 @@
     the registry and the coordinators, Controller Link and Touch Gamepad services,
     the Amiibo library, and DiagnosticLog.
 
-    Windows-targeted because it composes the platform layer, but it must contain
-    no XAML and no WinUI type: presentation lives above it.
+    Portable (`net9.0`) since 2026-11-06: it composes the platform layer through
+    the contracts in PicoSwitch.Companion.Platform (ICompanionPlatform), so the
+    Windows and Linux shells share it unchanged. A WinRT reference here is now a
+    compile error. It must contain no XAML and no UI-toolkit type: presentation
+    lives above it, and Presentation/ holds toolkit-neutral view models only.
   -->
   <PropertyGroup>
-    <TargetFramework>$(PicoSwitchWindowsTargetFramework)</TargetFramework>
-    <SupportedOSPlatformVersion>$(PicoSwitchSupportedOSPlatformVersion)</SupportedOSPlatformVersion>
+    <TargetFramework>$(PicoSwitchPortableTargetFramework)</TargetFramework>
     <RootNamespace>PicoSwitch.Companion.Services</RootNamespace>
     <AssemblyName>PicoSwitch.Companion.Services</AssemblyName>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
+    <!--
+      Opus decode for the companion audio downlink (EXPERIMENTAL). Concentus is
+      a pure managed port of libopus (BSD-3-Clause): no native DLL to ship, and
+      portable, so the Linux shell can reuse the same decoder.
+    -->
+    <PackageReference Include="Concentus" Version="2.2.2" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../PicoSwitch.Bridge.Core/PicoSwitch.Bridge.Core.csproj" />
     <ProjectReference Include="../PicoSwitch.Management.Core/PicoSwitch.Management.Core.csproj" />
-    <ProjectReference Include="../PicoSwitch.Companion.Windows/PicoSwitch.Companion.Windows.csproj" />
+    <ProjectReference Include="../PicoSwitch.Companion.Platform/PicoSwitch.Companion.Platform.csproj" />
   </ItemGroup>
 
 </Project>

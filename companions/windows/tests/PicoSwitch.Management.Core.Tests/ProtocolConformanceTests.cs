@@ -50,6 +50,12 @@ public sealed class ProtocolConformanceTests
             BleManagementContract.ControllerLinkOutUuid,
             ble.GetProperty("controllerLinkOutUuid").GetString());
         Assert.Equal(
+            BleManagementContract.CompanionAudioDownUuid,
+            ble.GetProperty("companionAudioDownUuid").GetString());
+        Assert.Equal(
+            BleManagementContract.CompanionMicUpUuid,
+            ble.GetProperty("companionMicUpUuid").GetString());
+        Assert.Equal(
             BleManagementContract.AttPayloadWithDefaultMtu,
             ble.GetProperty("minimumMtuPayloadBytes").GetInt32());
     }
@@ -206,6 +212,20 @@ public sealed class ProtocolConformanceTests
         Assert.Equal(7, state.ActiveId);
         Assert.True(state.Explicit);
         Assert.Equal(2, Assert.Single(state.Sources).Connection);
+    }
+
+    [Fact]
+    public void TheConsoleViewRidesOnTheInputSourcesReply()
+    {
+        var vector = Vector("inputSources");
+        var state = ManagementProtocol.InputSources(vector.Command, vector.Reply);
+        Assert.Equal(new ConsoleView(Player: 2, AmiiboWanted: true), state.Console);
+
+        // Older firmware omits it; an out-of-range player is "none", not an error.
+        const string bare = """{"active":0,"pending":0,"explicit":false,"fresh":false,"transitions":0,"sources":[],"more":false}""";
+        Assert.Equal(new ConsoleView(), ManagementProtocol.InputSources("input sources", bare).Console);
+        var odd = bare.Replace("\"more\":false", "\"more\":false,\"console\":{\"player\":9,\"amiibo_wanted\":false}");
+        Assert.Equal(new ConsoleView(), ManagementProtocol.InputSources("input sources", odd).Console);
     }
 
     [Fact]

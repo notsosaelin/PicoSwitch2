@@ -31,6 +31,10 @@ void ns2_task(void);
 uint32_t ns2_pro2_report_count(void);
 uint32_t ns2_pro2_last_report_age_ms(void);
 
+// True between the console's NFC scan start and stop: a game is waiting for
+// an amiibo right now. Surfaced to the companion as amiibo status "reading".
+bool ns2_pro2_nfc_scan_active(void);
+
 // Config-mode-only lifecycle: ns2_task() (and therefore the report-0x09 motion tracker inside
 // ns2_build_report()) never runs while the dongle is in config mode, so this runs an equivalent,
 // rate-limited tick directly off the live cross-core motion state — otherwise the config-mode

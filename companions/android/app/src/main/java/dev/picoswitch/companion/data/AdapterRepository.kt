@@ -8,6 +8,11 @@ import dev.picoswitch.management.KbmProfiles
 import dev.picoswitch.management.ManagementClient
 import dev.picoswitch.management.ManagementProtocolException
 import dev.picoswitch.management.WakeStatus
+import dev.picoswitch.management.audio.CompanionAudioControl
+import dev.picoswitch.management.audio.CompanionAudioDownlink
+import dev.picoswitch.companion.audio.TransportCompanionAudioDownlink
+import dev.picoswitch.companion.audio.TransportCompanionMicUplink
+import dev.picoswitch.management.audio.CompanionMicUplink
 import dev.picoswitch.management.isUnsupported
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -28,6 +33,19 @@ class AdapterRepository(private val transport: ManagementTransport) {
     private val _kbm = MutableStateFlow(KbmState())
 
     fun close() = transport.close()
+
+    /** Companion audio's management commands (EXPERIMENTAL). */
+    val companionAudioControl: CompanionAudioControl = object : CompanionAudioControl {
+        override suspend fun start(microphone: Boolean) = client.companionAudioStart(microphone)
+        override suspend fun stop() = client.companionAudioStop()
+        override suspend fun status() = client.companionAudioStatus()
+    }
+
+    /** Companion audio's notification plane on this management link. */
+    fun companionAudioDownlink(): CompanionAudioDownlink = TransportCompanionAudioDownlink(transport)
+
+    /** Companion microphone uplink on this management link. */
+    fun companionMicUplink(): CompanionMicUplink = TransportCompanionMicUplink(transport)
 
     suspend fun connect() {
         transport.scanAndConnect()

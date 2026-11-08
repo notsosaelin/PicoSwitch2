@@ -1,5 +1,5 @@
 using PicoSwitch.Companion.Services.Diagnostics;
-using PicoSwitch.Companion.Windows.Bluetooth;
+using PicoSwitch.Companion.Platform.Bluetooth;
 using PicoSwitch.Management;
 using Xunit;
 

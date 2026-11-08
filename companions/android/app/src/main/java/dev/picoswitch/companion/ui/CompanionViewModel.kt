@@ -1,6 +1,10 @@
 package dev.picoswitch.companion.ui
 
 import android.Manifest
+import dev.picoswitch.companion.audio.AudioTrackCompanionAudioSink
+import dev.picoswitch.companion.audio.ConcentusCompanionAudioDecoder
+import dev.picoswitch.management.audio.CompanionAudioSession
+import dev.picoswitch.management.audio.CompanionAudioView
 import android.annotation.SuppressLint
 import android.app.Application
 import android.bluetooth.BluetoothDevice
@@ -59,6 +63,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -83,12 +88,18 @@ import java.security.MessageDigest
  * destination name is a navigation the user has to guess at. Every label is
  * therefore kept short enough to survive that, plus a raised font scale.
  */
-enum class AppSection(val label: String, val title: String, val subtitle: String = "") {
-    Adapter("Adapter", "Adapter", "Status, mode, and appearance"),
-    Keyboard("Keyboard", "Keyboard & Mouse", "Devices, mapping, and mouse feel"),
-    Amiibo("Amiibo", "Amiibo", "Your private figure library"),
-    Controller("Gamepad", "Gamepad", "Choose what drives the console"),
-    Settings("Settings", "Settings", ""),
+/**
+ * The shell's destinations (docs/architecture/companion-shell-layout.md). The
+ * first five are the dock, in its order; Settings opens from the top bar's gear
+ * and selects no dock item.
+ */
+enum class AppSection(val label: String, val title: String, val inDock: Boolean = true) {
+    Play("Play", "Play"),
+    Keyboard("Keyboard & Mouse", "Keyboard & Mouse"),
+    Amiibo("Amiibo", "Amiibo"),
+    Customization("Customization", "Customization"),
+    Adapter("Adapter", "Adapter"),
+    Settings("Settings", "Settings", inDock = false),
 }
 
 /**
@@ -109,7 +120,7 @@ data class PlatformDiagnostics(
 )
 
 data class CompanionUiState(
-    val section: AppSection = AppSection.Adapter,
+    val section: AppSection = AppSection.Play,
     val overlay: AppOverlay = AppOverlay.None,
     val kbm: KbmState = KbmState(),
     /**
@@ -414,6 +425,10 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private val activeIdentityPolicy = ActiveControllerIdentityPolicy()
     private var autoReconnectAttempted = false
     private var automaticControllerResumeJob: Job? = null
+    // True between MainActivity.onStart and onStop. Recovery after a link loss
+    // is a foreground behaviour, like the rest of the reconnect policy.
+    @Volatile private var foregroundSession = false
+    private var linkLossRecoveryJob: Job? = null
     private var bridgeSourceReconciliationJob: Job? = null
     @Volatile private var personalityTransitionActive = false
     private val _theme = MutableStateFlow(themeStore.load())
@@ -426,7 +441,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private var adapterCatalogFigureId: String? = null
     private var kbmMouseJob: Job? = null
     private var kbmMappingsLoaded = false
-    private val initialSection = savedState.get<String>(KEY_SECTION)?.let { runCatching { AppSection.valueOf(it) }.getOrNull() } ?: AppSection.Adapter
+    private val initialSection = savedState.get<String>(KEY_SECTION)?.let { runCatching { AppSection.valueOf(it) }.getOrNull() } ?: AppSection.Play
     private val _ui = MutableStateFlow(
         CompanionUiState(
             section = initialSection,
@@ -450,8 +465,35 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     )
     val ui: StateFlow<CompanionUiState> = _ui.asStateFlow()
 
+    // Reported by NavShell, which owns the slide-out; read by MainActivity to
+    // route the handheld's controller (GamepadNavigation.consoleOwnsPad).
+    private val navigationShown = MutableStateFlow(false)
+    fun setNavigationShown(shown: Boolean) { navigationShown.value = shown }
+
+    /** True when the handheld's controller goes to the console rather than this app. */
+    fun consoleOwnsPad(): Boolean = _ui.value.let {
+        GamepadNavigation.consoleOwnsPad(it.bridge.phase == BridgeLinkPhase.Playing, it.section, it.overlay, navigationShown.value)
+    }
+
     init {
         diagnostics.event("app", "created", "version ${BuildConfig.VERSION_NAME}")
+        // The moment the app takes the pad from the console, the console gets a
+        // neutral report: whatever was held when the navigation or a page came
+        // up (a stick leaning, the D-pad that was walking) must not stay held in
+        // the game while the controller drives menus.
+        viewModelScope.launch {
+            combine(_ui, navigationShown) { _, _ -> consoleOwnsPad() }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { console ->
+                    if (!console && _ui.value.bridge.phase == BridgeLinkPhase.Playing) {
+                        diagnostics.event("controller", "pad.owner", "app (console neutralized)")
+                        neutralizeController()
+                    } else if (console) {
+                        diagnostics.event("controller", "pad.owner", "console")
+                    }
+                }
+        }
         viewModelScope.launch {
             adapter.connection.collect { value ->
                 // One authority decides whether this event may speak for the
@@ -481,6 +523,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                         value.phase == ConnectionPhase.Failed
                     ) {
                         relationshipCoordinator.connectionEnded(value.message)
+                        if (value.phase == ConnectionPhase.Reconnecting) scheduleLinkLossRecovery()
                         adapter.clearDisconnectedSnapshot()
                         // Bindings belong to the adapter that was connected.
                         // Keeping them across a disconnect would let the next
@@ -661,6 +704,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     }
     fun setThemeMode(mode: ThemeMode) = updateTheme { it.copy(mode = mode) }
     fun setAccentPalette(palette: AccentPalette) = updateTheme { it.copy(palette = palette) }
+    fun setNavPlacement(placement: NavPlacement) = updateTheme { it.copy(navigation = placement) }
     fun consumeMessage() { _ui.update { it.copy(message = null) } }
     /**
      * Select an Amiibo, or clear the selection with null.
@@ -685,8 +729,42 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     /** A single tap: browse in normal mode, toggle while selecting. */
     fun activateAmiibo(id: String) = interact { AmiiboInteraction.activate(it, id) }
 
-    /** A double tap, or the "Open details" accessibility action. */
-    fun openAmiiboDetails(id: String) = interact { AmiiboInteraction.openInspector(it, id) }
+    /** Highlight a figure now (Play's Amiibo card opening the library on it). */
+    fun focusAmiibo(id: String) {
+        amiiboFocusJob?.cancel()
+        if (_ui.value.amiiboInteraction.focusedId == id) return
+        interact { AmiiboInteraction.focus(it, id) }
+    }
+
+    private var amiiboFocusJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * A controller moved focus onto a card. The highlight is app state that
+     * re-reads the figure's details (a tag decode) and is saved for process
+     * death, so committing it on every D-pad step made holding left / right
+     * crawl. The card draws its own focus at once; this commits only once
+     * focus has rested on it.
+     */
+    fun focusAmiiboSettled(id: String) {
+        amiiboFocusJob?.cancel()
+        amiiboFocusJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(AMIIBO_FOCUS_SETTLE_MS)
+            focusAmiibo(id)
+        }
+    }
+
+    /** Play's Amiibo card: the library, opened on the figure the adapter holds. */
+    fun openAmiiboLibrary(residentId: String?) {
+        diagnostics.event("amiibo", "library.open", "target=${residentId ?: "none"}")
+        residentId?.let(::focusAmiibo)
+        navigate(AppSection.Amiibo)
+    }
+
+    /** A double tap, A under a controller, or the "Open details" accessibility action. */
+    fun openAmiiboDetails(id: String) {
+        amiiboFocusJob?.cancel()
+        interact { AmiiboInteraction.openInspector(it, id) }
+    }
 
     fun closeAmiiboDetails() = interact(AmiiboInteraction::closeInspector)
 
@@ -1039,8 +1117,57 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     }
 
     fun beginForegroundSession() {
+        foregroundSession = true
         autoReconnectAttempted = false
         tryAutoReconnect()
+    }
+
+    fun endForegroundSession() {
+        foregroundSession = false
+        linkLossRecoveryJob?.cancel()
+        linkLossRecoveryJob = null
+    }
+
+    /**
+     * The phone's Bluetooth came back on (measured 2026-11-07: an Odin 2 Mini
+     * Bluetooth off/on left management in Reconnecting and Controller Link Idle
+     * indefinitely, because the one foreground reconnect had already been spent
+     * while the radio was off). Turning the radio on is an explicit system event,
+     * so it re-arms the same foreground reconnect. A verified management session
+     * then runs requestAutomaticControllerResume(), whose ownership read is what
+     * restores Controller Link without stealing a physical controller's slot.
+     */
+    fun bluetoothRadioChanged(on: Boolean) {
+        diagnostics.event("relationship", "bluetooth.radio", if (on) "on" else "off")
+        if (!on) {
+            linkLossRecoveryJob?.cancel()
+            linkLossRecoveryJob = null
+            return
+        }
+        if (foregroundSession) beginForegroundSession()
+    }
+
+    /**
+     * Bounded retries after the adapter dropped the management link on its own
+     * (adapter reset, range). Each try goes through requestReconnect(), which
+     * ignores a request while another attempt is active, so this cannot open a
+     * second generation beside a personality switch or a user reconnect.
+     */
+    private fun scheduleLinkLossRecovery() {
+        if (!foregroundSession || linkLossRecoveryJob?.isActive == true) return
+        linkLossRecoveryJob = viewModelScope.launch {
+            for (waitMs in LINK_LOSS_RETRY_DELAYS_MS) {
+                delay(waitMs)
+                val state = _ui.value
+                if (!foregroundSession || state.connection.connected) break
+                if (state.busy || activeAdapter.state.transitioning || personalityTransitionActive) continue
+                if (registry.active == null) break
+                diagnostics.event("relationship", "link-loss.retry", "afterMs=$waitMs")
+                autoReconnectAttempted = false
+                tryAutoReconnect()
+            }
+            linkLossRecoveryJob = null
+        }
     }
 
     /** Discover one advertised management endpoint and feed its exact BLE device into the existing
@@ -2918,6 +3045,14 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         session.stop()
     }
 
+    /** Back held while streaming (MainActivity): the same Stop as Play's, said out loud. */
+    fun releaseControllerLinkByHold() {
+        if (_ui.value.bridge.phase != BridgeLinkPhase.Playing) return
+        diagnostics.event("controller", "link.release_hold", "Back held")
+        stopControllerBridge()
+        notice("Controller Link released")
+    }
+
     /**
      * Clear held input and push a neutral report.
      *
@@ -3591,12 +3726,24 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                     // torn down because an optional read did not answer.
                     diagnostics.error("peers", "refresh.session", error)
                 }
+                // The figure the adapter holds, so Play shows it on connect. Only
+                // the Amiibo page and a manual refresh read it before, which went
+                // unnoticed while every firmware flash also emptied the slot
+                // (2026-11-08: an update UF2 kept the figure, Play said "No Amiibo").
+                try {
+                    adapter.refreshAmiibo()
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    // Optional, like the inventory: older or Amiibo-less firmware.
+                    diagnostics.error("amiibo", "refresh.session", error)
+                }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 diagnostics.event("relationship", "connect.cancelled", "attempt=${attempt.generation}")
                 throw cancelled
             } catch (error: Throwable) {
-                // The adapter erases its bonds on every firmware install, by
-                // design. From here that appears as a connect-stage key failure
+                // The adapter erased its bonds: a clean-install (-wipe) UF2 or
+                // the BOOTSEL triple-tap. From here that appears as a connect-stage key failure
                 // against a device Android still considers bonded, and no number
                 // of retries can fix it -- the adapter has no key to
                 // authenticate with. Name it and go straight to repair.
@@ -3804,7 +3951,72 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         diagnostics.event("app", "appearance changed", "${next.mode.key}/${next.palette.key}")
     }
 
+    /**
+     * Companion audio (EXPERIMENTAL): this device as the controller's headset.
+     * Its own scope, not viewModelScope, so leaving the screen can still tell
+     * the adapter to withdraw the headset jack before the scope ends -- an
+     * adapter left advertising a jack would keep the console's audio off the TV.
+     */
+    private val audioScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default,
+    )
+
+    private val companionAudio = CompanionAudioSession(
+        scope = audioScope,
+        control = adapter.companionAudioControl,
+        downlinks = { adapter.companionAudioDownlink() },
+        sinks = { AudioTrackCompanionAudioSink(log = { diagnostics.event("companion-audio", "sink", it) }) },
+        decoders = { ConcentusCompanionAudioDecoder() },
+        managementReady = adapter.connection.map { it.connected }
+            .stateIn(audioScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, adapter.connection.value.connected),
+        // The headset belongs to the controller this device IS: Controller Link
+        // streaming (ns2_companion_audio.h, SCOPE).
+        controllerLink = session.state.map { it.phase == BridgeLinkPhase.Playing }
+            .stateIn(
+                audioScope, kotlinx.coroutines.flow.SharingStarted.Eagerly,
+                session.state.value.phase == BridgeLinkPhase.Playing,
+            ),
+        log = { diagnostics.event("companion-audio", "session", it) },
+        micUplinks = { adapter.companionMicUplink() },
+        micCaptures = { dev.picoswitch.companion.audio.AudioRecordCompanionMicCapture(application) },
+        micEncoders = { dev.picoswitch.companion.audio.ConcentusCompanionMicEncoder() },
+    )
+
+    val headset: kotlinx.coroutines.flow.StateFlow<CompanionAudioView> get() = companionAudio.view
+
+    /**
+     * Plug the headset in or pull it out. ONE accessory, chosen at plug time:
+     * with RECORD_AUDIO this device is a headset (speaker + microphone), without
+     * it headphones. The microphone is never switched on a playing session,
+     * because changing the accessory is a re-plug on the adapter (the jack is
+     * withdrawn for NS2_CAUDIO_REPLUG_MS) and the console reroutes its speaker
+     * away and back -- the stutter players heard when the mic was a separate
+     * switch. Mute ([setHeadsetMuted]) is the live control instead.
+     */
+    fun setHeadset(on: Boolean, microphonePermitted: Boolean) {
+        audioScope.launch {
+            if (!on) {
+                companionAudio.stop()
+                return@launch
+            }
+            companionAudio.setMicrophone(microphonePermitted)
+            companionAudio.start()
+            // Re-enter the foreground service with the microphone type now that
+            // capture is live, so it continues while the player looks at the
+            // TV. Only while the bridge runs: the bridge owns the service.
+            if (companionAudio.view.value.microphone &&
+                session.state.value.phase == BridgeLinkPhase.Playing
+            ) {
+                dev.picoswitch.companion.bridge.BridgeForegroundService.start(getApplication())
+            }
+        }
+    }
+
+    /** A headset's mute: silence on the same uplink, no re-plug, no speaker gap. */
+    fun setHeadsetMuted(muted: Boolean) = companionAudio.setMuted(muted)
+
     override fun onCleared() {
+        audioScope.launch { companionAudio.stop() }.invokeOnCompletion { audioScope.cancel() }
         bridge.close()
         // Retire the session, do not close the transport: it is process-scoped
         // now, and close() cancels its lifecycle scope permanently. See
@@ -3837,6 +4049,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         // than hundreds, short enough that the change still reads as live while
         // the finger is down.
         private const val MOUSE_APPLY_DEBOUNCE_MS = 140L
+        private val LINK_LOSS_RETRY_DELAYS_MS = longArrayOf(1_500L, 4_000L, 10_000L, 20_000L)
         private const val AUTOMATIC_CONTROLLER_RESUME_TIMEOUT_MS = 20_000L
         private const val AUTOMATIC_CONTROLLER_RESUME_RETRY_MS = 250L
         private const val CONTROLLER_SOURCE_RECONCILE_TIMEOUT_MS = 8_000L
@@ -3854,3 +4067,6 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         private val FIGURE_ID = Regex("[0-9A-F]{16}")
     }
 }
+
+/** How long D-pad focus rests on a figure before it becomes the highlight. */
+private const val AMIIBO_FOCUS_SETTLE_MS = 150L

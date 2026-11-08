@@ -2,6 +2,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.Windows.AppLifecycle;
 using PicoSwitch.Companion.Windows.ControllerLink;
+using PicoSwitch.Companion.Platform.ControllerLink;
 
 namespace PicoSwitch.Companion.App;
 

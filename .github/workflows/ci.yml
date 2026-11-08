@@ -63,7 +63,7 @@ jobs:
             -DPICO_TOOLCHAIN_PATH="$HOME/arm-toolchain" \
             -DPICO_BOARD=${{ matrix.board }} \
             -DNS2_PRO_FIRMWARE_VERSION=2.1.4 -DNS2_PRO_BLUETOOTH_VERSION=12.0.0 -DNS2_PRO_DSP_VERSION=0.2.3 \
-            -DNS2_UART_DIAG=ON -DNS2_MGMT_DEFAULT_ON=ON \
+            -DNS2_UART_DIAG=ON -DNS2_MGMT_DEFAULT_ON=ON -DNS2_INSTALL_RESET=OFF \
             ${{ matrix.flags }}
 
       - name: Build
@@ -79,6 +79,27 @@ jobs:
         with:
           name: PicoSwitchWGA-${{ matrix.board }}
           path: firmware/build/${{ matrix.board }}/PicoSwitchWGA-${{ matrix.board }}.uf2
+          if-no-files-found: error
+
+      # The clean-install image: identical except that its first boot erases
+      # settings, amiibo and pairings (firmware/build.ps1 -Wipe).
+      - name: Build clean-install variant
+        run: |
+          cmake -S firmware -B firmware/build/${{ matrix.board }}_wipe -G Ninja \
+            -DPICO_SDK_PATH="$HOME/pico-sdk" \
+            -DPICO_TOOLCHAIN_PATH="$HOME/arm-toolchain" \
+            -DPICO_BOARD=${{ matrix.board }} \
+            -DNS2_PRO_FIRMWARE_VERSION=2.1.4 -DNS2_PRO_BLUETOOTH_VERSION=12.0.0 -DNS2_PRO_DSP_VERSION=0.2.3 \
+            -DNS2_UART_DIAG=ON -DNS2_MGMT_DEFAULT_ON=ON -DNS2_INSTALL_RESET=ON \
+            ${{ matrix.flags }}
+          cmake --build firmware/build/${{ matrix.board }}_wipe
+          cp firmware/build/${{ matrix.board }}_wipe/PicoSwitchWGA-${{ matrix.board }}.uf2 \
+            firmware/build/${{ matrix.board }}_wipe/PicoSwitchWGA-${{ matrix.board }}-wipe.uf2
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PicoSwitchWGA-${{ matrix.board }}-wipe
+          path: firmware/build/${{ matrix.board }}_wipe/PicoSwitchWGA-${{ matrix.board }}-wipe.uf2
           if-no-files-found: error
 
   host-tests:
@@ -113,6 +134,16 @@ jobs:
       - name: Unit tests
         working-directory: companions/android
         run: ./gradlew --console=plain :bridge-core:test :management-core:test :app:testDebugUnitTest
+      # Debug-signed so it installs as-is. A release APK is signed only where
+      # the keystore resolves, which is never in this repository or in CI.
+      - name: Build APK
+        working-directory: companions/android
+        run: ./gradlew --console=plain :app:assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PicoSwitch2-Companion-android
+          path: companions/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
 
   windows:
     name: Windows companion
@@ -129,6 +160,48 @@ jobs:
         shell: pwsh
         working-directory: companions/windows
         run: ./build.ps1
+      # The portable release artifact for both Windows architectures.
+      - name: Portable builds (x64, arm64)
+        shell: pwsh
+        working-directory: companions/windows
+        run: |
+          ./build.ps1 -Zip -Configuration Release -Platform x64
+          ./build.ps1 -Zip -Configuration Release -Platform arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PicoSwitch2-Companion-windows
+          path: companions/windows/artifacts/*-portable.zip
+          if-no-files-found: error
+
+  linux:
+    name: Linux companion
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Tags, so build-linux.sh's `git describe` names a real version.
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+      # The portable shared layers run on Linux here and on Windows in the job
+      # above; both must stay green, since both companions compose them.
+      - name: Linux backend tests
+        run: dotnet test companions/linux/tests/PicoSwitch.Companion.Linux.Tests -c Release --nologo
+      - name: Shared portable tests on Linux
+        run: |
+          for suite in Bridge.Core Management.Core Companion.Services; do
+            dotnet test "companions/windows/tests/PicoSwitch.$suite.Tests" -c Release --nologo
+          done
+      # One self-contained executable per architecture; see build-linux.sh for
+      # why it is not an AppImage (Steam Game Mode cannot mount one).
+      - name: Build executables (x64, arm64)
+        run: bash companions/linux/packaging/build-linux.sh --arch all --skip-tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PicoSwitch2-Companion-linux
+          path: companions/linux/artifacts/PicoSwitch2Companion-*
+          if-no-files-found: error
 
   docs:
     name: Documentation links

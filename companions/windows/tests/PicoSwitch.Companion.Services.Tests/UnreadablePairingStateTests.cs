@@ -1,4 +1,4 @@
-using PicoSwitch.Companion.Windows.Bluetooth;
+using PicoSwitch.Companion.Platform.Bluetooth;
 using Xunit;
 
 namespace PicoSwitch.Companion.Services.Tests;

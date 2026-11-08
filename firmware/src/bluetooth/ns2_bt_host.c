@@ -7,6 +7,7 @@
 // the behavior of pico_switch_platform.c's control_timer_handler, but on the
 // bt_* transport API instead of bluepad32. Only compiled under -DBT_STACK_JOYPAD.
 
+#include "ns2_core_fault.h"
 #include <string.h>
 
 #include <btstack_run_loop.h>
@@ -257,6 +258,8 @@ static void audio_timer_handler(btstack_timer_source_t *ts) {
     // this existing fast timer; btstack_host_process() runs only every 30 ms.
     btstack_host_service_switch2_pro2_audio_replay();
     btstack_host_service_switch2_pro2_audio_live();
+    // Companion audio downlink: one notification per ready 20 ms Opus packet.
+    btstack_host_service_companion_audio();
     btstack_run_loop_set_timer(ts, AUDIO_TICK_MS);
     btstack_run_loop_add_timer(ts);
 }
@@ -518,6 +521,9 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
 void ns2_bt_core_task(void) {
     // Arm the cooperative core1 SRAM park used by core0's BOOTSEL sampler.
     bootsel_core1_lockout_init();
+    // Where core 1 is, sampled from a top-priority interrupt, so a core 1 that
+    // stops answering still says where it stopped (UART `fault`).
+    ns2_core1_sampler_start();
 
     // Register the HID drivers first, then bring up BTstack + the HID host. The
     // CYW43 transport's init() performs cyw43_arch_init + btstack_cyw43_init and

@@ -1,5 +1,5 @@
 using PicoSwitch.Companion.Services;
-using PicoSwitch.Companion.Windows.Storage;
+using PicoSwitch.Companion.Platform.Storage;
 using PicoSwitch.Management;
 using Xunit;
 
@@ -18,9 +18,9 @@ public sealed class AdapterRegistryStoreTests : IDisposable
         Path.GetTempPath(),
         "picoswitch-tests-" + Guid.NewGuid().ToString("N"));
 
-    private readonly WindowsDocumentStore documents;
+    private readonly DocumentStore documents;
 
-    public AdapterRegistryStoreTests() => documents = new WindowsDocumentStore(root);
+    public AdapterRegistryStoreTests() => documents = new DocumentStore(root);
 
     public void Dispose()
     {
@@ -56,7 +56,7 @@ public sealed class AdapterRegistryStoreTests : IDisposable
         Assert.True(store.Save(registry));
 
         // A different store instance, as a relaunch would build.
-        var reloaded = new AdapterRegistryStore(new WindowsDocumentStore(root)).Load();
+        var reloaded = new AdapterRegistryStore(new DocumentStore(root)).Load();
         Assert.Equal(id, reloaded.ActiveId);
         Assert.Equal("Living room", Assert.Single(reloaded.Records).UserAlias);
     }
@@ -80,7 +80,7 @@ public sealed class AdapterRegistryStoreTests : IDisposable
         Assert.True(store.Save(new PeerHistoryBook()
             .With(id, new AdapterPeerHistory().Observing(inventory, 1_000))));
 
-        var reloaded = new PeerHistoryStore(new WindowsDocumentStore(root)).Load();
+        var reloaded = new PeerHistoryStore(new DocumentStore(root)).Load();
         Assert.Equal("DualSense", Assert.Single(reloaded.ForAdapter(id).Records).LastKnownName);
     }
 
@@ -99,13 +99,14 @@ public sealed class AdapterRegistryStoreTests : IDisposable
         var good = new AdapterRegistry().With(AdapterRecord.Of("AA:BB:CC:DD:EE:01")!);
         Assert.True(store.Save(good));
 
-        // Hold the destination open exclusively, which is what an interrupted or
-        // contended write looks like from here.
+        // Make the write fail part-way. A directory squatting on the temporary
+        // path fails the same way on every platform; holding the destination
+        // open with FileShare.None does NOT — on Linux that lock is advisory and
+        // rename(2) replaces the file regardless, so the save would succeed.
         var path = documents.PathFor(AdapterRegistryStore.DocumentName);
-        using (var _ = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
-        {
-            Assert.False(store.Save(new AdapterRegistry()));
-        }
+        Directory.CreateDirectory(path + ".tmp");
+        Assert.False(store.Save(new AdapterRegistry()));
+        Directory.Delete(path + ".tmp");
 
         // The registry is read before anything else can be shown; a half-written
         // document would be an empty adapter list on next launch.
@@ -140,11 +141,11 @@ public sealed class AdapterRegistryStoreTests : IDisposable
         // %LOCALAPPDATA% is redirected into the package's own folder — so this one
         // path resolves correctly in both flavours without the app knowing which it
         // is.
-        var store = new WindowsDocumentStore();
+        var store = new DocumentStore();
         Assert.StartsWith(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             store.Directory,
             StringComparison.OrdinalIgnoreCase);
-        Assert.EndsWith(WindowsDocumentStore.DefaultFolderName, store.Directory);
+        Assert.EndsWith(DocumentStore.DefaultFolderName, store.Directory);
     }
 }

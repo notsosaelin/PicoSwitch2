@@ -25,6 +25,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PicoSwitch.Companion.Window
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PicoSwitch.Companion.Services.Tests", "tests\PicoSwitch.Companion.Services.Tests\PicoSwitch.Companion.Services.Tests.csproj", "{28621C56-94F7-41AC-B0DD-F91539972200}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PicoSwitch.Companion.Platform", "src\PicoSwitch.Companion.Platform\PicoSwitch.Companion.Platform.csproj", "{DD09178B-8BF4-4CCB-86F9-757444BBF074}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -143,6 +145,18 @@ Global
 		{28621C56-94F7-41AC-B0DD-F91539972200}.Release|x64.Build.0 = Release|x64
 		{28621C56-94F7-41AC-B0DD-F91539972200}.Release|x86.ActiveCfg = Release|Any CPU
 		{28621C56-94F7-41AC-B0DD-F91539972200}.Release|x86.Build.0 = Release|Any CPU
+		{DD09178B-8BF4-4CCB-86F9-757444BBF074}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DD09178B-8BF4-4CCB-86F9-757444BBF074}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DD09178B-8BF4-4CCB-86F9-757444BBF074}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{DD09178B-8BF4-4CCB-86F9-757444BBF074}.Debug|x64.Build.0 = Debug|Any CPU
+		{DD09178B-8BF4-4CCB-86F9-757444BBF074}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{DD09178B-8BF4-4CCB-86F9-757444BBF074}.Debug|x86.Build.0 = Debug|Any CPU
+		{DD09178B-8BF4-4CCB-86F9-757444BBF074}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DD09178B-8BF4-4CCB-86F9-757444BBF074}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DD09178B-8BF4-4CCB-86F9-757444BBF074}.Release|x64.ActiveCfg = Release|Any CPU
+		{DD09178B-8BF4-4CCB-86F9-757444BBF074}.Release|x64.Build.0 = Release|Any CPU
+		{DD09178B-8BF4-4CCB-86F9-757444BBF074}.Release|x86.ActiveCfg = Release|Any CPU
+		{DD09178B-8BF4-4CCB-86F9-757444BBF074}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -157,5 +171,6 @@ Global
 		{A17F3ECE-EA2F-4E34-A6A2-C5BC59A84CAD} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{1603AFAB-DBF2-4B48-B509-75F5961AF86E} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{28621C56-94F7-41AC-B0DD-F91539972200} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{DD09178B-8BF4-4CCB-86F9-757444BBF074} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal

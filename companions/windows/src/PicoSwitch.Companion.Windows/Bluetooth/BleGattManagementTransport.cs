@@ -1,6 +1,9 @@
+using PicoSwitch.Companion.Platform.CompanionAudio;
+using PicoSwitch.Companion.Windows.CompanionAudio;
 using System.Text;
 using PicoSwitch.Bridge.Core;
 using PicoSwitch.Companion.Windows.ControllerLink;
+using PicoSwitch.Companion.Platform.ControllerLink;
 using PicoSwitch.Management;
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.Advertisement;
@@ -43,7 +46,9 @@ namespace PicoSwitch.Companion.Windows.Bluetooth;
 /// §31 Phase 2: that a reflashed adapter reaches `RepairRequired` on the FIRST
 /// attempt, and that `mgmt_watch.ps1` shows one client with no churn.
 /// </summary>
-public sealed class BleGattManagementTransport : IManagementTransport, IControllerLinkDataPlaneProvider
+public sealed class BleGattManagementTransport
+    : IManagementTransport, IControllerLinkDataPlaneProvider, ICompanionAudioDownlinkProvider,
+      ICompanionMicUplinkProvider
 {
     private const int ConnectTimeoutMillis = 15_000;
     private const int PairingConnectTimeoutMillis = 60_000;
@@ -88,6 +93,44 @@ public sealed class BleGattManagementTransport : IManagementTransport, IControll
         }
 
         return new GattControllerLinkDataPlane(current.Service, () => current.MaxPduSize);
+    }
+
+    /// <summary>
+    /// Hand companion audio (EXPERIMENTAL) one more characteristic on the
+    /// session this class already owns -- the same rule as the Controller Link
+    /// data plane: no second connection, ever.
+    /// </summary>
+    public ICompanionAudioDownlink? TryCreateAudioDownlink()
+    {
+        OwnedGatt? current;
+        lock (gate)
+        {
+            current = owned;
+        }
+
+        if (current is null || current.Closed || current.Service is null)
+        {
+            return null;
+        }
+
+        return new GattCompanionAudioDownlink(current.Service, () => current.MaxPduSize);
+    }
+
+    /// <summary>The companion microphone uplink on the same owned session.</summary>
+    public ICompanionMicUplink? TryCreateMicUplink()
+    {
+        OwnedGatt? current;
+        lock (gate)
+        {
+            current = owned;
+        }
+
+        if (current is null || current.Closed || current.Service is null)
+        {
+            return null;
+        }
+
+        return new GattCompanionMicUplink(current.Service);
     }
 
     private long generation;
@@ -250,7 +293,7 @@ public sealed class BleGattManagementTransport : IManagementTransport, IControll
         CancellationToken cancellationToken)
     {
         var capabilities = await WindowsBluetoothRadio.ProbeAsync().ConfigureAwait(false);
-        WindowsBluetoothRadio.RequireManagementCapable(capabilities);
+        capabilities.RequireManagementCapable();
 
         ulong? wanted = null;
         if (expectedAddress is not null)

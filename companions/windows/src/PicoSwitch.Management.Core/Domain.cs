@@ -560,6 +560,42 @@ public sealed record ControllerLinkState(
     long Neutralizations = 0,
     long MaxGapMillis = 0);
 
+/// <summary>
+/// Companion audio downlink state, as reported by <c>caudio status</c>
+/// (firmware <c>ns2_companion_audio.h</c>).
+///
+/// The decoder geometry -- codec, sample rate, channels, frame duration and
+/// frame size -- is reported rather than assumed, because the packets carry no
+/// self-describing container. <see cref="Admit"/> is the reason the last
+/// start was accepted or refused: <c>ok</c>, <c>unsupported</c> (no live
+/// encoder on this board), <c>no_link</c>, <c>untrusted</c>, <c>mtu</c> or
+/// <c>encoder_busy</c> (a controller headset owns the encoder).
+/// </summary>
+public sealed record CompanionAudioState(
+    bool Supported = false,
+    bool Active = false,
+    bool Subscribed = false,
+    bool UsbSpeakerActive = false,
+    int Version = 0,
+    string Codec = "",
+    int SampleRate = 0,
+    int Channels = 0,
+    int FrameMillis = 0,
+    int FrameBytes = 0,
+    int AttMtu = 0,
+    int MinimumAttMtu = 0,
+    long Generation = 0,
+    string Admit = "",
+    string LastStop = "",
+    long FramesSent = 0,
+    long FramesBusy = 0,
+    long FramesFailed = 0,
+    long FramesRejected = 0,
+    long SendMaxGapMicros = 0,
+    int Kbps = 0,
+    bool Mic = false,
+    bool MicSupported = false);
+
 public sealed record PeerPage(ValueList<PeerInfo> Entries, int Total, int? Next);
 
 public sealed record PeerInventory
@@ -603,9 +639,21 @@ public sealed record AdapterInputState
 
     public bool Truncated { get; init; }
 
+    /// <summary>What the console is doing with this adapter (optional on the wire; empty when absent).</summary>
+    public ConsoleView Console { get; init; } = new();
+
     public AdapterInputSource? ActiveSource =>
         Sources.FirstOrDefault(source => source.Id == ActiveId);
 }
+
+/// <summary>
+/// The optional <c>console</c> object on the <c>input sources</c> reply
+/// (docs/management/PROTOCOL.md): the player number the console gave the
+/// emulated controller (its player LEDs; 0 when none or not mounted) and
+/// whether a game has an NFC scan running (it is waiting for an amiibo).
+/// Older firmware omits it, which reads as "nothing to show".
+/// </summary>
+public sealed record ConsoleView(int Player = 0, bool AmiiboWanted = false);
 
 public enum CapabilityState
 {

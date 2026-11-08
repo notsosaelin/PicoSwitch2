@@ -41,8 +41,19 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -93,6 +104,15 @@ fun AmiiboScreen(
     // rendered outside it, can ask.
     var twoColumnDetail by remember { mutableStateOf(false) }
     val paneOpen = ui.amiiboInteraction.inspectorOpen
+    // The highlighted card's focus handle (see AmiiboBrowser). Closing the
+    // details hands focus to it at once, while the pane is still sliding out:
+    // left inside the pane, focus vanished with it and fell to the navigation
+    // for a moment before coming back (owner, 2026-11-08).
+    val browserFocus = remember { FocusRequester() }
+    val keysDriving = keyNavigation()
+    LaunchedEffect(paneOpen) {
+        if (!paneOpen && keysDriving) runCatching { browserFocus.requestFocus() }
+    }
     val inspected = ui.library.firstOrNull { it.id == ui.amiiboInteraction.inspectedId }
 
     // Back cancels a selection, then closes the details surface, and only then
@@ -191,25 +211,50 @@ fun AmiiboScreen(
                 // The pane used to be permanent at this width, reserving space
                 // to describe whatever happened to be highlighted; now width
                 // decides only WHERE details appear, never whether they do.
-                if (twoColumn && paneOpen) {
-                    Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space3)) {
+                //
+                // ONE STRUCTURE, open or closed. The browser used to sit in a
+                // different branch with the pane than without it, so opening
+                // details threw the whole browser away and rebuilt it: the
+                // carousel jumped back to its start, focus fell out of the page,
+                // and the pane popped in. Now the browser stays put and the
+                // pane slides in beside it.
+                Row(Modifier.fillMaxSize()) {
+                    AmiiboBrowser(ui, viewModel, cards, Modifier.weight(1f).fillMaxHeight(), browserFocus)
+                    // Keeps describing the figure while the pane slides out.
+                    var shownItem by remember { mutableStateOf(inspected) }
+                    if (inspected != null) shownItem = inspected
+                    AnimatedVisibility(
+                        visible = twoColumn && paneOpen,
+                        enter = expandHorizontally(tween(PANE_MS)) + slideInHorizontally(tween(PANE_MS)) { it / 3 } +
+                            fadeIn(tween(PANE_MS)),
+                        exit = shrinkHorizontally(tween(PANE_EXIT_MS)) + slideOutHorizontally(tween(PANE_EXIT_MS)) { it / 3 } +
+                            fadeOut(tween(PANE_EXIT_MS)),
+                    ) {
                         // No sheet here: the pane beside the grid is already
                         // showing this figure, and stacking a modal copy of it
                         // over the top would hide the browser it sits next to.
-                        AmiiboBrowser(ui, viewModel, cards, Modifier.weight(1f).fillMaxHeight())
+                        // A opened these details: focus goes into them. Without
+                        // this, the browser narrowing under the focused card
+                        // dropped focus, and it landed in the navigation.
+                        val pane = remember { FocusRequester() }
+                        val keys = keyNavigation()
+                        LaunchedEffect(inspected?.id) {
+                            if (keys && inspected != null) runCatching { pane.requestFocus() }
+                        }
                         Column(
-                            Modifier.width(LayoutTokens.DetailWidth).fillMaxHeight()
+                            Modifier.padding(start = LayoutTokens.Space3)
+                                .width(LayoutTokens.DetailWidth).fillMaxHeight()
+                                .focusRequester(pane)
+                                .focusGroup()
                                 .verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space3),
                         ) {
                             AmiiboDetailPanel(
-                                inspected, ui, viewModel, onImportKeys,
+                                shownItem, ui, viewModel, onImportKeys,
                                 onClose = viewModel::closeAmiiboDetails,
                             )
                         }
                     }
-                } else {
-                    AmiiboBrowser(ui, viewModel, cards, Modifier.fillMaxSize())
                 }
             }
         }
@@ -472,13 +517,13 @@ private fun FilterMenu(
     viewModel: CompanionViewModel,
 ) {
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
-        FilterGroup("Game series", options.gameSeries, filters.gameSeries) {
+        FilterGroup("Game series", "All game series", options.gameSeries, filters.gameSeries) {
             viewModel.setAmiiboGameSeries(it); onDismiss()
         }
-        FilterGroup("Collection", options.amiiboSeries, filters.amiiboSeries) {
+        FilterGroup("Amiibo series", "All Amiibo series", options.amiiboSeries, filters.amiiboSeries) {
             viewModel.setAmiiboSeries(it); onDismiss()
         }
-        FilterGroup("Type", options.types, filters.type) {
+        FilterGroup("Type", "All types", options.types, filters.type) {
             viewModel.setAmiiboType(it); onDismiss()
         }
         if (filters.any) {
@@ -495,6 +540,8 @@ private fun FilterMenu(
 @Composable
 private fun FilterGroup(
     title: String,
+    /** The "everything" row, named for its filter (never a bare "All"). */
+    allLabel: String,
     values: List<String>,
     selected: String,
     onSelect: (String) -> Unit,
@@ -506,6 +553,11 @@ private fun FilterGroup(
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = LayoutTokens.Space3, vertical = LayoutTokens.Space1),
+    )
+    DropdownMenuItem(
+        text = { Text(allLabel) },
+        onClick = { onSelect("") },
+        leadingIcon = if (selected.isEmpty()) ({ Icon(Icons.Default.Check, null) }) else null,
     )
     values.forEach { value ->
         DropdownMenuItem(
@@ -584,6 +636,7 @@ private fun AmiiboBrowser(
     viewModel: CompanionViewModel,
     cards: List<AmiiboCard>,
     modifier: Modifier,
+    target: FocusRequester,
 ) {
     if (cards.isEmpty()) {
         EmptyStateBlock(
@@ -619,6 +672,7 @@ private fun AmiiboBrowser(
             // has to be able to say "Deselect" and mean it. Toggling also starts
             // a selection from nothing, so one action covers both directions.
             onToggle = { card -> viewModel.toggleAmiiboSelection(card.id) },
+            onFocus = { card -> viewModel.focusAmiiboSettled(card.id) },
         )
     }
 
@@ -630,13 +684,30 @@ private fun AmiiboBrowser(
     // comparisons per pass.
     val selected = remember(interaction.selection) { interaction.selection.toHashSet() }
 
-    when (ui.amiiboFilters.view) {
-        AmiiboViewMode.Grid ->
-            AmiiboGridView(cards, focusedId, selecting, selected, modifier, gestures)
-        AmiiboViewMode.Carousel ->
-            AmiiboCarouselView(cards, focusedId, selecting, selected, modifier, gestures)
-        AmiiboViewMode.List ->
-            AmiiboListView(cards, focusedId, selecting, selected, modifier, gestures)
+    // Switching view cross-fades instead of cutting: each view opens already
+    // positioned on the highlighted figure (below), so the fade is the only
+    // motion.
+    //
+    // Focus ENTERING the browser (a page change, the navigation closing, the
+    // D-pad coming down from the toolbar) lands on the highlighted figure, not
+    // on the first card in the library.
+    Crossfade(
+        ui.amiiboFilters.view,
+        modifier
+            .focusProperties { onEnter = { runCatching { target.requestFocus() } } }
+            .focusGroup(),
+        animationSpec = tween(VIEW_FADE_MS),
+        label = "amiibo-view",
+    ) { view ->
+        val inner = Modifier.fillMaxSize()
+        when (view) {
+            AmiiboViewMode.Grid ->
+                AmiiboGridView(cards, focusedId, selecting, selected, inner, gestures, target)
+            AmiiboViewMode.Carousel ->
+                AmiiboCarouselView(cards, focusedId, selecting, selected, inner, gestures, target)
+            AmiiboViewMode.List ->
+                AmiiboListView(cards, focusedId, selecting, selected, inner, gestures, target)
+        }
     }
 }
 
@@ -750,6 +821,8 @@ private data class AmiiboGestures(
     val onDoubleTap: (AmiiboCard) -> Unit,
     val onLongPress: (AmiiboCard) -> Unit,
     val onToggle: (AmiiboCard) -> Unit,
+    /** A controller or keyboard moved focus onto the card. */
+    val onFocus: (AmiiboCard) -> Unit = {},
 )
 
 /**
@@ -814,6 +887,7 @@ private fun Modifier.amiiboGestures(
     selecting: Boolean,
     ticked: Boolean,
     gestures: AmiiboGestures,
+    onKeyFocus: (Boolean) -> Unit = {},
 ): Modifier {
     // Built once per item per state, not once per recomposition. Two
     // CustomAccessibilityAction objects and a list for each of a thousand tiles,
@@ -829,9 +903,29 @@ private fun Modifier.amiiboGestures(
         )
     }
 
+    // UNDER A CONTROLLER, FOCUS IS THE HIGHLIGHT and A opens it (or ticks it
+    // while selecting). Touch keeps tap = highlight, double tap = details. The
+    // two used to be separate: the D-pad moved a grey focus overlay while the
+    // highlight stayed on whatever was tapped last, and A only re-highlighted
+    // the card already highlighted, so it seemed to do nothing (owner,
+    // 2026-11-08: "Amiibo focus in all modes is messed up").
+    val keys = keyNavigation()
     return this
+        .onFocusChanged {
+            // The outline moves on this frame (the tile's own state); the app's
+            // highlight, which re-reads the figure's details, follows once the
+            // D-pad stops (focusAmiiboSettled), so holding left or right never
+            // waits on a decode per card.
+            onKeyFocus(it.isFocused)
+            if (it.isFocused && keys) gestures.onFocus(card)
+        }
         .combinedClickable(
-            onClick = { gestures.onTap(card) },
+            // The tile draws its own focus; the default overlay greyed the art.
+            interactionSource = null,
+            indication = if (keys) null else androidx.compose.foundation.LocalIndication.current,
+            onClick = {
+                if (keys && !selecting) gestures.onDoubleTap(card) else gestures.onTap(card)
+            },
             onDoubleClick = { gestures.onDoubleTap(card) },
             onLongClick = { gestures.onLongPress(card) },
         )
@@ -853,9 +947,14 @@ private fun AmiiboGridView(
     selected: Set<String>,
     modifier: Modifier,
     gestures: AmiiboGestures,
+    focusTarget: FocusRequester,
 ) {
+    val state = rememberLazyGridState(
+        initialFirstVisibleItemIndex = cards.indexOfFirst { it.id == focusedId }.coerceAtLeast(0),
+    )
     LazyVerticalGrid(
         columns = GridCells.Adaptive(LayoutTokens.AmiiboCellMinWidth),
+        state = state,
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2),
         verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space2),
@@ -865,6 +964,7 @@ private fun AmiiboGridView(
             AmiiboCardTile(
                 card,
                 focused = card.id == focusedId,
+                focusTarget = focusTarget.takeIf { card.id == focusedId },
                 selecting = selecting,
                 ticked = card.id in selected,
                 modifier = Modifier.fillMaxWidth(),
@@ -890,8 +990,13 @@ private fun AmiiboCarouselView(
     selected: Set<String>,
     modifier: Modifier,
     gestures: AmiiboGestures,
+    focusTarget: FocusRequester,
 ) {
-    val state = rememberLazyListState()
+    val state = rememberLazyListState(
+        initialFirstVisibleItemIndex = cards.indexOfFirst { it.id == focusedId }.coerceAtLeast(0),
+    )
+    val keys = keyNavigation()
+    var positioned by remember { mutableStateOf(false) }
 
     // Follow the FOCUS when it changes from elsewhere — switching into this
     // view, or a sync focusing the synced tag — so the carousel is never showing
@@ -899,11 +1004,32 @@ private fun AmiiboCarouselView(
     //
     // Deliberately not keyed on the bulk set: ticking items while browsing must
     // not drag the carousel back to whichever one was focused first.
+    //
+    // CENTRED, not aligned to the start: the carousel is about one figure, and
+    // start-aligned it slid the figure half off the edge with the previous one
+    // filling the screen.
+    //
+    // The FIRST placement is instant: opening the library (from Play's Amiibo
+    // card, or switching view) used to animate a scroll across every figure
+    // before it. Under a controller the D-pad's own bring-into-view does the
+    // scrolling (CentredBringIntoView), so this does not run a second,
+    // competing animation on every press; that pair was the lag when holding
+    // left or right.
     LaunchedEffect(focusedId, cards) {
         val index = cards.indexOfFirst { it.id == focusedId }
-        if (index >= 0) state.animateScrollToItem(index)
+        if (index < 0) return@LaunchedEffect
+        if (positioned && keys) return@LaunchedEffect
+        val info = state.layoutInfo
+        val viewport = info.viewportEndOffset - info.viewportStartOffset
+        val size = info.visibleItemsInfo.firstOrNull { it.index == index }?.size
+            ?: (info.viewportSize.height * CAROUSEL_CARD_ASPECT).toInt()
+        val offset = -((viewport - size) / 2).coerceAtLeast(0)
+        if (positioned) state.animateScrollToItem(index, offset) else state.scrollToItem(index, offset)
+        positioned = true
     }
 
+    @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+    CompositionLocalProvider(LocalBringIntoViewSpec provides CentredBringIntoView) {
     LazyRow(
         state = state,
         modifier = modifier,
@@ -915,6 +1041,7 @@ private fun AmiiboCarouselView(
             AmiiboCardTile(
                 card,
                 focused = card.id == focusedId,
+                focusTarget = focusTarget.takeIf { card.id == focusedId },
                 selecting = selecting,
                 ticked = card.id in selected,
                 // A fraction of the viewport, not a fixed width: the carousel
@@ -922,16 +1049,41 @@ private fun AmiiboCarouselView(
                 // is the only thing it does that the grid does not. A fixed
                 // 220dp card left most of a phone page empty and most of a
                 // tablet pane empty too.
+                //
+                // SHAPED LIKE A FIGURE'S CARD, not a share of the width
+                // (2026-11-08). At 78% of the width a portrait figure sat in the
+                // middle of a wide card and its neighbours showed only their
+                // empty edges, so every move read as a cut, not a slide. Now
+                // the neighbours' art is in view on both sides.
                 modifier = Modifier
-                    .fillParentMaxWidth(if (cards.size > 1) 0.78f else 1f)
-                    .widthIn(max = LayoutTokens.AmiiboCarouselMaxWidth)
-                    .fillMaxHeight(),
+                    .fillMaxHeight()
+                    .aspectRatio(CAROUSEL_CARD_ASPECT, matchHeightConstraintsFirst = true)
+                    .widthIn(max = LayoutTokens.AmiiboCarouselMaxWidth),
                 large = true,
                 gestures = gestures,
             )
         }
     }
+    }
 }
+
+/**
+ * The carousel keeps the focused figure in the middle. The default keeps it
+ * only just on screen, which left it against an edge with its neighbour
+ * filling the view.
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+private val CentredBringIntoView = object : BringIntoViewSpec {
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float =
+        offset - (containerSize - size) / 2f
+}
+
+/** Width over height of a carousel card: the figure's portrait art plus its name. */
+private const val CAROUSEL_CARD_ASPECT = 0.62f
+
+private const val PANE_MS = 220
+private const val PANE_EXIT_MS = 160
+private const val VIEW_FADE_MS = 160
 
 /**
  * The dense scanning mode.
@@ -948,13 +1100,16 @@ private fun AmiiboListView(
     selected: Set<String>,
     modifier: Modifier,
     gestures: AmiiboGestures,
+    focusTarget: FocusRequester,
 ) {
     LazyColumn(
         modifier = modifier,
         contentPadding = PaddingValues(bottom = LayoutTokens.Space5),
     ) {
         items(cards, key = { it.id }) { card ->
-            val focused = card.id == focusedId
+            val keys = keyNavigation()
+            var keyFocused by remember { mutableStateOf(false) }
+            val focused = if (keys) keyFocused else card.id == focusedId
             val ticked = card.id in selected
             Row(
                 Modifier.fillMaxWidth()
@@ -962,7 +1117,8 @@ private fun AmiiboListView(
                         if (focused) MaterialTheme.colorScheme.primaryContainer
                         else MaterialTheme.colorScheme.surface,
                     )
-                    .amiiboGestures(card, selecting, ticked, gestures)
+                    .then(if (card.id == focusedId) Modifier.focusRequester(focusTarget) else Modifier)
+                    .amiiboGestures(card, selecting, ticked, gestures) { keyFocused = it }
                     .padding(horizontal = LayoutTokens.Space2, vertical = LayoutTokens.Space2),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space3),
@@ -1009,6 +1165,7 @@ private fun AmiiboCardTile(
     // part of the screen's state. During an Amiibo upload that is every progress
     // tick, which is how a rendering cost turned into an adapter timeout.
     focused: Boolean,
+    focusTarget: FocusRequester?,
     selecting: Boolean,
     ticked: Boolean,
     modifier: Modifier,
@@ -1018,13 +1175,23 @@ private fun AmiiboCardTile(
     // FOCUS FILLS THE CARD; MEMBERSHIP IS A MARK ON IT. Two different ideas, so
     // two different presentations — a user has to be able to tell "where I am"
     // from "what I have ticked" without counting.
+    //
+    // Under a controller "where I am" is the card's own focus, drawn the frame
+    // it moves; the app's highlight catches up when the D-pad rests.
+    val keys = keyNavigation()
+    var keyFocused by remember { mutableStateOf(false) }
+    @Suppress("NAME_SHADOWING")
+    val focused = if (keys) keyFocused else focused
     Card(
-        modifier.amiiboGestures(card, selecting, ticked, gestures),
+        modifier
+            .then(if (focusTarget != null) Modifier.focusRequester(focusTarget) else Modifier)
+            .amiiboGestures(card, selecting, ticked, gestures) { keyFocused = it },
         colors = CardDefaults.cardColors(
             containerColor = if (focused) MaterialTheme.colorScheme.primaryContainer
             else MaterialTheme.colorScheme.surfaceVariant,
         ),
-        border = if (focused) CardDefaults.outlinedCardBorder() else null,
+        // A real outline: on a wall of artwork the hairline was invisible.
+        border = if (focused) BorderStroke(3.dp, MaterialTheme.colorScheme.primary) else null,
     ) {
         Column(
             Modifier.padding(LayoutTokens.Space2).fillMaxWidth(),

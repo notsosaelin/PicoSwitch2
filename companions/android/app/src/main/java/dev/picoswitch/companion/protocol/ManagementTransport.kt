@@ -19,6 +19,28 @@ interface ManagementTransport : ManagementChannel {
     fun markValidated() = Unit
     override suspend fun transact(command: String, timeoutMillis: Long): String
     fun close() = Unit
+
+    /** The ATT MTU this link negotiated. */
+    val attMtu: Int get() = dev.picoswitch.management.BleManagementContract.DEFAULT_ATT_MTU
+
+    /**
+     * Subscribe to the companion audio downlink (EXPERIMENTAL). [onFrame] runs on
+     * a Bluetooth binder thread for every notification and must not block.
+     * False when this adapter does not expose the characteristic.
+     */
+    suspend fun openCompanionAudio(onFrame: (ByteArray) -> Unit): Boolean = false
+
+    suspend fun closeCompanionAudio() = Unit
+
+    /** The adapter exposes the companion microphone uplink (MIC-UP) on this link. */
+    val companionMicAvailable: Boolean get() = false
+
+    /**
+     * One companion microphone frame, write-without-response (EXPERIMENTAL).
+     * Completes when the platform stack accepted it; never blocks behind a
+     * management reply, only behind another GATT operation.
+     */
+    suspend fun writeCompanionMic(frame: ByteArray): Boolean = false
 }
 
 data class DiscoveredManagementPeer(

@@ -6,7 +6,7 @@
     Everything platform-specific about the Windows host lives here: the BLE GATT
     management transport, the radio capability probe, Windows.Gaming.Input, raw
     HID, and the storage boundaries. It exposes those to the layers above as the
-    portable SPIs the two Core projects define, so a ViewModel never sees a
+    portable SPIs the Core and Platform projects define, so a ViewModel never sees a
     GattCharacteristic. See WINDOWS_PASS.md §10.1 and §10.2.
   -->
   <PropertyGroup>
@@ -30,6 +30,7 @@
   <ItemGroup>
     <ProjectReference Include="../PicoSwitch.Bridge.Core/PicoSwitch.Bridge.Core.csproj" />
     <ProjectReference Include="../PicoSwitch.Management.Core/PicoSwitch.Management.Core.csproj" />
+    <ProjectReference Include="../PicoSwitch.Companion.Platform/PicoSwitch.Companion.Platform.csproj" />
   </ItemGroup>
 
 </Project>

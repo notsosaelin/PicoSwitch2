@@ -366,6 +366,68 @@ typedef struct {
 
 void btstack_host_companion_link_diag(btstack_host_companion_link_diag_t *out);
 
+// Companion audio downlink plane (EXPERIMENTAL), on the same management ACL.
+// See ns2_companion_audio.h for the wire contract and exclusivity rules.
+// start returns false with the reason in diag.last_admit.
+// `mic` asks for the companion's microphone as well (ns2_companion_mic.h): the
+// jack is then advertised as a headset with a microphone. Starting again on a
+// running session with the other `mic` setting is a re-plug: the jack is
+// withdrawn for NS2_CAUDIO_REPLUG_MS first, as when a player swaps headphones
+// for a headset.
+bool btstack_host_companion_audio_start(bool mic);
+// Ends the session and clears the advertised headphone jack. `reason` must be
+// a string literal; it is reported verbatim as diag.last_stop.
+void btstack_host_companion_audio_stop(const char *reason);
+bool btstack_host_companion_audio_active(void);
+// Called from the 2 ms audio timer on core1.
+void btstack_host_service_companion_audio(void);
+
+typedef struct {
+    bool supported;            // build has the live encoder (Pico 2 W)
+    bool active;
+    bool subscribed;           // companion enabled AUDIO-DOWN notifications
+    bool usb_speaker_active;   // console has opened its speaker stream
+    uint8_t version;
+    uint8_t kbps;              // the session's rate (NS2_COMPANION_AUDIO_DEFAULT_KBPS)
+    uint16_t frame_bytes;      // for kbps
+    uint16_t att_mtu;
+    uint16_t min_att_mtu;      // for kbps
+    uint32_t generation;
+    const char *last_admit;    // admission result of the last start
+    const char *last_stop;     // why the last session ended
+    uint32_t frames_sent;
+    uint32_t notify_busy;      // service ticks a ready frame waited for the ACL
+    uint32_t notify_failed;
+    uint32_t encode_rejected;
+    uint32_t send_max_gap_us;
+    // Gaps between accepted notifications. Frames are due every 20 ms; the
+    // Windows sink prebuffers 60 ms, so a gap over 60 ms is an audible stall
+    // unless the console itself paused its stream (usb_speaker / pcm gaps).
+    uint32_t gaps_over_30ms;
+    uint32_t gaps_over_60ms;
+    // The management link as the controller negotiated it: each notification
+    // waits for a connection event, and a data length below the frame needs
+    // several link-layer packets per frame.
+    uint32_t conn_interval_us;
+    uint16_t le_tx_octets;     // 0 until the controller reports a data length change
+    uint8_t source_headset;    // CONTROLLER_HEADSET_* of the controller in use
+    // The Controller Link gate (ns2_companion_audio.h, SCOPE), as admission
+    // and the service tick see it right now.
+    bool controller_link;      // BLE Controller Link or Android HID bridge present
+    uint8_t source_kind;       // DS5_AUDIO_SOURCE_* of the active input source
+    bool classic_link;         // a Bluetooth Classic HID link shares the radio
+    // Microphone uplink (ns2_companion_mic.h).
+    bool mic;                  // the session includes the microphone
+    bool mic_supported;        // this build can decode it
+    bool replugging;           // jack withheld between two accessories
+    uint32_t mic_writes;       // MIC-UP writes received
+    uint32_t mic_refused;      // writes with no microphone session on this link
+    uint32_t mic_rejected;     // writes that were not one valid packet
+    const char *mic_last_reject;  // ns2_companion_mic_parse_name() of the last
+} btstack_host_companion_audio_diag_t;
+
+void btstack_host_companion_audio_diag(btstack_host_companion_audio_diag_t *out);
+
 // In-band management / BLE coexistence diagnostics (UART-only). A lifecycle event
 // ring + live snapshot + scan-suppression cause counters, added to isolate the
 // "controller and management both drop and cannot recover without a power cycle"

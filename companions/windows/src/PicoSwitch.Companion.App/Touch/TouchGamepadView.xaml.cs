@@ -263,6 +263,16 @@ public sealed partial class TouchGamepadView : UserControl
             RenderToolbar(state, view);
         }
 
+        // Shown INSTEAD of the controller, as on Android (TouchGamepadScreen.kt
+        // draws no canvas at all when unusable): a controller drawn behind the
+        // notice still looks pressable, and at this size its controls overlap.
+        if (unusable)
+        {
+            renderer.Clear();
+            PlaceChrome(state);
+            return;
+        }
+
         renderer.Draw(state.Resolved, WithGameplay(new TouchRenderOptions
         {
             Selection = state.Selection,
@@ -448,7 +458,6 @@ public sealed partial class TouchGamepadView : UserControl
         MenuEdit.IsEnabled = view.Editable;
         MenuProfiles.Content = view.ProfileName is { Length: > 0 } name ? name : "Layouts";
         MenuUseDefault.IsEnabled = view.CanResetToDefault;
-        MenuFullScreen.Content = fullScreen ? "Leave full screen (F11)" : "Full screen (F11)";
         RenderPersonalityChoice();
     }
 
@@ -841,15 +850,14 @@ public sealed partial class TouchGamepadView : UserControl
     /// a live drag     cancel it, leaving the layout as it was
     /// the menu open   close the menu
     /// edit mode       leave the editor, asking first if there is unsaved work
-    /// full screen     leave full screen
     /// otherwise       leave the Touch Gamepad
     /// ```
     ///
     /// Android's Back opens the menu from gameplay rather than leaving, because on a phone
     /// that menu is the only way out. Windows has Escape as the desktop idiom for "back
     /// out of this" and a visible menu button, so it walks the ladder above instead — which
-    /// is what §8 asks for. No rung terminates the application, and none can leave the user
-    /// stuck in full screen.
+    /// is what §8 asks for. No rung terminates the application. Full screen is not a rung:
+    /// the app always runs full screen (F11 still toggles it).
     /// </summary>
     private async void HandleEscape()
     {
@@ -869,12 +877,6 @@ public sealed partial class TouchGamepadView : UserControl
         if (mode == TouchSurfaceMode.Edit)
         {
             await LeaveEditingAsync();
-            return;
-        }
-
-        if (fullScreen)
-        {
-            FullScreenToggleRequested?.Invoke();
             return;
         }
 
@@ -1091,12 +1093,6 @@ public sealed partial class TouchGamepadView : UserControl
         gameplayTimer.Start();
         Render();
         Surface.Focus(FocusState.Programmatic);
-    }
-
-    private void OnToggleFullScreen(object sender, RoutedEventArgs e)
-    {
-        SetMenuOpen(false);
-        FullScreenToggleRequested?.Invoke();
     }
 
     private void OnClose(object sender, RoutedEventArgs e) => CloseRequested?.Invoke();

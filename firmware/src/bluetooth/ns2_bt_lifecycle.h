@@ -50,6 +50,24 @@ typedef struct {
 
 ns2_bt_le_link_params_t ns2_bt_mgmt_link_params(void);
 
+// The management link while a companion audio session runs: the same 6 s
+// supervision margin and latency 0, with the interval capped at 15 ms.
+//
+// Why: companion audio is one 20 ms frame per notification (244 B at 96 kbit/s)
+// plus Controller Link input on the same link. The playout and link
+// simulations (docs/experiments/companion-audio-downlink-prototype-2026-11-07.md)
+// assume a 15 ms interval and at most two PDUs per event. Windows and Android
+// centrals already run at or below that. BlueZ does not: as central the Linux
+// kernel opens LE links at 30-50 ms (le_conn_min_interval 0x18,
+// le_conn_max_interval 0x28) and the permissive management range above lets
+// it stay there, where one late event holds 2.5 frames.
+//
+// The floor stays at the 7.5 ms spec minimum, so a central already faster is
+// not slowed. The session's end re-requests ns2_bt_mgmt_link_params(). Like
+// every peripheral request this is best effort; `caudio status` reports the
+// interval actually in force (conn_interval_us).
+ns2_bt_le_link_params_t ns2_bt_companion_audio_link_params(void);
+
 // Core spec constraint: supervision_timeout > (1 + latency) * interval_max * 2.
 // Encoded so a future parameter edit cannot silently produce a combination the
 // controller will reject.

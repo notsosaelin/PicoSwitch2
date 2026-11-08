@@ -1,0 +1,70 @@
+<Page
+    x:Class="PicoSwitch.Companion.App.Pages.CustomizationPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
+    xmlns:tk="using:CommunityToolkit.WinUI.Controls"
+    xmlns:automation="using:Microsoft.UI.Xaml.Automation">
+
+    <!--
+      Customization: how the emulated controller looks to the console
+      (companion-shell-layout.md). It holds the colours the adapter reports in
+      its identity today; the clickable controller drawing replaces these rows
+      (PLAN.md, Companion UI redesign).
+    -->
+    <ScrollViewer HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
+        <Grid Padding="32,12,32,32">
+            <StackPanel MaxWidth="1000" HorizontalAlignment="Stretch" Spacing="4">
+
+                <Grid ColumnSpacing="12" Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel VerticalAlignment="Center" Spacing="2">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Customization" />
+                            <muxc:ProgressRing x:Name="BusyRing" Width="16" Height="16" IsActive="False"
+                                               automation:AutomationProperties.Name="Working" />
+                        </StackPanel>
+                        <TextBlock x:Name="AppearanceReason" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   TextWrapping="Wrap" Visibility="Collapsed" />
+                    </StackPanel>
+                    <Button Grid.Column="1" x:Name="AppearanceApply" Content="Show on the console"
+                            Style="{StaticResource AccentCommandButtonStyle}" Click="OnApplyAppearance"
+                            VerticalAlignment="Center" />
+                </Grid>
+
+                <muxc:InfoBar x:Name="OperationBar" IsOpen="False" IsClosable="True" Severity="Error" Title="Customization" />
+
+                <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Margin="1,16,0,6" Text="Colours" />
+
+                <tk:SettingsCard Header="Body">
+                    <tk:SettingsCard.HeaderIcon><FontIcon Glyph="&#xE790;" /></tk:SettingsCard.HeaderIcon>
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <Border x:Name="BodySwatch" automation:AutomationProperties.Name="Body colour" Width="28" Height="28" CornerRadius="14" BorderThickness="1" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" />
+                        <Button x:Name="BodyEdit" Content="Change" Style="{StaticResource CommandButtonStyle}" automation:AutomationProperties.Name="Change body colour" Click="OnEditBody" />
+                    </StackPanel>
+                </tk:SettingsCard>
+                <tk:SettingsCard Header="Left Joy-Con accent">
+                    <tk:SettingsCard.HeaderIcon><FontIcon Glyph="&#xE790;" /></tk:SettingsCard.HeaderIcon>
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <Border x:Name="LeftSwatch" automation:AutomationProperties.Name="Left accent colour" Width="28" Height="28" CornerRadius="14" BorderThickness="1" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" />
+                        <Button x:Name="LeftEdit" Content="Change" Style="{StaticResource CommandButtonStyle}" automation:AutomationProperties.Name="Change left accent colour" Click="OnEditLeft" />
+                    </StackPanel>
+                </tk:SettingsCard>
+                <tk:SettingsCard Header="Right Joy-Con accent">
+                    <tk:SettingsCard.HeaderIcon><FontIcon Glyph="&#xE790;" /></tk:SettingsCard.HeaderIcon>
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <Border x:Name="RightSwatch" automation:AutomationProperties.Name="Right accent colour" Width="28" Height="28" CornerRadius="14" BorderThickness="1" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" />
+                        <Button x:Name="RightEdit" Content="Change" Style="{StaticResource CommandButtonStyle}" automation:AutomationProperties.Name="Change right accent colour" Click="OnEditRight" />
+                    </StackPanel>
+                </tk:SettingsCard>
+
+                <TextBlock x:Name="AppearanceHint" Style="{StaticResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           TextWrapping="Wrap" Margin="1,8,0,0" />
+            </StackPanel>
+        </Grid>
+    </ScrollViewer>
+</Page>

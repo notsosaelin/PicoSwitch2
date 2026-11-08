@@ -1,5 +1,6 @@
 using PicoSwitch.Bridge.Core;
 using PicoSwitch.Companion.Windows.Input;
+using PicoSwitch.Companion.Platform.Input;
 using Xunit;
 
 namespace PicoSwitch.Companion.Windows.Tests;
@@ -16,7 +17,7 @@ namespace PicoSwitch.Companion.Windows.Tests;
 /// </summary>
 public sealed class ControllerSourceViewTests
 {
-    private static WindowsControllerSource Source(
+    private static ControllerSource Source(
         string id,
         string name = "Controller",
         ControllerAttachment attachment = ControllerAttachment.External,

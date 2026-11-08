@@ -11,6 +11,9 @@
 #include "mgmt_pairing.h"
 #include "ns2_bt_lifecycle.h"
 #include "ns2_companion_link.h"
+#include "ns2_companion_audio.h"
+#include "ns2_companion_mic.h"
+#include "companion_mic_bridge.h"
 #include "ns2_active_input.h"
 #include "contracts/android_controller_hid.h"
 #include "bt/bthid/devices/generic/bthid_android_bridge.h"
@@ -773,6 +776,19 @@ static const uint8_t config_ble_cl_out_uuid[] = {  // adapter -> companion
     0x6B, 0x33, 0xE1, 0x8A, 0xC4, 0x5D, 0x47, 0x0E,
     0xB2, 0x91, 0x7F, 0x0C, 0x88, 0xAE, 0x39, 0x14,
 };
+// Companion audio downlink plane (EXPERIMENTAL), same service again: one bond,
+// one encryption context, one allowlist. Its own characteristic so it has its
+// own subscription and counters (ns2_companion_audio.h).
+static const uint8_t config_ble_audio_down_uuid[] = {  // adapter -> companion
+    0xA3, 0x1D, 0x6E, 0x52, 0x9B, 0x04, 0x4C, 0x8F,
+    0x8E, 0x27, 0xD5, 0x61, 0x3A, 0xF0, 0xB9, 0x4C,
+};
+// Companion microphone uplink (EXPERIMENTAL, ns2_companion_mic.h): the same
+// service once more, for the same bond, encryption and allowlist.
+static const uint8_t config_ble_mic_up_uuid[] = {  // companion -> adapter
+    0xD4, 0xA7, 0xC3, 0xE1, 0x5B, 0x2F, 0x4E, 0x86,
+    0x9C, 0x0D, 0x71, 0xE3, 0xA5, 0xB8, 0xF2, 0xC6,
+};
 
 // Advertisement UUID bytes use Bluetooth little-endian wire order. The full
 // friendly name lives in scan response data so the primary advertisement stays
@@ -818,6 +834,11 @@ static struct {
     uint16_t cl_in_value_handle;    // companion -> adapter, write-without-response
     uint16_t cl_out_value_handle;   // adapter -> companion, notify
     uint16_t cl_out_ccc_handle;
+    // Companion audio downlink, adapter -> companion, notify only.
+    uint16_t audio_down_value_handle;
+    uint16_t audio_down_ccc_handle;
+    // Companion microphone uplink, companion -> adapter, write-without-response.
+    uint16_t mic_up_value_handle;
     btstack_context_callback_registration_t tx_request;
     uint8_t tx_chunk[512];
     // Identity of the connected management/companion client. Recorded because
@@ -1358,6 +1379,9 @@ static uint16_t host_att_read_callback(hci_con_handle_t con_handle, uint16_t att
 // point and lives at the top of the file with its siblings.
 static void clink_on_frame(const uint8_t *data, uint16_t len);
 static void clink_set_subscribed(bool subscribed);
+static void caudio_set_subscribed(bool subscribed);
+static void caudio_on_mic_frame(hci_con_handle_t con_handle,
+                                const uint8_t *frame, uint16_t len);
 
 static int host_att_write_callback(hci_con_handle_t con_handle, uint16_t att_handle,
                                    uint16_t transaction_mode, uint16_t offset,
@@ -1415,6 +1439,31 @@ static int host_att_write_callback(hci_con_handle_t con_handle, uint16_t att_han
         if (!config_ble_link_trusted(con_handle))
             return ATT_ERROR_INSUFFICIENT_AUTHENTICATION;
         clink_set_subscribed(little_endian_read_16(buffer, 0) != 0u);
+        return ATT_ERROR_SUCCESS;
+    }
+
+    if (att_handle == config_ble.audio_down_ccc_handle) {
+        if (transaction_mode != ATT_TRANSACTION_MODE_NONE)
+            return ATT_ERROR_WRITE_REQUEST_REJECTED;
+        if (con_handle != config_ble.handle || offset != 0 || buffer_size != 2)
+            return ATT_ERROR_WRITE_NOT_PERMITTED;
+        if (!config_ble_link_trusted(con_handle))
+            return ATT_ERROR_INSUFFICIENT_AUTHENTICATION;
+        caudio_set_subscribed((little_endian_read_16(buffer, 0) & 1u) != 0u);
+        return ATT_ERROR_SUCCESS;
+    }
+
+    // Companion microphone frames. Write-without-response for the same reason
+    // as Controller Link input: 50 a second, a lost one is concealed, and an
+    // acknowledged write would serialise the microphone behind a round trip.
+    if (att_handle == config_ble.mic_up_value_handle) {
+        if (transaction_mode != ATT_TRANSACTION_MODE_NONE)
+            return ATT_ERROR_WRITE_REQUEST_REJECTED;
+        if (con_handle != config_ble.handle || offset != 0)
+            return ATT_ERROR_WRITE_NOT_PERMITTED;
+        if (!config_ble_link_trusted(con_handle))
+            return ATT_ERROR_INSUFFICIENT_AUTHENTICATION;
+        caudio_on_mic_frame(con_handle, buffer, buffer_size);
         return ATT_ERROR_SUCCESS;
     }
 
@@ -1500,6 +1549,25 @@ static void setup_att_server(void) {
         ATT_PROPERTY_NOTIFY | ATT_PROPERTY_DYNAMIC,
         ATT_SECURITY_NONE, ATT_SECURITY_ENCRYPTED, NULL, 0);
     config_ble.cl_out_ccc_handle = (uint16_t)(config_ble.cl_out_value_handle + 1u);
+
+    // Companion audio downlink. Present on every build so the GATT database --
+    // and therefore every companion's cached handle map -- is identical across
+    // boards; a build without the live encoder refuses `caudio start` with
+    // "unsupported" instead. Notify only: the companion never writes audio here.
+    config_ble.audio_down_value_handle = att_db_util_add_characteristic_uuid128(
+        config_ble_audio_down_uuid,
+        ATT_PROPERTY_NOTIFY | ATT_PROPERTY_DYNAMIC,
+        ATT_SECURITY_NONE, ATT_SECURITY_ENCRYPTED, NULL, 0);
+    config_ble.audio_down_ccc_handle =
+        (uint16_t)(config_ble.audio_down_value_handle + 1u);
+
+    // Companion microphone uplink. Present on every build for the same reason
+    // as the downlink; a build that cannot decode it refuses `caudio start mic`
+    // with "mic_unsupported".
+    config_ble.mic_up_value_handle = att_db_util_add_characteristic_uuid128(
+        config_ble_mic_up_uuid,
+        ATT_PROPERTY_WRITE_WITHOUT_RESPONSE | ATT_PROPERTY_DYNAMIC,
+        ATT_SECURITY_NONE, ATT_SECURITY_ENCRYPTED, NULL, 0);
 
     config_ble.service_available = true;
 
@@ -2910,6 +2978,12 @@ static bool config_ble_handle_disconnect(
     // not keep the departed companion's last frame.
     btstack_host_companion_link_stop();
 
+    // Companion audio rides the same ACL and obeys the same rule: no plane
+    // outlives the management session that owns it. Without this the console
+    // would keep seeing an occupied headphone jack, keep routing its audio away
+    // from the TV, and the adapter would keep encoding for nobody.
+    btstack_host_companion_audio_stop("mgmt_lost");
+
     if (!config_ble.mode_active && !g_usb_config_mode &&
         !btstack_host_controller_connected()) {
         btstack_host_start_scan();
@@ -4156,6 +4230,367 @@ void btstack_host_companion_link_diag(btstack_host_companion_link_diag_t *out)
     out->outputs_failed = clink.outputs_failed;
     out->neutralizations = clink.neutralizations;
     out->max_gap_ms = clink.max_gap_ms;
+}
+
+// ============================================================================
+// Companion audio downlink (EXPERIMENTAL) -- see ns2_companion_audio.h.
+//
+// Control plane: `caudio start|stop|status` on the JSON channel. Data plane:
+// one notification per 20 ms Opus packet on audio_down_value_handle.
+//
+// Threading: start/stop follow the Controller Link precedent and are called
+// from the management command handler. The send service runs from the 2 ms
+// audio timer in core1's BTstack context -- the same context that consumes
+// the encoder's peek/commit pair for the genuine Pro Controller 2 path.
+// ============================================================================
+
+static struct {
+    volatile bool active;
+    volatile bool subscribed;
+    hci_con_handle_t handle;
+    uint16_t att_mtu;
+    uint16_t sequence;           // of the frame in the transport slot
+    uint32_t index_base;         // encode index of the session's first frame
+    bool index_base_valid;
+    uint8_t kbps;                // running session's rate
+    uint16_t opus_bytes;         // running session's CBR packet size
+    uint32_t generation;
+    uint8_t last_admit;          // ns2_companion_audio_admit_t of the last start
+    const char *last_stop;       // why the last session ended (static string)
+    // Diagnostics. Each answers one question about where audio stopped.
+    uint32_t frames_sent;        // notifications the stack accepted
+    uint32_t notify_busy;        // ticks a frame waited because the ACL could not take it
+    uint32_t notify_failed;      // notify returned an error other than busy
+    uint32_t encode_rejected;    // packet was not exactly one CBR frame
+    uint32_t send_max_gap_us;    // worst gap between accepted notifications
+    uint32_t gaps_over_30ms;     // a frame later than 1.5 frame periods
+    uint32_t gaps_over_60ms;     // longer than the companion's 60 ms prebuffer
+    uint32_t last_send_us;
+    // Microphone (ns2_companion_mic.h).
+    bool mic;                    // this session includes the microphone
+    bool jack_withheld;          // re-plug: jack not advertised until replug_at_ms
+    uint32_t replug_at_ms;
+    uint32_t mic_writes;
+    uint32_t mic_refused;
+    uint32_t mic_rejected;
+    const char *mic_last_reject;
+} caudio = { .handle = HCI_CON_HANDLE_INVALID, .last_stop = "never_started",
+             .mic_last_reject = "none" };
+
+// How long the jack reads empty when a running session changes accessory
+// (headphones <-> headset with microphone). HYPOTHESIS: the console treats a
+// direct 0x05 -> 0x07 jack change as it does a fresh plug-in; nothing has
+// tested that. A withdrawn jack followed by a new one is the sequence a
+// physical swap produces, and NONE -> occupied is the transition the speaker
+// path has already been validated on. 200 ms is many input reports.
+#define NS2_CAUDIO_REPLUG_MS 200u
+
+// The management link's negotiated LE data length, from
+// HCI_SUBEVENT_LE_DATA_LENGTH_CHANGE. BTstack keeps no per-connection copy in
+// this configuration, and a frame larger than it costs several link-layer
+// packets per notification -- a direct airtime multiplier.
+static struct {
+    hci_con_handle_t handle;
+    uint16_t max_tx_octets;
+} caudio_link_dl = { .handle = HCI_CON_HANDLE_INVALID };
+
+
+
+// Best effort, as every peripheral request is: see
+// ns2_bt_companion_audio_link_params(). The central's answer is not awaited;
+// `caudio status` reports the interval in force.
+static void caudio_request_link_params(hci_con_handle_t handle,
+                                       ns2_bt_le_link_params_t link)
+{
+    if (handle == HCI_CON_HANDLE_INVALID || !ns2_bt_le_link_params_valid(link))
+        return;
+    int status = gap_request_connection_parameter_update(
+        handle, link.interval_min_units, link.interval_max_units, link.latency,
+        link.supervision_timeout_units);
+    if (status != ERROR_CODE_SUCCESS) {
+        printf("[CAUDIO] link param request failed: 0x%02X\n", status);
+    }
+}
+
+static void caudio_set_subscribed(bool subscribed)
+{
+    caudio.subscribed = subscribed;
+}
+
+bool btstack_host_companion_audio_active(void) { return caudio.active; }
+
+static bool caudio_classic_link_present(void)
+{
+    for (int i = 0; i < MAX_CLASSIC_CONNECTIONS; i++) {
+        if (classic_state.connections[i].active) return true;
+    }
+    return false;
+}
+
+// The controller side of companion audio's gate (ns2_companion_audio.h, SCOPE).
+static ns2_companion_audio_controller_t caudio_controller_state(void)
+{
+    ns2_companion_audio_controller_t c;
+    // Controller Link here means the companion IS the controller: the BLE
+    // Controller Link on the management link (Windows, Linux), or the Android
+    // companion's HID bridge connection.
+    c.controller_link = btstack_host_companion_link_active() ||
+                        ds5_audio_bridge_android_companion_present();
+    c.other_controller =
+        ds5_audio_bridge_source_kind() == DS5_AUDIO_SOURCE_OTHER;
+    // The genuine Pro Controller 2 headset consumer shares the encoder queue.
+    // A second consumer on it would steal alternate frames from both.
+    c.pro2_stream = ds5_audio_bridge_switch2_pro2_active();
+    c.source_headset = ds5_audio_bridge_source_headset();
+    return c;
+}
+
+// Advertise the session's accessory: the microphone first, so the jack never
+// reads "headset" with nothing behind it.
+static void caudio_advertise_jack(void)
+{
+    companion_mic_bridge_set_active(caudio.mic);
+    // Advertises the headphone (or headset) jack through the input seam on the
+    // next input report, which is what makes the console open its USB streams.
+    ds5_audio_bridge_set_companion_active(true);
+}
+
+static void caudio_withdraw_jack(void)
+{
+    // Clears the advertised jack: the console closes its streams and returns
+    // audio to its own output.
+    ds5_audio_bridge_set_companion_active(false);
+    companion_mic_bridge_set_active(false);
+}
+
+static void caudio_on_mic_frame(hci_con_handle_t con_handle,
+                                const uint8_t *frame, uint16_t len)
+{
+    caudio.mic_writes++;
+    if (!caudio.active || !caudio.mic || caudio.jack_withheld ||
+        con_handle != caudio.handle) {
+        caudio.mic_refused++;
+        return;
+    }
+    uint16_t sequence = 0u;
+    const uint8_t *opus = NULL;
+    const ns2_companion_mic_parse_t parsed =
+        ns2_companion_mic_parse(frame, len, &sequence, &opus);
+    if (parsed != NS2_COMPANION_MIC_PARSE_OK) {
+        caudio.mic_rejected++;
+        caudio.mic_last_reject = ns2_companion_mic_parse_name(parsed);
+        return;
+    }
+    companion_mic_bridge_submit(sequence, opus);
+}
+
+bool btstack_host_companion_audio_start(bool mic)
+{
+    const bool have_link = config_ble.handle != HCI_CON_HANDLE_INVALID;
+    const bool trusted = have_link && config_ble_link_trusted(config_ble.handle);
+    const uint16_t mtu = have_link ? att_server_get_mtu(config_ble.handle) : 0u;
+    const uint8_t kbps = (uint8_t)NS2_COMPANION_AUDIO_DEFAULT_KBPS;
+    const ns2_companion_audio_controller_t controller = caudio_controller_state();
+    ns2_companion_audio_admit_t admit = ns2_companion_audio_admit(
+        ds5_audio_bridge_companion_supported(), have_link, trusted, kbps, mtu,
+        &controller);
+    if (admit == NS2_COMPANION_AUDIO_ADMIT_OK)
+        admit = ns2_companion_audio_admit_mic(mic, companion_mic_bridge_supported());
+    caudio.last_admit = (uint8_t)admit;
+    caudio.att_mtu = mtu;
+    if (admit != NS2_COMPANION_AUDIO_ADMIT_OK) {
+        printf("[CAUDIO] refused: %s (mtu=%u)\n",
+               ns2_companion_audio_admit_name(admit), mtu);
+        return false;
+    }
+    if (caudio.active && caudio.handle == config_ble.handle) {
+        // Idempotent for the same management session: a replacement companion
+        // process simply resubscribes and keeps receiving the live stream.
+        if (caudio.mic == mic) return true;
+        // The other accessory: a re-plug. Withdraw the jack now, advertise the
+        // new one after NS2_CAUDIO_REPLUG_MS (service tick).
+        caudio_withdraw_jack();
+        caudio.mic = mic;
+        caudio.jack_withheld = true;
+        caudio.replug_at_ms = btstack_run_loop_get_time_ms() + NS2_CAUDIO_REPLUG_MS;
+        printf("[CAUDIO] re-plug: mic=%u\n", (unsigned)mic);
+        return true;
+    }
+
+    caudio.handle = config_ble.handle;
+    caudio.sequence = 0u;
+    caudio.index_base_valid = false;
+    caudio.kbps = kbps;
+    caudio.opus_bytes = ns2_companion_audio_opus_bytes(kbps);
+    caudio.generation++;
+    if (caudio.generation == 0u) caudio.generation = 1u;
+    caudio.frames_sent = 0u;
+    caudio.notify_busy = 0u;
+    caudio.notify_failed = 0u;
+    caudio.encode_rejected = 0u;
+    caudio.send_max_gap_us = 0u;
+    caudio.gaps_over_30ms = 0u;
+    caudio.gaps_over_60ms = 0u;
+    caudio.last_send_us = 0u;
+    caudio.mic = mic;
+    caudio.jack_withheld = false;
+    caudio.mic_writes = 0u;
+    caudio.mic_refused = 0u;
+    caudio.mic_rejected = 0u;
+    caudio.mic_last_reject = "none";
+    caudio.active = true;
+    caudio_request_link_params(caudio.handle, ns2_bt_companion_audio_link_params());
+    // Size first: the encoder reads it on the first companion frame.
+    ds5_audio_bridge_set_companion_packet_bytes(caudio.opus_bytes);
+    caudio_advertise_jack();
+    printf("[CAUDIO] started gen=%lu mtu=%u kbps=%u mic=%u\n",
+           (unsigned long)caudio.generation, mtu, (unsigned)kbps, (unsigned)mic);
+    return true;
+}
+
+void btstack_host_companion_audio_stop(const char *reason)
+{
+    if (!caudio.active) return;
+    // Back to the management range while the link is still the session's.
+    if (caudio.handle == config_ble.handle)
+        caudio_request_link_params(caudio.handle, ns2_bt_mgmt_link_params());
+    caudio.active = false;
+    caudio.subscribed = false;
+    caudio.handle = HCI_CON_HANDLE_INVALID;
+    caudio.last_stop = reason ? reason : "stopped";
+    caudio.jack_withheld = false;
+    caudio_withdraw_jack();
+    printf("[CAUDIO] stopped (%s)\n", caudio.last_stop);
+}
+
+void btstack_host_service_companion_audio(void)
+{
+    // Published every tick, active or not: it selects the exclusive encode
+    // the moment a Classic link appears or goes.
+    ds5_audio_bridge_set_classic_link_present(caudio_classic_link_present());
+    if (!caudio.active) return;
+
+    // End the session the moment its controller side no longer holds. A
+    // genuine Pro2 headset stream or a headset plugged into the controller in
+    // use takes the audio: stopping clears only the COMPANION's claim, the
+    // controller still reports its own jack, so the console keeps the speaker
+    // stream open and that controller's audio path picks it up. Controller
+    // Link ending, or another controller taking over, ends it too (SCOPE).
+    const ns2_companion_audio_controller_t controller = caudio_controller_state();
+    const char *end = ns2_companion_audio_end_reason(&controller);
+    if (end) {
+        btstack_host_companion_audio_stop(end);
+        return;
+    }
+    if (caudio.jack_withheld) {
+        // Re-plug in progress: no accessory until the hold has elapsed.
+        if ((int32_t)(btstack_run_loop_get_time_ms() - caudio.replug_at_ms) < 0)
+            return;
+        caudio.jack_withheld = false;
+        caudio_advertise_jack();
+    }
+    if (!caudio.subscribed) return;
+
+    static uint8_t opus[NS2_COMPANION_AUDIO_MAX_OPUS_BYTES];
+    uint16_t opus_len = 0u;
+    uint32_t index = 0u;
+    if (!ds5_audio_bridge_peek_companion_frame(opus, &opus_len, &index)) return;
+    // Numbered per frame ENCODED (ns2_companion_audio.h): a frame shed while
+    // the link stalled becomes a gap the companion conceals.
+    if (!caudio.index_base_valid) {
+        caudio.index_base = index;
+        caudio.index_base_valid = true;
+    }
+    caudio.sequence = ns2_companion_audio_sequence(index, caudio.index_base);
+
+    static uint8_t frame[NS2_COMPANION_AUDIO_MAX_FRAME_BYTES];
+    const uint16_t total = ns2_companion_audio_encode_frame(
+        caudio.sequence, opus, opus_len, caudio.opus_bytes, frame,
+        (uint16_t)sizeof(frame));
+    if (total == 0u) {
+        caudio.encode_rejected++;
+        ds5_audio_bridge_commit_switch2_pro2_frame();
+        return;
+    }
+
+    // Leave the packet in the transport slot until the stack takes it. The
+    // encoder's depth-two queue already drops its oldest frame when this side
+    // falls behind, so waiting here cannot build an unbounded backlog.
+    if (!att_server_can_send_packet_now(caudio.handle)) {
+        caudio.notify_busy++;
+        return;
+    }
+    const uint8_t status = att_server_notify(
+        caudio.handle, config_ble.audio_down_value_handle, frame, total);
+    if (status != ERROR_CODE_SUCCESS) {
+        if (status == BTSTACK_ACL_BUFFERS_FULL) {
+            caudio.notify_busy++;
+            return;
+        }
+        // Anything else will not improve by retrying this packet. Drop it and
+        // count it; the next frame's sequence shows the companion the gap.
+        caudio.notify_failed++;
+        ds5_audio_bridge_commit_switch2_pro2_frame();
+        return;
+    }
+
+    const uint32_t now_us = time_us_32();
+    if (caudio.frames_sent != 0u) {
+        const uint32_t gap = now_us - caudio.last_send_us;
+        if (gap > caudio.send_max_gap_us) caudio.send_max_gap_us = gap;
+        if (gap > 30000u) caudio.gaps_over_30ms++;
+        if (gap > 60000u) caudio.gaps_over_60ms++;
+    }
+    caudio.last_send_us = now_us;
+    caudio.frames_sent++;
+    ds5_audio_bridge_commit_switch2_pro2_frame();
+}
+
+void btstack_host_companion_audio_diag(btstack_host_companion_audio_diag_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->supported = ds5_audio_bridge_companion_supported();
+    out->active = caudio.active;
+    out->subscribed = caudio.subscribed;
+    out->usb_speaker_active = ds5_audio_bridge_usb_speaker_active();
+    out->version = (uint8_t)NS2_COMPANION_AUDIO_VERSION;
+    out->kbps = caudio.active ? caudio.kbps
+                              : (uint8_t)NS2_COMPANION_AUDIO_DEFAULT_KBPS;
+    out->frame_bytes = ns2_companion_audio_frame_bytes(out->kbps);
+    out->att_mtu = caudio.att_mtu;
+    out->min_att_mtu = ns2_companion_audio_min_att_mtu(out->kbps);
+    out->generation = caudio.generation;
+    out->last_admit = ns2_companion_audio_admit_name(
+        (ns2_companion_audio_admit_t)caudio.last_admit);
+    out->last_stop = caudio.last_stop;
+    out->frames_sent = caudio.frames_sent;
+    out->notify_busy = caudio.notify_busy;
+    out->notify_failed = caudio.notify_failed;
+    out->encode_rejected = caudio.encode_rejected;
+    out->send_max_gap_us = caudio.send_max_gap_us;
+    out->gaps_over_30ms = caudio.gaps_over_30ms;
+    out->gaps_over_60ms = caudio.gaps_over_60ms;
+    out->source_headset = ds5_audio_bridge_source_headset();
+    const ns2_companion_audio_controller_t controller = caudio_controller_state();
+    out->controller_link = controller.controller_link;
+    out->source_kind = ds5_audio_bridge_source_kind();
+    out->classic_link = caudio_classic_link_present();
+    out->mic = caudio.active && caudio.mic;
+    out->mic_supported = companion_mic_bridge_supported();
+    out->replugging = caudio.active && caudio.jack_withheld;
+    out->mic_writes = caudio.mic_writes;
+    out->mic_refused = caudio.mic_refused;
+    out->mic_rejected = caudio.mic_rejected;
+    out->mic_last_reject = caudio.mic_last_reject;
+    const hci_con_handle_t link = config_ble.handle;
+    if (link != HCI_CON_HANDLE_INVALID) {
+        const hci_connection_t *conn = hci_connection_for_handle(link);
+        if (conn) {
+            out->conn_interval_us = (uint32_t)conn->le_connection_interval * 1250u;
+        }
+        if (caudio_link_dl.handle == link) out->le_tx_octets = caudio_link_dl.max_tx_octets;
+    }
 }
 
 void btstack_host_close_pairing_window(void)
@@ -6142,6 +6577,18 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                            25u * (interval & 3u), latency, timeout * 10u);
                     switch2_capture_link_params(SW2_LINK_PHASE_COMPLETE, status, handle,
                                                 interval, latency, timeout);
+                    break;
+                }
+
+                case HCI_SUBEVENT_LE_DATA_LENGTH_CHANGE: {
+                    // Recorded for the management link only (caudio diag).
+                    const hci_con_handle_t handle =
+                        hci_subevent_le_data_length_change_get_connection_handle(packet);
+                    if (handle == config_ble.handle) {
+                        caudio_link_dl.handle = handle;
+                        caudio_link_dl.max_tx_octets =
+                            hci_subevent_le_data_length_change_get_max_tx_octets(packet);
+                    }
                     break;
                 }
 

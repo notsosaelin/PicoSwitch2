@@ -1,5 +1,5 @@
 using PicoSwitch.Bridge.Protocol;
-using PicoSwitch.Companion.Windows.Bluetooth;
+using PicoSwitch.Companion.Platform.Bluetooth;
 using PicoSwitch.Management;
 
 namespace PicoSwitch.Companion.Services.Presentation;
@@ -204,7 +204,7 @@ public static class AdapterDashboard
             ConsoleButtons = controllerLinkStreaming
                 ? SectionAvailability.Available
                 : SectionAvailability.Disabled(
-                    "Start Controller Link on the Gamepad page to press these."),
+                    "Press Start on Play to use these."),
         };
     }
 

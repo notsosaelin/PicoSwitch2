@@ -853,6 +853,33 @@ public sealed class ManagementClient(
         ExchangeAsync(ManagementCommands.ControllerLinkStatus,
                       ManagementProtocol.ControllerLink, ct);
 
+    /// <summary>
+    /// Arm the companion audio downlink (EXPERIMENTAL). The returned state says
+    /// whether the adapter accepted, and if not, why (<c>Admit</c>).
+    /// </summary>
+    public Task<CompanionAudioState> StartCompanionAudioAsync(CancellationToken ct = default) =>
+        StartCompanionAudioAsync(microphone: false, ct);
+
+    /// <summary>
+    /// Arm companion audio with or without the companion microphone. Sent on a
+    /// running session, it changes the accessory (headphones/headset) in place.
+    /// </summary>
+    public Task<CompanionAudioState> StartCompanionAudioAsync(bool microphone, CancellationToken ct = default) =>
+        ExchangeAsync(microphone ? ManagementCommands.CompanionAudioStartMic : ManagementCommands.CompanionAudioStart,
+                      ManagementProtocol.CompanionAudio, ct);
+
+    /// <summary>
+    /// End companion audio. The adapter stops advertising a headphone jack,
+    /// so the console returns audio to its own output.
+    /// </summary>
+    public Task<CompanionAudioState> StopCompanionAudioAsync(CancellationToken ct = default) =>
+        ExchangeAsync(ManagementCommands.CompanionAudioStop,
+                      ManagementProtocol.CompanionAudio, ct);
+
+    public Task<CompanionAudioState> CompanionAudioStatusAsync(CancellationToken ct = default) =>
+        ExchangeAsync(ManagementCommands.CompanionAudioStatus,
+                      ManagementProtocol.CompanionAudio, ct);
+
     public Task<PairingStatus> StartPairingAsync(CancellationToken ct = default) =>
         ExchangeAsync(ManagementCommands.PairingStart, ManagementProtocol.PairingStatus, ct);
 

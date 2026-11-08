@@ -1,4 +1,4 @@
-using PicoSwitch.Companion.Windows.Bluetooth;
+using PicoSwitch.Companion.Platform.Bluetooth;
 
 namespace PicoSwitch.Companion.Services;
 
@@ -161,7 +161,7 @@ public sealed class AdapterRelationshipCoordinator(AdapterRelationship? initialR
         "Couldn't pair with the adapter. Make sure its pairing mode is active, then try again.";
 
     public const string PairingLostMessage =
-        "Windows no longer has a Bluetooth pairing for this saved adapter.";
+        "This computer no longer has a Bluetooth pairing for this saved adapter.";
 
     public const string IdentityRejectedMessage =
         "That device answered, but it is not a PicoSwitch2 adapter.";
@@ -278,12 +278,12 @@ public sealed class AdapterRelationshipCoordinator(AdapterRelationship? initialR
                         Phase = AdapterRelationshipPhase.Pairing,
                         Reason = attempt.Reason,
                         Pairing = pairing,
-                        Message = "Confirm the Windows pairing request to finish setting up the adapter.",
+                        Message = "Confirm the pairing request to finish setting up the adapter.",
                     };
                     return new AdapterLifecycleDecision.AwaitPairing(attempt, StartPairing: true);
 
                 default:
-                    const string message = "Windows could not report this device's pairing state.";
+                    const string message = "This computer could not report this device's pairing state.";
                     status = status with
                     {
                         Phase = AdapterRelationshipPhase.Failed,
@@ -480,8 +480,8 @@ public sealed class AdapterRelationshipCoordinator(AdapterRelationship? initialR
 
     /// <param name="bondMismatch">
     /// The peer rejected or lacked our key while Windows still holds a pairing —
-    /// see <see cref="AdapterResetSignature"/>. This is what a firmware install
-    /// looks like from the host, and it is terminal for the saved relationship:
+    /// see <see cref="AdapterResetSignature"/>. This is what a clean-install
+    /// UF2 or a triple-tap wipe looks like from the host, and it is terminal for the saved relationship:
     /// retrying cannot succeed, because the adapter has no key to authenticate
     /// with. Escalate straight to repair rather than leaving the attempt in
     /// <c>Failed</c>, where an automatic reconnect will simply try again. Six such

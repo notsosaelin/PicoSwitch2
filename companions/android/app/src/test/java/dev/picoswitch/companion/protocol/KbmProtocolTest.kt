@@ -5,7 +5,6 @@ import dev.picoswitch.companion.model.KbmMode
 import dev.picoswitch.companion.model.KbmProfile
 import dev.picoswitch.companion.model.KbmSource
 import dev.picoswitch.companion.model.KbmSourceKind
-import dev.picoswitch.companion.model.description
 import dev.picoswitch.companion.model.kbmDestinationGroups
 import dev.picoswitch.companion.model.title
 import org.junit.Assert.assertEquals
@@ -17,7 +16,6 @@ class KbmProtocolTest {
     @Test fun `presentation names decorate core wire identifiers`() {
         assertEquals("kbmouse", KbmMode.KeyboardMouse.wire)
         assertEquals("Keyboard + Mouse", KbmMode.KeyboardMouse.title)
-        assertTrue(KbmMode.KeyboardMouse.description.contains("Mouse"))
         assertEquals("kbm", KbmProfile.KeyboardMouse.wire)
     }
 

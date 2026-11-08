@@ -1,4 +1,4 @@
-using PicoSwitch.Companion.Windows.Storage;
+using PicoSwitch.Companion.Platform.Storage;
 
 namespace PicoSwitch.Companion.Services;
 
@@ -15,7 +15,7 @@ namespace PicoSwitch.Companion.Services;
 /// unreadable document must cost the user that document's contents and never
 /// their ability to launch.
 /// </summary>
-public sealed class AdapterRegistryStore(WindowsDocumentStore documents)
+public sealed class AdapterRegistryStore(DocumentStore documents)
 {
     public const string DocumentName = "adapters.json";
 
@@ -25,7 +25,7 @@ public sealed class AdapterRegistryStore(WindowsDocumentStore documents)
         documents.Write(DocumentName, AdapterRegistryCodec.Encode(registry));
 }
 
-public sealed class PeerHistoryStore(WindowsDocumentStore documents)
+public sealed class PeerHistoryStore(DocumentStore documents)
 {
     public const string DocumentName = "peer-history.json";
 

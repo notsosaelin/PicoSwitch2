@@ -189,8 +189,16 @@ The page is four areas: devices, input mode, mapping, mouse tuning.
   under **Automatic** the adapter infers the live mode from what is admitted and the two legitimately
   differ.
 - **Mapping.** Both profiles are editable and are presented as the independent layouts they are;
-  which one the adapter is running is marked separately from which one is on screen. A row opens a
-  focused editor with a searchable, grouped destination list that scrolls to the current binding.
+  which one the adapter is running is marked separately from which one is on screen. Keys are a
+  drawn ANSI keyboard (`ui/DrawnKeyboard.kt`), the desktop companions' picture from the same
+  geometry: `model/KeyboardGeometry.kt` is a Kotlin copy of the C# `KeyboardLayout`, and
+  `KeyboardGeometryParityTest` parses the C# and fails on any difference. The key unit is the
+  width available, clamped to 36..46 dp; below 36 dp the keyboard scrolls sideways rather than
+  shrinking into mis-taps. A key's name shrinks to fit (never an ellipsis); its binding trims, as on
+  Windows. Long-press clears a binding (the desktop's middle-click). ISO/Japanese keys sit in an
+  "Other keys" row, and a binding for any key the picture lacks is still listed below it. Mouse
+  buttons stay a list. A key opens a focused editor with a searchable, grouped destination list
+  that scrolls to the current binding.
   Unassign (`none`) and Restore default (`default`) are distinct actions because they are distinct
   firmware commands.
 - **Mouse tuning.** Sensitivity uses a logarithmic slider: the adapter accepts a 512:1 range, so a
@@ -675,22 +683,36 @@ HID Device registration, and HID connection remain separate Android states.
 
 ## Responsive strategy and validation
 
-The app selects navigation and content structure from available space, never from orientation or
-device names:
+The shell is the one all three companions share,
+[`docs/architecture/companion-shell-layout.md`](../../docs/architecture/companion-shell-layout.md):
+a slim top bar (connection, Settings), the page, and a floating dock (Play, Keyboard &
+Mouse, Amiibo, Customization, Adapter) that hides itself while Controller Link streams. The
+words the shell shows (adapter state, the next step, the controller card, Play's line, the dock's
+hide rules, the face-button choices) are in `ui/ShellPresentation.kt`, a mirror of the desktop's
+`Services.Presentation`, tested in `ShellPresentationTest`; the shared size scale is in
+`LayoutTokens` (`Theme.kt`). The app is always full screen, with no toggle: it hides the system
+bars with Android's transient behaviour, so an edge swipe still shows them, and hides them again on
+every resume (a file picker or pairing dialog can bring them back). On a short window (under 560 dp
+tall, a landscape handheld) pages use a tighter rhythm, and the Keyboard & Mouse and Adapter tabs
+join their header row so the drawn keyboard keeps its height.
 
-- bottom navigation below 720 dp, navigation rail at 720 dp and above;
-- the bottom bar drops to Material's icon-only form when the per-item width is below what one label
-  needs at the current font scale;
-- two columns of section cards from 760 dp of **content** width -- measured after the rail and the
-  page gutters, not from the window's size bucket. Those two disagree exactly on a landscape
-  handheld, and reading the bucket left a 960 dp display running one column of very wide rows;
+Structure is chosen from available space, never from orientation or device names:
+
+- the dock drops its labels below a 640 dp window;
+- pages that would scroll are split into tabs (Adapter: Console / Controllers / Adapters;
+  Keyboard & Mouse: Mapping / Mouse / Profiles), with the page's own scroll kept only as a last
+  resort for a window too small for any layout; the Amiibo grid is the one page that scrolls;
+- two columns of section cards from 760 dp of **content** width, measured after the page gutters,
+  not from the window's size bucket (the two disagree exactly on a landscape handheld); Adapter's
+  Console tab goes to three columns from 840 dp;
+- headers and toolbars wrap (`FlowRow`) instead of squeezing a title on a phone in portrait;
 - cards that branch internally measure themselves, because in a two-column layout a card only gets
   half the page. The appearance tiles fall back to rows below 320 dp of card width;
 - adaptive Amiibo grid cells with a 132 dp minimum, so the column count follows the display instead
   of stretching a fixed number of columns;
-- a tighter vertical rhythm and a smaller page title under 560 dp of height, which is where
-  landscape handhelds and raised font scales both land;
-- a 1240 dp content maximum on unusually wide displays;
+- a tighter vertical rhythm under 560 dp of height, which is where landscape handhelds and raised
+  font scales both land;
+- a 1000 dp maximum for settings-like pages and 1240 dp for Play, Keyboard & Mouse and Amiibo;
 - one shared spacing/radius/touch-target token set; scrolling rather than shrinking or clipping.
 
 Dialogs are bounded at 520 dp and their scrolling lists at 280 dp, so a popup stays a focused

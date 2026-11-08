@@ -1,5 +1,6 @@
 using PicoSwitch.Bridge.Core;
 using PicoSwitch.Companion.Windows.Input;
+using PicoSwitch.Companion.Platform.Input;
 using Xunit;
 
 namespace PicoSwitch.Companion.Windows.Tests;
@@ -22,7 +23,7 @@ namespace PicoSwitch.Companion.Windows.Tests;
 /// </summary>
 public sealed class ControllerConnectionTests
 {
-    private static WindowsControllerSource Source(ControllerConnection connection) =>
+    private static ControllerSource Source(ControllerConnection connection) =>
         new(new ControllerCandidate(
                 Id: 0,
                 Descriptor: "pad",

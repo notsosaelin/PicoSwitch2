@@ -2,7 +2,7 @@ using PicoSwitch.Bridge.Core;
 using PicoSwitch.Bridge.Protocol;
 using PicoSwitch.Companion.Services.Diagnostics;
 using PicoSwitch.Companion.Services.Presentation;
-using PicoSwitch.Companion.Windows.ControllerLink;
+using PicoSwitch.Companion.Platform.ControllerLink;
 using PicoSwitch.Management;
 using Xunit;
 
@@ -158,14 +158,72 @@ public sealed class ControllerLinkTests
     }
 
     private static (ControllerLinkService Service, FakeManagement Management,
-                    ControllerInputSession Input, RecordingOutput Output) Build(bool ready = true)
+                    ControllerInputSession Input, RecordingOutput Output) Build(
+        bool ready = true,
+        IMotionBackend? motion = null)
     {
         var management = new FakeManagement(ready);
         var input = new ControllerInputSession();
         var output = new RecordingOutput();
-        var service = new ControllerLinkService(management, input, output, new DiagnosticLog());
+        var service = new ControllerLinkService(management, input, output, new DiagnosticLog(), motion);
         return (service, management, input, output);
     }
+
+    /// <summary>A scripted IMU. Every Sample() is a new sensor sample unless frozen.</summary>
+    private sealed class FakeMotion(bool available = true) : IMotionBackend
+    {
+        private int ticks;
+
+        public bool Available { get; } = available;
+
+        public int Starts;
+
+        public int Stops;
+
+        public volatile bool Running;
+
+        public volatile bool Frozen;
+
+        public void Start()
+        {
+            Interlocked.Increment(ref Starts);
+            Running = true;
+        }
+
+        public void Stop()
+        {
+            Interlocked.Increment(ref Stops);
+            Running = false;
+        }
+
+        public ControllerMotion Sample() => Running
+            ? new ControllerMotion(
+                GyroX: 1234, GyroY: -5, GyroZ: 7, AccelX: 0, AccelY: 0, AccelZ: 8192,
+                TimestampTicks: Frozen ? ticks : Interlocked.Increment(ref ticks),
+                Valid: true)
+            : ControllerMotion.None;
+    }
+
+    private static byte[] Feedback(bool motionWanted) =>
+    [
+        ControllerLinkDataPlane.Version,
+        ControllerLinkDataPlane.OpcodeOutput,
+        ControllerReportEncoder.OutputReportId,
+        0x00, 0x00, 0x01, motionWanted ? (byte)BridgeOutputCodec.FlagMotionWanted : (byte)0x00,
+    ];
+
+    private static byte[] LastFrame(FakeDataPlane plane)
+    {
+        lock (plane.Frames)
+        {
+            return plane.Frames.Count == 0 ? [] : plane.Frames[^1];
+        }
+    }
+
+    private static bool CarriesMotion(byte[] frame) =>
+        frame.Length > 0 &&
+        (frame[ControllerLinkDataPlane.HeaderBytes + ControllerReportEncoder.OffFlags] &
+         ControllerReportEncoder.FlagMotionValid) != 0;
 
     private static async Task<bool> WaitForAsync(Func<bool> condition)
     {
@@ -500,6 +558,95 @@ public sealed class ControllerLinkTests
         Assert.True(metrics.WritesIssued > 0);
         Assert.Equal(517, metrics.AttMtu);
         Assert.Contains("maxInFlight=1", metrics.Summary());
+        await service.DisposeAsync();
+    }
+
+    // --------------------------------------------------------------- motion
+
+    [Fact]
+    public async Task MotionIsSentOnlyWhileTheConsoleAsksForIt()
+    {
+        var motion = new FakeMotion();
+        var (service, management, _, _) = Build(motion: motion);
+        await service.StartAsync();
+        Assert.True(await WaitForAsync(() => FrameCount(management.Plane!) > 0));
+
+        // Nothing asked yet: the sensors stay off and no frame claims motion.
+        Assert.Equal(0, motion.Starts);
+        Assert.False(CarriesMotion(LastFrame(management.Plane!)));
+
+        management.Plane!.RaiseOutput(Feedback(motionWanted: true));
+        Assert.True(await WaitForAsync(() => CarriesMotion(LastFrame(management.Plane!))));
+        Assert.Equal(1, motion.Starts);
+
+        // The canonical sample is copied, not re-interpreted (MotionConvention).
+        var frame = LastFrame(management.Plane!);
+        Assert.Equal(1234, BitConverter.ToInt16(frame, ControllerLinkDataPlane.HeaderBytes + 10));
+        Assert.Equal(8192, BitConverter.ToInt16(frame, ControllerLinkDataPlane.HeaderBytes + 20));
+        Assert.True(service.Metrics.ReportsWithMotion > 0);
+
+        // A repeated identical request is not a transition.
+        management.Plane!.RaiseOutput(Feedback(motionWanted: true));
+        Assert.Equal(1, motion.Starts);
+
+        management.Plane!.RaiseOutput(Feedback(motionWanted: false));
+        Assert.True(await WaitForAsync(() => !CarriesMotion(LastFrame(management.Plane!))));
+        Assert.Equal(1, motion.Stops);
+        await service.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task FreshSensorSamplesAreSentWhileStillOnesAreNot()
+    {
+        var motion = new FakeMotion();
+        var (service, management, _, _) = Build(motion: motion);
+        await service.StartAsync();
+        management.Plane!.RaiseOutput(Feedback(motionWanted: true));
+        Assert.True(await WaitForAsync(() => CarriesMotion(LastFrame(management.Plane!))));
+
+        // Live samples drive the analog-rate stream on their own, with every
+        // other input idle: well above the 10/s keepalive within 300 ms.
+        var before = FrameCount(management.Plane!);
+        await Task.Delay(300);
+        Assert.True(FrameCount(management.Plane!) - before > 6);
+
+        // A frozen sensor timestamp is the SAME sample. Resending it as new
+        // would be integrated as movement, so only the keepalive remains.
+        motion.Frozen = true;
+        await Task.Delay(50);
+        before = FrameCount(management.Plane!);
+        await Task.Delay(300);
+        Assert.True(FrameCount(management.Plane!) - before <= 5);
+        await service.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task AHostWithoutAnImuNeverClaimsMotion()
+    {
+        var motion = new FakeMotion(available: false);
+        var (service, management, _, _) = Build(motion: motion);
+        await service.StartAsync();
+        management.Plane!.RaiseOutput(Feedback(motionWanted: true));
+        await Task.Delay(100);
+
+        Assert.Equal(0, motion.Starts);
+        Assert.False(CarriesMotion(LastFrame(management.Plane!)));
+        await service.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task StoppingTheLinkStopsTheSensors()
+    {
+        var motion = new FakeMotion();
+        var (service, management, _, _) = Build(motion: motion);
+        await service.StartAsync();
+        management.Plane!.RaiseOutput(Feedback(motionWanted: true));
+        Assert.True(await WaitForAsync(() => motion.Running));
+
+        await service.StopAsync();
+
+        // No exit path may leave an IMU running for a console that is gone.
+        Assert.False(motion.Running);
         await service.DisposeAsync();
     }
 }

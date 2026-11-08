@@ -641,6 +641,7 @@ public sealed class KeyboardMouseViewTests
         var clean = KeyboardMouse.Project(state, KbmLayout.Keyboard, true, draft);
         Assert.False(clean.Dirty);
         Assert.False(clean.CanSave);
+        Assert.Equal("Saved", clean.SaveLabel);
 
         var edited = draft
             .With(new KbmSource(KbmSourceKind.Key, 0x04), KbmDestination.Zr)
@@ -649,6 +650,7 @@ public sealed class KeyboardMouseViewTests
 
         Assert.True(view.Dirty);
         Assert.True(view.CanSave);
+        Assert.Equal("Save", view.SaveLabel);
         Assert.Equal(KbmDestination.Zr,
                      view.Keys.Single(c => c.Cap.Usage == 0x04).Destination);
         // Apply is NOT offered for an unsaved draft: there is nothing stored to
@@ -732,6 +734,8 @@ public sealed class KeyboardMouseViewTests
         // which is the only way to keep Default immutable and still let a user
         // start from it.
         Assert.True(view.CanSave);
+        // The button says so: the template is never written into.
+        Assert.Equal("Save as new", view.SaveLabel);
     }
 }
 

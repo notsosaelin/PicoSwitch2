@@ -212,6 +212,19 @@ if(NS2_PRO AND NS2_AUDIO)
     target_compile_definitions(PicoSwitchWGA PRIVATE NS2_AUDIO=1)
 endif()
 
+# Whether the first boot of a newly flashed UF2 erases the persistence region
+# (settings, amiibo slots, wake identity, Bluetooth pairings) and locks pairing
+# admission until BOOTSEL. OFF by default since 2026-11-08 (owner: a firmware
+# update must not cost every pairing). Every store validates and migrates its
+# own records, so an ordinary update keeps them. Turn this ON only for a build
+# whose persistence layout cannot read the previous one, or for a test that
+# needs a clean adapter (docs/bluetooth/PERSISTENCE.md, "Install marker").
+option(NS2_INSTALL_RESET
+       "NS2: first boot of a new UF2 erases settings, amiibo and pairings" OFF)
+if(NS2_INSTALL_RESET)
+    target_compile_definitions(PicoSwitchWGA PRIVATE NS2_INSTALL_RESET=1)
+endif()
+
 # Audible DualSense Bluetooth audio requires the RP2350 memory/CPU budget and
 # is standard only on Pico 2 W. Pico W retains its validated non-audio clock,
 # memory layout, and Bluetooth scheduling.

@@ -23,6 +23,15 @@ class ManagementClient(
     suspend fun amiiboStatus() = exchange(ManagementCommands.AMIIBO_STATUS, ManagementProtocol::amiibo)
     suspend fun inputSources() = exchange(ManagementCommands.INPUT_SOURCES, ManagementProtocol::inputSources)
     suspend fun managementEnabled() = exchange(ManagementCommands.MANAGEMENT_STATUS, ManagementProtocol::managementEnabled)
+    suspend fun companionAudioStart(microphone: Boolean = false) =
+        exchange(
+            if (microphone) ManagementCommands.COMPANION_AUDIO_START_MIC else ManagementCommands.COMPANION_AUDIO_START,
+            ManagementProtocol::companionAudio,
+        )
+    suspend fun companionAudioStop() =
+        exchange(ManagementCommands.COMPANION_AUDIO_STOP, ManagementProtocol::companionAudio)
+    suspend fun companionAudioStatus() =
+        exchange(ManagementCommands.COMPANION_AUDIO_STATUS, ManagementProtocol::companionAudio)
     /**
      * KB/M status, with the ingress counters merged in.
      *

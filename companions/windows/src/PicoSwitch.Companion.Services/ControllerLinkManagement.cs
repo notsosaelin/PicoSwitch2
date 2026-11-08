@@ -1,5 +1,5 @@
 using PicoSwitch.Bridge.Protocol;
-using PicoSwitch.Companion.Windows.ControllerLink;
+using PicoSwitch.Companion.Platform.ControllerLink;
 using PicoSwitch.Management;
 
 namespace PicoSwitch.Companion.Services;

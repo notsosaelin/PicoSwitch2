@@ -576,8 +576,23 @@ public static class ManagementProtocol
                 Transitions = transitions,
                 Sources = new ValueList<AdapterInputSource>(sources),
                 Truncated = value.RequiredBool("more"),
+                Console = ConsoleOf(value),
             };
         });
+
+    /// <summary>Optional; anything malformed reads as "nothing to show", never as a failed reply.</summary>
+    private static ConsoleView ConsoleOf(JsonElement value)
+    {
+        if (!value.TryGetProperty("console", out var console) || console.ValueKind != JsonValueKind.Object)
+        {
+            return new ConsoleView();
+        }
+
+        var player = console.TryGetProperty("player", out var p) && p.ValueKind == JsonValueKind.Number &&
+            p.TryGetInt32(out var n) && n is >= 1 and <= 4 ? n : 0;
+        var wanted = console.TryGetProperty("amiibo_wanted", out var w) && w.ValueKind == JsonValueKind.True;
+        return new ConsoleView(player, wanted);
+    }
 
     public static BondPage BondsPage(string command, string response) =>
         Decode(command, response, value =>
@@ -762,6 +777,50 @@ public static class ManagementProtocol
                 OutputsFailed: Output("failed"),
                 Neutralizations: link.OptionalLong("neutralizations") ?? 0,
                 MaxGapMillis: link.OptionalLong("max_gap_ms") ?? 0);
+        });
+
+    /// <summary>
+    /// Companion audio downlink state, nested under "caudio" like "clink".
+    /// </summary>
+    public static CompanionAudioState CompanionAudio(string command, string response) =>
+        Decode(command, response, value =>
+        {
+            if (!value.TryGetProperty("caudio", out var audio) ||
+                audio.ValueKind != JsonValueKind.Object)
+            {
+                throw Incomplete(command);
+            }
+
+            JsonElement frames = default;
+            bool hasFrames = audio.TryGetProperty("frames", out frames) &&
+                             frames.ValueKind == JsonValueKind.Object;
+            long Frame(string name) =>
+                hasFrames ? (frames.OptionalLong(name) ?? 0) : 0;
+
+            return new CompanionAudioState(
+                Supported: audio.OptionalBool("supported") ?? false,
+                Active: audio.OptionalBool("active") ?? false,
+                Subscribed: audio.OptionalBool("subscribed") ?? false,
+                UsbSpeakerActive: audio.OptionalBool("usb_speaker") ?? false,
+                Version: audio.OptionalInt("version") ?? 0,
+                Codec: audio.OptionalString("codec") ?? string.Empty,
+                SampleRate: audio.OptionalInt("sample_rate") ?? 0,
+                Channels: audio.OptionalInt("channels") ?? 0,
+                FrameMillis: audio.OptionalInt("frame_ms") ?? 0,
+                FrameBytes: audio.OptionalInt("frame_bytes") ?? 0,
+                AttMtu: audio.OptionalInt("att_mtu") ?? 0,
+                MinimumAttMtu: audio.OptionalInt("min_att_mtu") ?? 0,
+                Generation: audio.OptionalLong("generation") ?? 0,
+                Admit: audio.OptionalString("admit") ?? string.Empty,
+                LastStop: audio.OptionalString("last_stop") ?? string.Empty,
+                FramesSent: Frame("sent"),
+                FramesBusy: Frame("busy"),
+                FramesFailed: Frame("failed"),
+                FramesRejected: Frame("rejected"),
+                SendMaxGapMicros: audio.OptionalLong("send_max_gap_us") ?? 0,
+                Kbps: audio.OptionalInt("kbps") ?? 0,
+                Mic: audio.OptionalBool("mic") ?? false,
+                MicSupported: audio.OptionalBool("mic_supported") ?? false);
         });
 
     public static BondEnumeration LegacyBonds(string command, string response) =>

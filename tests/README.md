@@ -12,6 +12,8 @@ or a real controller can show is validated on hardware and recorded under
 | `python tests/run_tool_tests.py` | Python, JavaScript and PowerShell tests for `tools/` and `web/` (`tests/tools/`) | Python 3, Node 18+, PowerShell 7, gcc |
 | `pwsh tests/run_android_tests.ps1` | Android companion JVM unit tests | JDK 17, Android SDK |
 | `pwsh companions/windows/build.ps1` | Windows companion build, tests and descriptor parity | .NET 9 SDK |
+| `dotnet test companions/linux/tests/PicoSwitch.Companion.Linux.Tests` | Linux companion backend (BlueZ transport via a fake bus, SDL mapping, single instance; real-bus and socket tests run only on Linux) | .NET 9 SDK |
+| `bash companions/linux/packaging/build-linux.sh` | Linux tests, then the x64 and arm64 single-file executables | .NET 9 SDK, Linux |
 | `python tools/check_doc_links.py` | Every relative Markdown link resolves | Python |
 
 ## Layout

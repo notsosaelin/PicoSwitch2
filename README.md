@@ -35,6 +35,8 @@ feature are documented with their evidence under [`docs/`](docs/README.md).
 - **Companion apps** for [Android](companions/android/) and
   [Windows](companions/windows/): manage the adapter wirelessly, use the device
   itself as a controller (Controller Link), and an editable on-screen gamepad.
+  A [Linux](companions/linux/) companion (one executable for x64 and arm64,
+  handhelds in Game Mode first) is implemented and awaiting hardware validation.
 
 What has been validated on real hardware, and what has not, is tracked in
 [`STATUS.md`](STATUS.md) and the
@@ -54,6 +56,11 @@ What has been validated on real hardware, and what has not, is tracked in
 2. Hold BOOTSEL while plugging the Pico into a computer.
 3. Copy the UF2 to the `RPI-RP2` or `RP2350` drive that appears.
 4. Plug the Pico into the Switch 2.
+
+Updating is the same steps. The standard UF2 keeps your pairings, settings
+and amiibo. To start from a clean adapter instead, flash the `-wipe.uf2` for
+your board: its first boot erases all of them (as the BOOTSEL triple-tap
+does).
 
 Firmware and companion apps must come from the same release.
 
@@ -114,7 +121,7 @@ for the test suites.
 
 ```text
 firmware/      adapter firmware (C, Pico SDK): src/ modules, config, build
-companions/    android/ (Kotlin) and windows/ (C#, WinUI 3) companion apps
+companions/    android/ (Kotlin), windows/ (C#, WinUI 3) and linux/ (C#, Avalonia) apps
 contracts/     wire contracts shared by firmware, companions and tests
 web/           browser configuration portal
 tests/         host tests, tool tests, fixtures and runners

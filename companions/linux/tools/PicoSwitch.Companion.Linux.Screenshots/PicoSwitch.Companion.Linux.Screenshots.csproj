@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Renders every page of the Linux companion headlessly (Avalonia.Headless with
+    real Skia drawing) to PNGs, in both theme variants, at the Steam Deck's
+    1280x800 and at a narrow 800x600. It is how the UI is reviewed without a
+    Linux desktop, and it runs on any OS: the BlueZ/SDL backends are inert where
+    they do not exist, so pages render in their disconnected state.
+
+      dotnet run (project tools/PicoSwitch.Companion.Linux.Screenshots) with the output directory as its argument
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>$(PicoSwitchPortableTargetFramework)</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Headless" Version="$(PicoSwitchAvaloniaVersion)" />
+    <PackageReference Include="Avalonia.Skia" Version="$(PicoSwitchAvaloniaVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/PicoSwitch.Companion.Linux.App/PicoSwitch.Companion.Linux.App.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -6,7 +6,7 @@ using System.Text.RegularExpressions;
 // structural equality on a record's collection first appeared. Reusing it here
 // beats a second copy: two "immutable list with value equality" types that drift
 // apart is exactly the duplication this project keeps closing.
-using PicoSwitch.Companion.Windows.Bluetooth;
+using PicoSwitch.Companion.Platform.Bluetooth;
 using PicoSwitch.Management;
 
 namespace PicoSwitch.Companion.Services;

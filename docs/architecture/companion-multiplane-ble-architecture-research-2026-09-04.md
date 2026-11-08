@@ -5,6 +5,16 @@
 **Branch:** `ns2-testing`
 **Scope:** transport architecture only. Nothing in this document authorises code.
 
+> **Update 2026-11-07.** The maintainer authorised roadmap step (F), the Windows
+> audio downlink prototype, which lifts §28's "no audio work" boundary for that
+> step only. It is implemented, and hardware validation is pending: see
+> [`../experiments/companion-audio-downlink-prototype-2026-11-07.md`](../experiments/companion-audio-downlink-prototype-2026-11-07.md).
+> That pass deliberately kept 96 kbit/s instead of the §11.2 64 kbit/s opening bid,
+> because 96 kbit/s is the encoder configuration already validated on hardware.
+> It also found a gate this document did not name: the console opens its speaker
+> stream only while the controller advertises an occupied headphone jack. Phase A
+> (§5.4) and every Android item remain unimplemented.
+
 Supersedes nothing. It **extends**
 [`../experiments/android-gameplay-carrier-choice-2026-09-03.md`](../experiments/android-gameplay-carrier-choice-2026-09-03.md)
 with source-level Android platform facts that document did not have, and it

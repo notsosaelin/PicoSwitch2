@@ -1,4 +1,5 @@
 using PicoSwitch.Companion.Windows.Bluetooth;
+using PicoSwitch.Companion.Platform.Bluetooth;
 using PicoSwitch.Management;
 using Xunit;
 
@@ -499,15 +500,15 @@ public sealed class BluetoothRadioCapabilitiesTests
     public void TheBlockingReasonIsThrownBeforeAConnectRatherThanAfterATimeout()
     {
         var error = Assert.Throws<ManagementException>(
-            () => WindowsBluetoothRadio.RequireManagementCapable(new BluetoothRadioCapabilities()));
+            () => new BluetoothRadioCapabilities().RequireManagementCapable());
         Assert.Contains("no Bluetooth radio", error.Message);
 
-        WindowsBluetoothRadio.RequireManagementCapable(new BluetoothRadioCapabilities
+        new BluetoothRadioCapabilities
         {
             RadioPresent = true,
             RadioOn = true,
             LowEnergySupported = true,
             CentralRoleSupported = true,
-        });
+        }.RequireManagementCapable();
     }
 }

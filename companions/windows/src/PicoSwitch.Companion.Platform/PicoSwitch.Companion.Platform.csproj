@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The contracts every companion platform backend implements, and the
+    platform-neutral pieces they share: the management transport SPI, GATT
+    recovery policy, the Controller Link data-plane seam and writer, the pairing
+    vocabulary, the radio capability record, and the on-disk document stores.
+
+    `net9.0` on purpose, like the two Core projects: a WinRT or BlueZ reference
+    here is a compile error. The Windows backend (PicoSwitch.Companion.Windows)
+    and the Linux backend (companions/linux) both implement these; Services
+    composes them without knowing which one it has.
+  -->
+  <PropertyGroup>
+    <TargetFramework>$(PicoSwitchPortableTargetFramework)</TargetFramework>
+    <RootNamespace>PicoSwitch.Companion.Platform</RootNamespace>
+    <AssemblyName>PicoSwitch.Companion.Platform</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../PicoSwitch.Bridge.Core/PicoSwitch.Bridge.Core.csproj" />
+    <ProjectReference Include="../PicoSwitch.Management.Core/PicoSwitch.Management.Core.csproj" />
+  </ItemGroup>
+
+</Project>

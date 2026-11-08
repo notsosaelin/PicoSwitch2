@@ -222,9 +222,7 @@ public sealed record TouchEditorView
 
     private static string? LinkDetailFor(bool available) => available
         ? null
-        : "Start Controller Link from the Gamepad page after connecting to a trusted " +
-          "PicoSwitch adapter. Layouts, profiles and validation remain available while " +
-          "the controller link is stopped.";
+        : "Start playing on Play to send input. You can still edit layouts.";
 
     private static string Summary(TouchGamepadState state)
     {

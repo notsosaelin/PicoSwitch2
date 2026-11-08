@@ -1,0 +1,14 @@
+# The root .gitignore excludes `*.app` (macOS bundles). Git matches it
+# case-insensitively on Windows checkouts (core.ignorecase), so it also matches
+# the DIRECTORY `PicoSwitch.Companion.Linux.App` and would silently drop the
+# whole Avalonia app from version control. Git cannot re-include a file whose
+# parent directory is excluded, so the directory itself is un-excluded, BEFORE
+# the build-output rules below (the last matching pattern wins).
+!src/PicoSwitch.Companion.Linux.App/
+
+# .NET build output.
+bin/
+obj/
+
+# AppImage build staging and output (packaging/build-appimage.sh).
+/artifacts/

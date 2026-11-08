@@ -3,9 +3,11 @@ using System.Globalization;
 using PicoSwitch.Bridge.Core;
 using PicoSwitch.Companion.Services.Diagnostics;
 using PicoSwitch.Companion.Services.Presentation;
-using PicoSwitch.Companion.Windows.Bluetooth;
-using PicoSwitch.Companion.Windows.Storage;
-using PicoSwitch.Companion.Windows.ControllerLink;
+using PicoSwitch.Companion.Platform;
+using PicoSwitch.Companion.Platform.Bluetooth;
+using PicoSwitch.Companion.Platform.Storage;
+using PicoSwitch.Companion.Platform.CompanionAudio;
+using PicoSwitch.Companion.Platform.ControllerLink;
 using PicoSwitch.Management;
 
 namespace PicoSwitch.Companion.Services;
@@ -49,7 +51,7 @@ public sealed class AdapterConnectionService
 
     /// <param name="probeRadio">
     /// Injectable so the service is testable without a radio. Production passes
-    /// nothing; a test that had to depend on the developing machine's own
+    /// the platform's probe (<see cref="CreateDefault"/>); a test that had to depend on the developing machine's own
     /// Bluetooth hardware would be a test that fails on a build agent for reasons
     /// unrelated to the code.
     /// </param>
@@ -62,17 +64,17 @@ public sealed class AdapterConnectionService
     /// </param>
     public AdapterConnectionService(
         AdapterRepository repository,
-        WindowsDocumentStore documents,
+        DocumentStore documents,
         DiagnosticLog diagnostics,
-        Func<long>? nowMillis = null,
-        Func<Task<BluetoothRadioCapabilities>>? probeRadio = null,
-        IAdapterPairingGateway? pairing = null)
+        Func<Task<BluetoothRadioCapabilities>> probeRadio,
+        IAdapterPairingGateway pairing,
+        Func<long>? nowMillis = null)
     {
         this.repository = repository;
         this.diagnostics = diagnostics;
         this.nowMillis = nowMillis ?? (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        this.probeRadio = probeRadio ?? WindowsBluetoothRadio.ProbeAsync;
-        this.pairing = pairing ?? new WindowsPairingGateway();
+        this.probeRadio = probeRadio;
+        this.pairing = pairing;
 
         registryStore = new AdapterRegistryStore(documents);
         historyStore = new PeerHistoryStore(documents);
@@ -90,7 +92,7 @@ public sealed class AdapterConnectionService
     }
 
     /// <summary>
-    /// Build the production composition: the real BLE transport, behind
+    /// Build the production composition: the platform's BLE transport, behind
     /// <see cref="ManagementOwner"/>, over the default document location.
     ///
     /// Here rather than in the App project so the shell never names a transport
@@ -99,17 +101,18 @@ public sealed class AdapterConnectionService
     /// characteristic, and a second management session is the defect this whole
     /// subsystem is shaped around.
     /// </summary>
-    public static AdapterConnectionService CreateDefault(DiagnosticLog diagnostics)
+    public static AdapterConnectionService CreateDefault(DiagnosticLog diagnostics, ICompanionPlatform platform)
     {
-        var documents = new WindowsDocumentStore();
+        var documents = platform.Documents;
         var repository = ManagementOwner.Get(
             diagnostics,
             () => new AdapterRepository(
-                new BleGattManagementTransport(
+                platform.CreateManagementTransport(
                     (source, detail) => diagnostics.Debug(source, detail))));
 
-        diagnostics.Info("app", $"documents at {documents.Directory}");
-        return new AdapterConnectionService(repository, documents, diagnostics);
+        diagnostics.Info("app", $"platform {platform.Name}, documents at {documents.Directory}");
+        return new AdapterConnectionService(
+            repository, documents, diagnostics, platform.ProbeRadioAsync, platform.Pairing);
     }
 
     public IReadOnlyStateValue<ConnectionState> Connection => repository.Connection;
@@ -155,7 +158,7 @@ public sealed class AdapterConnectionService
         RunExclusiveAsync(async () =>
         {
             await ProbeRadioAsync().ConfigureAwait(false);
-            WindowsBluetoothRadio.RequireManagementCapable(radio.Value);
+            radio.Value.RequireManagementCapable();
 
             var generation = lifecycle.BeginDiscovery();
             Publish();
@@ -191,7 +194,7 @@ public sealed class AdapterConnectionService
                 // reused a bond the adapter had already forgotten.
                 diagnostics.Info(
                     "pair",
-                    $"{peer.Address}: Windows already holds a pairing; " +
+                    $"{peer.Address}: this computer already holds a pairing; " +
                     "no new pairing ceremony will run");
             }
 
@@ -239,7 +242,7 @@ public sealed class AdapterConnectionService
             }
 
             await ProbeRadioAsync().ConfigureAwait(false);
-            WindowsBluetoothRadio.RequireManagementCapable(radio.Value);
+            radio.Value.RequireManagementCapable();
 
             active.Adopt(id);
 
@@ -360,12 +363,12 @@ public sealed class AdapterConnectionService
             var after = await pairing
                 .ReadAsync(id.ToBluetoothAddress(), cancellationToken)
                 .ConfigureAwait(false);
-            if (after.State == WindowsPairingKnown.Paired)
+            if (after.State == HostPairingKnown.Paired)
             {
                 RepairFailed(
                     record.Address,
-                    "Windows still reports this adapter as paired after removing the pairing. " +
-                    "Remove it from Windows Bluetooth settings and try again.");
+                    "This computer still reports this adapter as paired after removing the pairing. " +
+                    "Remove it in your Bluetooth settings and try again.");
             }
 
             UpdateRegistry(current => current.Update(id, row => row with
@@ -918,6 +921,51 @@ public sealed class AdapterConnectionService
         CancellationToken cancellationToken = default) =>
         RunExclusiveAsync(() => repository.ControllerLinkStatusAsync(cancellationToken));
 
+    public ICompanionAudioDownlinkProvider? AudioDownlinks => repository.AudioDownlinks;
+
+    public ICompanionMicUplinkProvider? MicUplinks => repository.MicUplinks;
+
+    /// <summary>
+    /// Companion audio control plane (EXPERIMENTAL). Single-flight with every
+    /// other management command; the audio itself rides its own characteristic.
+    /// </summary>
+    public Task<CompanionAudioState> StartCompanionAudioAsync(
+        CancellationToken cancellationToken = default) =>
+        StartCompanionAudioAsync(microphone: false, cancellationToken);
+
+    public Task<CompanionAudioState> StartCompanionAudioAsync(
+        bool microphone,
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(async () =>
+        {
+            var state = await repository.StartCompanionAudioAsync(microphone, cancellationToken)
+                .ConfigureAwait(false);
+            diagnostics.Info(
+                "companion-audio",
+                $"start: mic={microphone}->{state.Mic} active={state.Active} admit={state.Admit} " +
+                $"mtu={state.AttMtu}/{state.MinimumAttMtu} codec={state.Codec} " +
+                $"{state.SampleRate}Hz/{state.Channels}ch/{state.FrameMillis}ms/{state.FrameBytes}B " +
+                $"kbps={state.Kbps}");
+            return state;
+        });
+
+    public Task<CompanionAudioState> StopCompanionAudioAsync(
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(async () =>
+        {
+            var state = await repository.StopCompanionAudioAsync(cancellationToken)
+                .ConfigureAwait(false);
+            diagnostics.Info(
+                "companion-audio",
+                $"stop: sent={state.FramesSent} busy={state.FramesBusy} " +
+                $"failed={state.FramesFailed} max_gap_us={state.SendMaxGapMicros}");
+            return state;
+        });
+
+    public Task<CompanionAudioState> CompanionAudioStatusAsync(
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(() => repository.CompanionAudioStatusAsync(cancellationToken));
+
     public Task<PairingStatus> CancelControllerPairingAsync(
         CancellationToken cancellationToken = default) =>
         RunExclusiveAsync(async () =>
@@ -1046,6 +1094,54 @@ public sealed class AdapterConnectionService
             CacheDisplayState();
             return input;
         });
+
+    /// <summary>
+    /// The background read of <c>input sources</c> that keeps Play's console
+    /// cues current (the player number, "the game wants an amiibo"; Android's
+    /// background-input-poll). Never queues behind, or ahead of, anything the
+    /// user asked for: it runs only when the adapter is connected and no other
+    /// operation holds the gate, and skips the round otherwise.
+    /// </summary>
+    /// <returns>Whether a reply was read.</returns>
+    public async Task<bool> PollInputSourcesAsync(CancellationToken cancellationToken = default)
+    {
+        if (!Connection.Value.Connected || !await operationGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        try
+        {
+            await repository.RefreshInputSourcesAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            diagnostics.Warn("input", $"background input poll failed: {error.Message}");
+            return false;
+        }
+        finally
+        {
+            ReconcileCarrierLoss();
+            operationGate.Release();
+        }
+    }
+
+    /// <summary>Run <see cref="PollInputSourcesAsync"/> every <paramref name="interval"/> until cancelled.</summary>
+    public async Task RunInputPollAsync(TimeSpan interval, CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(interval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            {
+                await PollInputSourcesAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
 
     /// <summary>
     /// Wake the console.
@@ -1336,10 +1432,10 @@ public sealed class AdapterConnectionService
     private async Task<WindowsPairingState> ReadPairingStateAsync(ulong address) =>
         MapPairing((await pairing.ReadAsync(address).ConfigureAwait(false)).State);
 
-    private static WindowsPairingState MapPairing(WindowsPairingKnown known) => known switch
+    private static WindowsPairingState MapPairing(HostPairingKnown known) => known switch
     {
-        WindowsPairingKnown.Paired => WindowsPairingState.Paired,
-        WindowsPairingKnown.NotPaired => WindowsPairingState.NotPaired,
+        HostPairingKnown.Paired => WindowsPairingState.Paired,
+        HostPairingKnown.NotPaired => WindowsPairingState.NotPaired,
         _ => WindowsPairingState.Unknown,
     };
 

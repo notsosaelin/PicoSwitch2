@@ -22,6 +22,13 @@
 *.manifest text eol=lf
 *.sln text eol=crlf
 
+# Linux companion packaging. Executed by /bin/sh and read by desktop shells on
+# Linux, where a CRLF checkout breaks the shebang (`/bin/sh^M`). Forced to LF so
+# an AppImage built from a Windows checkout (core.autocrlf=true) still runs.
+*.sh text eol=lf
+*.desktop text eol=lf
+companions/linux/packaging/AppRun text eol=lf
+
 # Captures, firmware, executables, recordings, and raw image planes are binary
 # evidence. Never pass them through line-ending or textual diff filters.
 *.bin binary

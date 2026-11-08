@@ -87,6 +87,14 @@ Recorded here because the sentence above reads as an instruction to relocate on 
 *any* second host, and a future contributor should not spend a pass carrying out a move this
 project already declined for a stated reason.
 
+**The third host (Linux, 2026-11-06) is Level 2 within C#.** `companions/linux/` compiles the
+Windows companion's portable projects — Bridge.Core, Management.Core, Companion.Platform and
+Companion.Services — from `companions/windows/src/`, and adds only a platform backend
+(`PicoSwitch.Companion.Linux`: BlueZ, SDL3) and an Avalonia shell. The seam is
+`ICompanionPlatform` in Companion.Platform. Those projects stay where they are for the same reason
+`:bridge-core` did: moving them would buy churn and no reuse. `LayeringGuardTests` keeps WinRT,
+BlueZ/D-Bus, SDL and both UI toolkits out of them.
+
 What makes Level 1 safe is that both implementations read the **same fixtures**, not copies of
 them:
 
@@ -644,7 +652,9 @@ abstraction is wrong and the boundary should move — not your backend.
 
 ## 6. Sketch: the three platforms
 
-Android and Windows are implemented. Linux is documentation only.
+All three are implemented. Linux is implementation-complete for v1 (pairing, management,
+Controller Link with motion) with **hardware validation pending**; see
+[`companions/linux/README.md`](../../companions/linux/README.md).
 
 ```text
 Android      (implemented, hardware-validated)
@@ -674,22 +684,30 @@ Windows      (implemented, hardware-validated 2026-09-03)
   battery    RawGameController battery telemetry, polled; Valid distinguishes
              "no reading" from "empty"
 
-Linux        (not implemented)
-  input      evdev (/dev/input/event*) or hidraw
-  touch      libinput touch events, or evdev ABS_MT_TRACKING_ID as the stable identifier
-  motion     IIO (industrialio) for a handheld IMU
-  output     evdev force feedback (FF_RUMBLE)
-  transport  BlueZ, exporting a HID device profile record
-  battery    /sys/class/power_supply
+Linux        (implemented 2026-11-06; hardware validation PENDING)
+  input      SDL3 gamepads (ppy.SDL3-CS, libSDL3 bundled), event-driven on a dedicated
+             thread. One API for every pad Linux sees, including the Steam Deck's built-in
+             controls via SDL's HIDAPI driver. Steam's virtual pad (28de:11ff) is excluded:
+             it duplicates a physical one.
+  touch      the shared Touch Gamepad engine, fed by Avalonia pointer events (one contact
+             per pointer id); no edge-gesture inset, which is a Windows shell strip.
+             Not yet run on a touchscreen.
+  motion     SDL3 gamepad sensors (gyro + accelerometer, ns timestamps). AVAILABLE, unlike
+             Windows: the first C# backend to carry motion. SDL -> canonical frame is
+             X=x, Y=-z, Z=y for both sensors -- a HYPOTHESIS pinned by gravity-anchor and
+             rotation-sense unit tests, not yet confirmed on hardware.
+  output     SDL3 gamepad rumble
+  feedback   none
+  transport  Path C, exactly as Windows: the management GATT session over BlueZ D-Bus
+             (Tmds.DBus.Protocol), Controller Link on its CL-IN/CL-OUT pair. The firmware
+             needed no change.
+  battery    SDL3 gamepad power info; Valid distinguishes "no reading" from "empty"
 ```
 
-The Linux transport line is the one to investigate first, and Windows is the reason to investigate
-it in a particular way. Being a Bluetooth HID **device** decided Android's feasibility; on Windows
-it was impossible and the product shipped anyway, over a channel the companion already held. Ask
-what channel a host HAS before asking whether it can become a HID device.
-
-BlueZ can export a HID device profile record, so Linux may well pass the gate Windows failed. If it
-does not, Path C is the pattern to copy.
+Linux did not take the HID-device route the earlier sketch proposed (BlueZ exporting a HID device
+profile record). Path C was already proven on hardware and needs no second radio role, so the
+question of whether BlueZ could pass the gate Windows failed was never on the critical path. It
+remains **Unknown**, and it is not a reason to change transports.
 
 ---
 

@@ -1,6 +1,6 @@
 using PicoSwitch.Companion.Services.Diagnostics;
-using PicoSwitch.Companion.Windows.Bluetooth;
-using PicoSwitch.Companion.Windows.Storage;
+using PicoSwitch.Companion.Platform.Bluetooth;
+using PicoSwitch.Companion.Platform.Storage;
 using Xunit;
 
 namespace PicoSwitch.Companion.Services.Tests;
@@ -28,7 +28,7 @@ public sealed class ConnectionServiceFixture : IDisposable
     {
         Transport = transport ?? new TrustingTransport();
         Diagnostics = new DiagnosticLog();
-        Documents = new WindowsDocumentStore(root);
+        Documents = new DocumentStore(root);
         Pairing = new FakePairingGateway();
     }
 
@@ -38,7 +38,7 @@ public sealed class ConnectionServiceFixture : IDisposable
 
     public DiagnosticLog Diagnostics { get; }
 
-    public WindowsDocumentStore Documents { get; }
+    public DocumentStore Documents { get; }
 
     public AdapterId Id { get; private set; }
 
@@ -78,7 +78,7 @@ public sealed class ConnectionServiceFixture : IDisposable
         // default would make the service reach RepairRequired before it ever tried
         // to connect, and every test built on this fixture would be testing that
         // instead of what it meant to.
-        Pairing.State = WindowsPairingKnown.Paired;
+        Pairing.State = HostPairingKnown.Paired;
         Transport.WindowsPaired = true;
 
         await Service.ConnectAsync(Id);
@@ -99,7 +99,7 @@ public sealed class ConnectionServiceFixture : IDisposable
     public async Task ReflashAsync(GattFailureStage stage = GattFailureStage.Services)
     {
         await Service.DisconnectAsync();
-        Pairing.State = WindowsPairingKnown.Paired;
+        Pairing.State = HostPairingKnown.Paired;
         Transport.WindowsPaired = true;
         Transport.PeerObserved = true;
         Transport.PeerAnsweredGatt = false;
@@ -127,7 +127,7 @@ public sealed class ConnectionServiceFixture : IDisposable
     public async Task ReflashWithAttributeRefusalAsync(GattFailureStage stage)
     {
         await Service.DisconnectAsync();
-        Pairing.State = WindowsPairingKnown.Paired;
+        Pairing.State = HostPairingKnown.Paired;
         Transport.WindowsPaired = true;
         Transport.PeerObserved = true;
         Transport.PeerAnsweredGatt = true;

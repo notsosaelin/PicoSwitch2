@@ -3,8 +3,12 @@ using PicoSwitch.Bridge.Core;
 using PicoSwitch.Companion.Services;
 using PicoSwitch.Companion.Services.Presentation;
 using PicoSwitch.Companion.Windows.Storage;
+using PicoSwitch.Companion.Platform.Storage;
 using PicoSwitch.Companion.Services.Diagnostics;
+using PicoSwitch.Companion.Windows;
 using PicoSwitch.Companion.Windows.Input;
+using PicoSwitch.Companion.Windows.CompanionAudio;
+using PicoSwitch.Companion.Platform.Input;
 
 namespace PicoSwitch.Companion.App;
 
@@ -22,13 +26,13 @@ public static class AppServices
 
     private static AdapterConnectionService? adapters;
     private static ControllerLinkService? controllerLink;
+    private static CompanionAudioService? companionAudio;
     private static KbmLibraryRepository? kbmLibrary;
     private static AmiiboLibrary? amiiboLibrary;
     private static WindowsAmiiboKeyStore? amiiboKeys;
     private static AmiiboCatalog? amiiboCatalog;
     private static DiagnosticLog? diagnostics;
     private static DispatcherQueue? dispatcher;
-    private static WindowsDocumentStore? documents;
     private static TouchGamepadService? touchGamepad;
     private static ControllerInputSession? controllerInput;
     private static WindowsGamepadInputSource? physicalGamepad;
@@ -51,16 +55,10 @@ public static class AppServices
     /// One settled place for state that survives a restart. A second store (the
     /// registry, say) would mean two things to migrate and two things to clear.
     /// </summary>
-    public static WindowsDocumentStore Documents
-    {
-        get
-        {
-            lock (Gate)
-            {
-                return documents ??= new WindowsDocumentStore();
-            }
-        }
-    }
+    public static DocumentStore Documents => Platform.Documents;
+
+    /// <summary>The host services the shared layers compose: WinRT, here.</summary>
+    private static WindowsCompanionPlatform Platform { get; } = new();
 
     /// <summary>
     /// The user's local KB/M profile library.
@@ -186,7 +184,7 @@ public static class AppServices
                 }
 
                 var log = diagnostics ??= new DiagnosticLog();
-                adapters = AdapterConnectionService.CreateDefault(log);
+                adapters = AdapterConnectionService.CreateDefault(log, Platform);
                 return adapters;
             }
         }
@@ -302,6 +300,27 @@ public static class AppServices
     public static Task TapConsoleButtonAsync(ControllerButton button) =>
         ControllerInput.TapAsync(button);
 
+    /// <summary>Play's held Home / Capture / C (see <see cref="ControllerInputSession.SetConsoleButton"/>).</summary>
+    public static void SetConsoleButton(ControllerButton button, bool pressed) =>
+        ControllerInput.SetConsoleButton(button, pressed);
+
+    /// <summary>
+    /// The physical controller as the shell's menus read it, and who owns it
+    /// (companion-shell-layout.md, "Who owns the handheld's controller").
+    /// WinUI 3 delivers nothing from a gamepad to a desktop app, so the shell
+    /// drives its own focus from these frames
+    /// (<see cref="Services.Presentation.GamepadUiNavigator"/>). Touching
+    /// <see cref="PhysicalGamepad"/> first attaches the sampler that produces them.
+    /// </summary>
+    public static ControllerInputSession PadInput
+    {
+        get
+        {
+            _ = PhysicalGamepad;
+            return ControllerInput;
+        }
+    }
+
     /// <summary>Is this PC currently driving the console?</summary>
     public static bool ControllerLinkStreaming =>
         ControllerLink.View.Value.Phase == ControllerLinkPhase.Streaming;
@@ -313,35 +332,12 @@ public static class AppServices
 
     public static string FaceLayoutReason => ControllerInput.FaceLayoutReason;
 
-    /// <summary>
-    /// Choose the legend, and remember it.
-    ///
-    /// Persisted because it describes the user's HARDWARE, not this session: a
-    /// controller does not change which letters are printed on it between
-    /// launches, and re-picking every time is the kind of friction that makes a
-    /// setting feel broken.
-    /// </summary>
-    public static void SetFaceLayout(ControllerFaceLayout layout)
-    {
-        ControllerInput.SetFaceLayout(layout);
-        _ = Documents.Write("face-layout", layout.Key());
-    }
+    /// <summary>Choose the legend, and remember it (see <see cref="FaceLayoutPreference"/>).</summary>
+    public static void SetFaceLayout(ControllerFaceLayout layout) =>
+        FaceLayoutPreference.Set(Documents, ControllerInput, layout);
 
-    private static void RestoreFaceLayout(ControllerInputSession input)
-    {
-        var stored = Documents.Read("face-layout");
-        var layout = stored switch
-        {
-            "nintendo" => ControllerFaceLayout.Nintendo,
-            "xbox" => ControllerFaceLayout.Xbox,
-            _ => ControllerFaceLayout.Auto,
-        };
-
-        if (layout != ControllerFaceLayout.Auto)
-        {
-            input.SetFaceLayout(layout);
-        }
-    }
+    private static void RestoreFaceLayout(ControllerInputSession input) =>
+        FaceLayoutPreference.Restore(Documents, input);
 
     /// <summary>Production Controller Link over the trusted management link.</summary>
     public static ControllerLinkService ControllerLink
@@ -357,6 +353,36 @@ public static class AppServices
                     ControllerInput,
                     PhysicalGamepad,
                     diagnostics ??= new DiagnosticLog());
+            }
+        }
+    }
+
+    /// <summary>
+    /// Companion audio (EXPERIMENTAL): the console's audio played on this PC,
+    /// over the same trusted management link Controller Link uses.
+    /// </summary>
+    public static CompanionAudioService CompanionAudio
+    {
+        get
+        {
+            lock (Gate)
+            {
+                if (companionAudio is not null)
+                {
+                    return companionAudio;
+                }
+
+                // The headset belongs to the controller this PC is driving, so
+                // it follows Controller Link (CompanionAudioService remarks).
+                var link = ControllerLink;
+                var streaming = new StateValue<bool>(ControllerLinkStreaming);
+                link.View.Changed += () => streaming.Set(ControllerLinkStreaming);
+                return companionAudio = new CompanionAudioService(
+                    new CompanionAudioManagement(Adapters).Subscribe(),
+                    new WaveOutCompanionAudioSinkFactory(),
+                    diagnostics ??= new DiagnosticLog(),
+                    controllerLink: streaming,
+                    micCaptures: new WaveInCompanionMicCaptureFactory());
             }
         }
     }
@@ -381,8 +407,8 @@ public static class AppServices
             lock (Gate)
             {
                 return touchGamepad ??= new TouchGamepadService(
-                    new WindowsTouchProfileStore(Documents),
-                    new WindowsTouchOverrideStore(Documents),
+                    new TouchProfileStore(Documents),
+                    new TouchOverrideStore(Documents),
                     diagnostics ??= new DiagnosticLog(),
                     controllerInput: ControllerInput);
             }
@@ -393,11 +419,20 @@ public static class AppServices
     public static async Task ShutdownAsync()
     {
         ControllerLinkService? link;
+        CompanionAudioService? audio;
         WindowsGamepadInputSource? gamepad;
         lock (Gate)
         {
             link = controllerLink;
+            audio = companionAudio;
             gamepad = physicalGamepad;
+        }
+
+        // First, so the adapter stops advertising a headset and the console's
+        // audio returns to the TV before the management link goes away.
+        if (audio is not null)
+        {
+            await audio.DisposeAsync().ConfigureAwait(false);
         }
 
         if (link is not null)

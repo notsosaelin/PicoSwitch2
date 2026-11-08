@@ -98,4 +98,24 @@ public sealed class ControllerLinkSendPolicyTests
         Assert.False(ControllerLinkSendPolicy.AnalogMoved(state, state));
         Assert.False(ControllerLinkSendPolicy.DigitalChanged(state, state));
     }
+
+    [Fact]
+    public void AMotionSampleIsIdentifiedByItsSensorTimestamp()
+    {
+        var sample = new ControllerMotion(GyroX: 10, TimestampTicks: 100, Valid: true);
+        var previous = ControllerState.Neutral with { Motion = sample };
+
+        // Same timestamp, different values: still the same sample. The adapter
+        // de-duplicates on the timestamp, so this is not worth a frame.
+        Assert.False(ControllerLinkSendPolicy.MotionAdvanced(
+            previous with { Motion = sample with { GyroX = 99 } }, previous));
+
+        // A still controller still produces new samples.
+        Assert.True(ControllerLinkSendPolicy.MotionAdvanced(
+            previous with { Motion = sample with { TimestampTicks = 101 } }, previous));
+
+        // Validity edges are always sent: the adapter must learn motion stopped.
+        Assert.True(ControllerLinkSendPolicy.MotionAdvanced(ControllerState.Neutral, previous));
+        Assert.False(ControllerLinkSendPolicy.MotionAdvanced(ControllerState.Neutral, ControllerState.Neutral));
+    }
 }

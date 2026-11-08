@@ -23,6 +23,11 @@
          See BridgeForegroundService. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Companion headset microphone (EXPERIMENTAL): requested at runtime only when
+         the player turns the headset microphone on. The microphone service type
+         is added to the bridge's foreground service only once it is granted. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Optional AmiiboAPI enrichment; local import and adapter operations never require network. -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -59,7 +64,7 @@
         <service
             android:name=".bridge.BridgeForegroundService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
+            android:foregroundServiceType="connectedDevice|microphone" />
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.files"

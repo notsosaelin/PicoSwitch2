@@ -16,6 +16,9 @@
 #include "core/services/players/manager.h"
 #include "core/services/players/feedback.h"
 #include "usb/usbh/hid/devices/generic/hid_parser.h"
+#ifdef NS2_DS5_AUDIO
+#include "ds5_audio_bridge.h"  // Android companion presence (companion audio gate)
+#endif
 #include <string.h>
 #include <stdio.h>
 
@@ -242,6 +245,17 @@ void bthid_gamepad_set_descriptor(bthid_device_t* device, const uint8_t* desc, u
     if (android_bridge_identify(desc, desc_len, &gp->map.bridge)) {
         printf("[BTHID_GAMEPAD] Android companion bridge detected: motion+battery in, "
                "rumble+LED out (report 0x%02X)\n", gp->map.bridge.output_report_id);
+#ifdef NS2_DS5_AUDIO
+        // Controller Link is up the moment the bridge's descriptor binds on a
+        // live HID link -- not at its first report. The bridge sends reports
+        // only on change, and its first one can arrive before this descriptor
+        // is parsed; noting the companion only per report left companion audio
+        // refused (admit=no_controller_link) until the player pressed a button
+        // (measured 2026-11-07, Odin 2 Mini). The per-report note in
+        // gamepad_process_report stays as a second witness; the seam clears
+        // the companion on disconnect.
+        ds5_audio_bridge_note_android_companion(gp->event.dev_addr);
+#endif
     }
 
     // Release parser memory
@@ -475,6 +489,13 @@ static void process_report_dynamic(bthid_gamepad_data_t* gp, const uint8_t* data
     // directly-paired controller regardless of what this report contains.
     gp->event.from_android_bridge = android_bridge_ext_present(&map->bridge);
     if (gp->event.from_android_bridge) {
+#ifdef NS2_DS5_AUDIO
+        // The Android companion's Controller Link is up from its first report,
+        // before the arbiter makes it the active source: companion audio may
+        // be admitted now and plays once the console registers the controller
+        // (ns2_companion_audio.h, SCOPE). Cleared by the seam on disconnect.
+        ds5_audio_bridge_note_android_companion(gp->event.dev_addr);
+#endif
         gp->event.has_motion = false;
         android_bridge_extract(&map->bridge, &gp->bridge_state, data, len,
                                &gp->event);

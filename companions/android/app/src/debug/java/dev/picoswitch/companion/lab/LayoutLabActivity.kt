@@ -41,7 +41,7 @@ class LayoutLabActivity : ComponentActivity() {
         applyEdgeToEdgeChrome()
         val section = intent.getStringExtra("section")
             ?.let { name -> AppSection.entries.firstOrNull { it.name.equals(name, true) } }
-            ?: AppSection.Adapter
+            ?: AppSection.Play
         val overlay = intent.getStringExtra("overlay")
             ?.let { name -> AppOverlay.entries.firstOrNull { it.name.equals(name, true) } }
             ?: AppOverlay.None

@@ -3,9 +3,38 @@
 Release notes describe user-visible behavior. Detailed implementation history remains in
 `docs/archive/` and the experiment records.
 
-## Unreleased
+## 2.6.0 — Unreleased
+
+### Added
+
+- **A console-style home screen and navigation on every companion.** Play is the home screen on
+  Android, Windows and Linux: the headset strip and the controller card on the left, with Start /
+  Stop, the console's Home, Capture and C buttons (held for as long as you hold them) and your
+  Player number; the amiibo the adapter holds fills the right, and lights up when a game is waiting
+  for one. The pages live in a navigation that slides out from the edge you choose in Settings
+  (Automatic, Left, Right, Top or Bottom) and is called up by moving toward that edge, by Back, or
+  by Escape on a computer.
+- **The companions can be driven with a controller.** The handheld's own controller (or any pad the
+  computer reads) moves through the navigation, pages and amiibo library — A chooses, B goes back,
+  L1 / R1 change page. While Controller Link is streaming, the console gets the controller only on
+  the bare Play screen; opening anything else hands it to the app and leaves nothing held in the
+  game. Holding Back (Escape on a computer) for about a second releases Controller Link.
+- **Linux companion (preview).** PicoSwitch2 Companion for Linux, one self-contained
+  executable for x86_64 and arm64 that starts from Steam Game Mode with no launch options: pair and manage the adapter, and use any controller Linux
+  sees — including the Deck's own controls, with gyro — as the adapter's controller. Includes the
+  Keyboard & Mouse and Amiibo pages, and a layout that adapts to any screen size. Not yet
+  validated on hardware.
+
+### Changed
+
+- **Companion wording is host-neutral.** Messages that said "This PC" or "Windows" about the
+  computer's own Bluetooth now say "This computer", since the same text is shared with Linux.
 
 ### Fixed
+
+- **Linux: Steam Game Mode fills the screen.** Launched as a non-Steam game, the companion showed at
+  its default window size, scaled and letterboxed. It now fills the screen at the game resolution
+  Steam gives it (the panel's native resolution by default).
 
 - **Two paired controllers no longer both drive the console.** With, say, a DualSense and an Xbox
   controller paired at once, both could move the console even though the companion showed only

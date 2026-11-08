@@ -2,6 +2,7 @@ package dev.picoswitch.companion
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.companion.CompanionDeviceManager
@@ -12,8 +13,13 @@ import android.content.IntentFilter
 import android.hardware.input.InputManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.view.HapticFeedbackConstants
 import android.provider.Settings
 import android.view.KeyEvent
+import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.WindowManager
 import android.widget.Toast
@@ -28,12 +34,17 @@ import dev.picoswitch.companion.data.AdapterId
 import dev.picoswitch.companion.data.AndroidBondState
 import dev.picoswitch.companion.data.SystemCompanionAssociation
 import dev.picoswitch.companion.nfc.AndroidNtag215Reader
+import dev.picoswitch.companion.ui.BackKeyGesture
 import dev.picoswitch.companion.ui.CompanionApp
 import dev.picoswitch.companion.ui.CompanionViewModel
+import dev.picoswitch.companion.ui.GamepadNavigation
 import dev.picoswitch.companion.ui.applyEdgeToEdgeChrome
 
 class MainActivity : ComponentActivity() {
     private val viewModel: CompanionViewModel by viewModels()
+    private val backKey = BackKeyGesture()
+    private val backKeyTimer = Handler(Looper.getMainLooper())
+    private val backKeyHold = Runnable { onBackKey(backKey.tick(SystemClock.uptimeMillis(), controllerLinkStreaming())) }
     private val nfcReader by lazy {
         AndroidNtag215Reader(
             activity = this,
@@ -49,6 +60,13 @@ class MainActivity : ComponentActivity() {
     private val bondReceiver = object : BroadcastReceiver() {
         @SuppressLint("MissingPermission")
         override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
+                    BluetoothAdapter.STATE_ON -> viewModel.bluetoothRadioChanged(on = true)
+                    BluetoothAdapter.STATE_OFF -> viewModel.bluetoothRadioChanged(on = false)
+                }
+                return
+            }
             if (intent?.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
             @Suppress("DEPRECATION")
             val device = (if (Build.VERSION.SDK_INT >= 33) {
@@ -167,14 +185,104 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        return viewModel.inputBackend.onKey(event) || super.dispatchKeyEvent(event)
+        // Back, from any device (the Odin's own Back button, a keyboard, the
+        // system navigation bar): tap shows / hides the navigation, hold
+        // releases Controller Link. Ahead of everything else, so it works the
+        // same while streaming, where every other control belongs to the console.
+        if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+            when (event.action) {
+                KeyEvent.ACTION_DOWN -> {
+                    val first = !backKey.pressed
+                    backKey.down(event.eventTime, event.repeatCount)
+                    if (first) {
+                        backKeyTimer.removeCallbacks(backKeyHold)
+                        backKeyTimer.postDelayed(backKeyHold, BackKeyGesture.HOLD_MS)
+                    }
+                }
+                KeyEvent.ACTION_UP -> {
+                    backKeyTimer.removeCallbacks(backKeyHold)
+                    if (event.isCanceled) backKey.cancel() else onBackKey(backKey.up())
+                }
+            }
+            return true
+        }
+        if (viewModel.consoleOwnsPad()) {
+            return viewModel.inputBackend.onKey(event) || super.dispatchKeyEvent(event)
+        }
+        // The controller drives this app (GamepadNavigation). Not streaming, the
+        // backend still sees the event so the live input readout stays current
+        // (it no longer swallows it). Streaming, it must NOT see it: the backend
+        // would forward it to the console while the user drives a menu.
+        if (!controllerLinkStreaming()) viewModel.inputBackend.onKey(event)
+        if (!event.isFromGamepad()) return super.dispatchKeyEvent(event)
+        return when (GamepadNavigation.of(event.keyCode, event.action, event.repeatCount)) {
+            GamepadNavigation.Action.PassThrough -> super.dispatchKeyEvent(event)
+            GamepadNavigation.Action.Confirm -> super.dispatchKeyEvent(
+                KeyEvent(
+                    event.downTime, event.eventTime, event.action, KeyEvent.KEYCODE_DPAD_CENTER,
+                    event.repeatCount, event.metaState, event.deviceId, event.scanCode, event.flags, event.source,
+                ),
+            )
+            GamepadNavigation.Action.Back -> {
+                navigateBack()
+                true
+            }
+            GamepadNavigation.Action.PreviousPage -> stepPage(-1)
+            GamepadNavigation.Action.NextPage -> stepPage(1)
+            GamepadNavigation.Action.Consume -> true
+        }
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
-        return viewModel.inputBackend.onMotion(event) || super.dispatchGenericMotionEvent(event)
+        if (viewModel.consoleOwnsPad()) {
+            return viewModel.inputBackend.onMotion(event) || super.dispatchGenericMotionEvent(event)
+        }
+        // Unhandled stick and hat motion becomes D-pad focus steps in the view
+        // system (the Odin's D-pad reports as a hat as well as as buttons).
+        if (!controllerLinkStreaming()) viewModel.inputBackend.onMotion(event)
+        return super.dispatchGenericMotionEvent(event)
+    }
+
+    private fun controllerLinkStreaming() = viewModel.ui.value.bridge.phase == BridgeLinkPhase.Playing
+
+    private fun KeyEvent.isFromGamepad() =
+        isFromSource(InputDevice.SOURCE_GAMEPAD) || isFromSource(InputDevice.SOURCE_JOYSTICK)
+
+    private fun onBackKey(result: BackKeyGesture.Result) {
+        when (result) {
+            BackKeyGesture.Result.None -> Unit
+            BackKeyGesture.Result.Tap -> navigateBack()
+            BackKeyGesture.Result.Hold -> {
+                window.decorView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                viewModel.releaseControllerLinkByHold()
+            }
+        }
+    }
+
+    /**
+     * Back (the Back key's tap, or B while not streaming): whatever is open
+     * closes first (an overlay, a dialog, an open pane); otherwise the shell
+     * shows or hides the navigation (NavShell). Never Play, never out of the app.
+     */
+    private fun navigateBack() {
+        if (onBackPressedDispatcher.hasEnabledCallbacks()) {
+            onBackPressedDispatcher.onBackPressed()
+            return
+        }
+        if (viewModel.ui.value.overlay != dev.picoswitch.companion.ui.AppOverlay.None) viewModel.closeOverlay()
+    }
+
+    private fun stepPage(step: Int): Boolean {
+        val ui = viewModel.ui.value
+        if (ui.overlay == dev.picoswitch.companion.ui.AppOverlay.None) {
+            viewModel.navigate(GamepadNavigation.stepPage(ui.section, step))
+        }
+        return true
     }
 
     override fun onPause() {
+        backKeyTimer.removeCallbacks(backKeyHold)
+        backKey.cancel()
         nfcReader.disable()
         viewModel.nfcScanDisarmed()
         viewModel.cancelAutomaticControllerResume()
@@ -187,7 +295,10 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         if (!bondReceiverRegistered) {
-            val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+            val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED).apply {
+                // Radio on/off: a Bluetooth restart must re-arm reconnection.
+                addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+            }
             // Bluetooth broadcasts originate from the privileged Bluetooth package rather than
             // this app. NOT_EXPORTED silently drops them on affected Android 13 builds.
             if (Build.VERSION.SDK_INT >= 33) registerReceiver(bondReceiver, filter, RECEIVER_EXPORTED)
@@ -203,6 +314,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        viewModel.endForegroundSession()
         getSystemService(InputManager::class.java)?.unregisterInputDeviceListener(inputDeviceListener)
         if (bondReceiverRegistered) {
             unregisterReceiver(bondReceiver)

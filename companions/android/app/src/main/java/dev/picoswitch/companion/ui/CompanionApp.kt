@@ -1,17 +1,33 @@
 package dev.picoswitch.companion.ui
 
-import android.content.Intent
-import android.provider.Settings
-import androidx.compose.material3.TextButton
-import androidx.compose.ui.platform.LocalContext
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -19,34 +35,26 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.picoswitch.bridge.session.BridgeLinkPhase
 import dev.picoswitch.companion.data.AdapterId
-import dev.picoswitch.companion.model.ConnectionPhase
 import dev.picoswitch.companion.ui.touch.TouchGamepadScreen
 
-private data class NavItem(val section: AppSection, val icon: ImageVector)
-
 /**
- * The application's five destinations, in the order they are used.
- *
- * Adapter first because it is the physical thing being managed; Settings last
- * because it is the least frequent. Diagnostics is intentionally absent -- it
- * is opened from Settings, not visited daily.
+ * The shell: the page and the navigation, at the edge the player chose, docked
+ * or gone (docs/architecture/companion-shell-layout.md; see [NavShell]).
  */
-private val navItems = listOf(
-    NavItem(AppSection.Adapter, Icons.Default.Cable),
-    NavItem(AppSection.Keyboard, Icons.Default.Keyboard),
-    NavItem(AppSection.Amiibo, Icons.Default.Contactless),
-    NavItem(AppSection.Controller, Icons.Default.SportsEsports),
-    NavItem(AppSection.Settings, Icons.Default.Settings),
-)
-
 @Composable
 fun CompanionApp(
     viewModel: CompanionViewModel,
@@ -71,123 +79,127 @@ fun CompanionApp(
         ui.message?.let { snackbarHostState.showSnackbar(it); viewModel.consumeMessage() }
     }
 
+    FullScreenPresentation(touchGamepadActive = ui.touchGamepadActive)
+
     CompanionTheme(theme) {
-        // A full-screen application MODE, above the scaffold rather than inside
-        // it. The on-screen controller owns edge-to-edge presentation, hides the
-        // navigation chrome and handles its own back behaviour; rendering it in
-        // the content column would hand it the scaffold's insets and width limit.
+        // A full-screen application MODE, above the shell rather than inside it.
+        // The on-screen controller owns edge-to-edge presentation, hides the
+        // chrome and handles its own back behaviour.
         if (ui.touchGamepadActive) {
             TouchGamepadScreen(ui, viewModel, onPickTouchBackground, onRetryLink = onPrepareController)
             return@CompanionTheme
         }
+
+        val streaming = ui.bridge.phase == BridgeLinkPhase.Playing
+
         BoxWithConstraints(Modifier.fillMaxSize()) {
-            val useRail = maxWidth >= LayoutTokens.NavigationBreakpoint
-            val windowHeight = maxHeight
-            val fontScale = LocalDensity.current.fontScale
-            ProvideShortWindow(windowHeight) {
-                Scaffold(
-                    modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing),
-                    snackbarHost = { SnackbarHost(snackbarHostState) },
-                    bottomBar = {
-                        if (!useRail) {
-                            // Material gives the selected item extra width, so the
-                            // unselected labels are what run out of room first --
-                            // and an ellipsised destination name ("Keybo…") is a
-                            // navigation the user has to guess at. Below the width
-                            // one label actually needs, fall back to Material's
-                            // icon-only bar, where only the selected item is
-                            // labelled and the rest stay legible icons with content
-                            // descriptions. The threshold scales with the font
-                            // scale because that, not the display, is usually what
-                            // makes the text too wide.
-                            val labelWidth = LayoutTokens.NavLabelWidth * fontScale
-                            val showLabels = (maxWidth / navItems.size) >= labelWidth
-                            NavigationBar {
-                                navItems.forEach { item ->
-                                    NavigationBarItem(
-                                        selected = ui.section == item.section,
-                                        onClick = { viewModel.navigate(item.section) },
-                                        icon = { Icon(item.icon, item.section.label) },
-                                        label = {
-                                            Text(
-                                                item.section.label,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                            )
-                                        },
-                                        alwaysShowLabel = showLabels,
+            val page: @Composable (Modifier) -> Unit = { modifier ->
+                Box(modifier) {
+                    PageHost(ui.section) { section ->
+                        destinationState.SaveableStateProvider(section.name) {
+                            when (section) {
+                                AppSection.Play -> PlayScreen(
+                                    ui, viewModel, onPrepareController, onOpenTouchGamepad, onConnectAdapter,
+                                )
+                                AppSection.Keyboard -> KeyboardMouseScreen(ui, viewModel)
+                                // The one page that scrolls: the library is a
+                                // collection of any length. The grid owns that
+                                // scroll, so the frame adds none.
+                                AppSection.Amiibo -> PageFrame(LayoutTokens.WidePageMaxWidth, scroll = false) {
+                                    AmiiboScreen(
+                                        ui, viewModel, onImportAmiibo, onImportKeys = onImportAmiiboKeys,
+                                        onScan = onScanAmiibo,
                                     )
                                 }
-                            }
-                        }
-                    },
-                ) { padding ->
-                    Row(Modifier.fillMaxSize().padding(padding)) {
-                        if (useRail) {
-                            NavigationRail(
-                                header = {
-                                    Icon(
-                                        Icons.Default.Gamepad,
-                                        "PicoSwitch2 Companion",
-                                        Modifier.padding(vertical = LayoutTokens.Space4),
-                                    )
-                                },
-                            ) {
-                                Spacer(Modifier.weight(1f))
-                                navItems.forEach { item ->
-                                    NavigationRailItem(
-                                        selected = ui.section == item.section,
-                                        onClick = { viewModel.navigate(item.section) },
-                                        icon = { Icon(item.icon, item.section.label) },
-                                        label = { Text(item.section.label, maxLines = 1) },
-                                    )
-                                }
-                                Spacer(Modifier.weight(1f))
-                            }
-                        }
-                        Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
-                            Column(
-                                Modifier.fillMaxSize()
-                                    .widthIn(max = LayoutTokens.ContentMaxWidth)
-                                    .padding(horizontal = LayoutTokens.Space4),
-                            ) {
-                                // One connection indicator for the whole
-                                // application. Screens read it rather than
-                                // deriving their own idea of "connected",
-                                // which is what left stale green badges behind
-                                // after a session ended.
-                                ConnectionStrip(ui, viewModel, onConnectAdapter, onPairAdapter, onRepairAdapter)
-                                Box(Modifier.weight(1f).fillMaxWidth()) {
-                                    destinationState.SaveableStateProvider(ui.section.name) {
-                                        when (ui.section) {
-                                            AppSection.Adapter -> AdapterScreen(ui, viewModel)
-                                            AppSection.Keyboard -> KeyboardMouseScreen(ui, viewModel)
-                                            AppSection.Amiibo -> AmiiboScreen(
-                                                ui, viewModel, onImportAmiibo, onImportKeys = onImportAmiiboKeys,
-                                                onScan = onScanAmiibo,
-                                            )
-                                            AppSection.Controller -> ControllerScreen(
-                                                ui, viewModel, onPrepareController, onOpenTouchGamepad,
-                                            )
-                                            AppSection.Settings -> SettingsScreen(
-                                                ui, viewModel, onImportAmiiboKeys, theme,
-                                            )
-                                        }
-                                    }
-                                    OverlayHost(
-                                        ui, viewModel, onExportDiagnostics,
-                                        onImportAmiibo, onImportAmiiboFolder,
-                                        onExportAmiiboArchive, onImportAmiiboKeys,
-                                    )
-                                }
+                                AppSection.Customization -> CustomizationScreen(ui, viewModel)
+                                AppSection.Adapter -> AdapterScreen(
+                                    ui, viewModel, onConnectAdapter, onPairAdapter, onRepairAdapter,
+                                )
+                                AppSection.Settings -> SettingsScreen(ui, viewModel, theme)
                             }
                         }
                     }
+                    OverlayHost(
+                        ui, viewModel, onExportDiagnostics,
+                        onImportAmiibo, onImportAmiiboFolder,
+                        onExportAmiiboArchive, onImportAmiiboKeys,
+                    )
+                    SnackbarHost(snackbarHostState, Modifier.align(Alignment.BottomCenter))
+                }
+            }
+            ProvideShortWindow(maxHeight) {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    NavShell(
+                        ui,
+                        placement = NavPlacement.resolve(theme.navigation, landscape = maxWidth > maxHeight),
+                        onSelect = viewModel::navigate,
+                        onShownChange = viewModel::setNavigationShown,
+                        page = page,
+                    )
                     ui.operation?.let { OperationOverlay(it) }
                 }
             }
         }
     }
+}
+
+/** The app's one motion curve: short, decelerating, never bouncy. */
+internal fun <T> motionSpec(durationMillis: Int = 220) =
+    tween<T>(durationMillis, easing = FastOutSlowInEasing)
+
+/**
+ * Page changes cross-fade with a slight rise, so moving between pages reads as
+ * one surface settling rather than a cut. Short enough that L1 / R1 paging
+ * through every page never queues up.
+ */
+@Composable
+private fun PageHost(section: AppSection, content: @Composable (AppSection) -> Unit) {
+    AnimatedContent(
+        targetState = section,
+        transitionSpec = {
+            (fadeIn(motionSpec(220)) + slideInVertically(motionSpec(220)) { it / 40 }) togetherWith
+                fadeOut(motionSpec(120))
+        },
+        label = "page",
+    ) { target -> content(target) }
+}
+
+/**
+ * Always full screen: the app hides the system bars on every page and there is
+ * no toggle (docs/architecture/companion-shell-layout.md, "Top bar"). On a
+ * landscape handheld the status and navigation bars are a tenth of the height,
+ * and the pages are laid out to fit the window without scrolling.
+ *
+ * The bars are hidden with Android's transient behaviour, so a swipe from the
+ * edge still shows them briefly; that is the platform's own rule for immersive
+ * mode and the way out of the app is never taken away.
+ *
+ * Applied again on every resume: returning from another activity (a file
+ * picker, the Bluetooth pairing dialog) can bring the bars back. The Touch
+ * Gamepad hides and reshows the bars itself, so while it is open this stands
+ * aside, and when it closes this runs again.
+ */
+@Composable
+private fun FullScreenPresentation(touchGamepadActive: Boolean) {
+    val view = LocalView.current
+    val context = LocalContext.current
+    LifecycleResumeEffect(touchGamepadActive) {
+        if (!touchGamepadActive) {
+            context.findActivity()?.window?.let { window ->
+                WindowInsetsControllerCompat(window, view).apply {
+                    systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    hide(WindowInsetsCompat.Type.systemBars())
+                }
+            }
+        }
+        onPauseOrDispose {}
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 /**
@@ -207,152 +219,26 @@ private fun OverlayHost(
     onExportAmiiboArchive: () -> Unit,
     onImportAmiiboKeys: () -> Unit,
 ) {
+    // Back closes an overlay (Diagnostics, Amiibo settings); it never leaves the app.
+    androidx.activity.compose.BackHandler(enabled = ui.overlay != AppOverlay.None) { viewModel.closeOverlay() }
     AnimatedVisibility(
         visible = ui.overlay != AppOverlay.None,
         enter = slideInHorizontally(initialOffsetX = { it / 3 }) + fadeIn(),
         exit = slideOutHorizontally(targetOffsetX = { it / 3 }) + fadeOut(),
     ) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            when (ui.overlay) {
-                AppOverlay.Diagnostics -> DiagnosticsScreen(ui, viewModel, onExportDiagnostics)
-                AppOverlay.AmiiboSettings -> AmiiboSettingsScreen(
-                    ui, viewModel, onImportAmiiboFiles, onImportAmiiboFolder,
-                    onExportAmiiboArchive, onImportAmiiboKeys,
-                )
-                AppOverlay.None -> Unit
-            }
-        }
-    }
-}
-
-/**
- * The application-wide connection state.
- *
- * Present on every page rather than only on the home screen, because every page
- * has controls whose availability depends on it and because a disconnect that
- * happens while looking at another page must be visible where it happens.
- */
-@Composable
-private fun ConnectionStrip(
-    ui: CompanionUiState,
-    viewModel: CompanionViewModel,
-    onConnect: () -> Unit,
-    onPairAdapter: () -> Unit,
-    onRepairAdapter: (AdapterId?) -> Unit,
-) {
-    val connected = ui.connection.connected
-    val busyPhase = ui.connection.phase == ConnectionPhase.Associating ||
-        ui.connection.phase == ConnectionPhase.Bonding ||
-        ui.connection.phase == ConnectionPhase.Scanning ||
-        ui.connection.phase == ConnectionPhase.Connecting
-    Surface(
-        modifier = Modifier.fillMaxWidth().padding(top = LayoutTokens.Space2),
-        color = if (connected) MaterialTheme.colorScheme.primaryContainer
-        else MaterialTheme.colorScheme.surfaceVariant,
-        shape = MaterialTheme.shapes.medium,
-    ) {
-        Column {
-            // Progress is a bar rather than a spinner in a corner so a slow
-            // connect is legible without blocking the page behind it.
-            if (busyPhase) LinearProgressIndicator(Modifier.fillMaxWidth())
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = LayoutTokens.TouchHeight)
-                    .padding(horizontal = LayoutTokens.Space3, vertical = LayoutTokens.Space1)
-                    .semantics { liveRegion = LiveRegionMode.Polite },
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    if (connected) Icons.Default.BluetoothConnected
-                    else Icons.AutoMirrored.Filled.BluetoothSearching,
-                    null,
-                    Modifier.size(LayoutTokens.IconSize),
-                )
-                Spacer(Modifier.width(LayoutTokens.Space2))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        if (connected) ui.connection.deviceName ?: "PicoSwitch2" else phaseLabel(ui),
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+            Box(Modifier.padding(horizontal = LayoutTokens.Space4)) {
+                when (ui.overlay) {
+                    AppOverlay.Diagnostics -> DiagnosticsScreen(ui, viewModel, onExportDiagnostics)
+                    AppOverlay.AmiiboSettings -> AmiiboSettingsScreen(
+                        ui, viewModel, onImportAmiiboFiles, onImportAmiiboFolder,
+                        onExportAmiiboArchive, onImportAmiiboKeys,
                     )
-                    ui.connection.message?.let {
-                        Text(
-                            it,
-                            style = MaterialTheme.typography.labelSmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                if (connected) {
-                    if (ui.kbm.dirty) {
-                        StatusChip("Unsaved", tone = ChipTone.Attention)
-                        Spacer(Modifier.width(LayoutTokens.Space2))
-                    }
-                    IconButton(onClick = viewModel::refresh, enabled = !ui.busy) {
-                        Icon(Icons.Default.Refresh, "Refresh adapter")
-                    }
-                    IconButton(onClick = viewModel::disconnect, enabled = !ui.busy) {
-                        Icon(Icons.Default.LinkOff, "Disconnect")
-                    }
-                } else {
-                    val actionEnabled = !ui.busy && !ui.relationshipStatus.attemptActive
-                    if (ui.adapterRelationship != null && ui.connection.phase != ConnectionPhase.RepairRequired) {
-                        IconButton(onClick = onPairAdapter, enabled = actionEnabled) {
-                            Icon(Icons.Default.AddLink, "Pair another adapter")
-                        }
-                    }
-                    if (ui.connection.phase == ConnectionPhase.RepairRequired) {
-                        // Forgetting the Android bond is the one repair step
-                        // this app cannot perform: BluetoothDevice.removeBond()
-                        // is a @SystemApi gated on BLUETOOTH_PRIVILEGED. Offer
-                        // the shortest supported route to it instead of leaving
-                        // the user to find it.
-                        val context = LocalContext.current
-                        TextButton(
-                            onClick = {
-                                runCatching {
-                                    context.startActivity(
-                                        Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
-                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                                    )
-                                }
-                            },
-                            enabled = actionEnabled,
-                        ) { Text("Bluetooth settings") }
-                        Spacer(Modifier.width(LayoutTokens.Space2))
-                        // Repair targets the adapter whose pairing actually
-                        // broke, never "whatever adapters this app owns".
-                        Button(
-                            onClick = { onRepairAdapter(ui.activeAdapterId) },
-                            enabled = actionEnabled,
-                        ) { Text("Repair pairing") }
-                    } else {
-                        Button(onClick = onConnect, enabled = actionEnabled) {
-                            Text(if (ui.adapterRelationship == null) "Pair Adapter" else "Reconnect")
-                        }
-                    }
+                    AppOverlay.None -> Unit
                 }
             }
         }
     }
-}
-
-private fun phaseLabel(ui: CompanionUiState) = when (ui.connection.phase) {
-    ConnectionPhase.Associating -> "Pairing adapter…"
-    ConnectionPhase.Bonding -> "Securing Android pairing…"
-    ConnectionPhase.Scanning -> "Finding PicoSwitch2…"
-    ConnectionPhase.Connecting -> "Connecting…"
-    // The transition names the adapter being switched to in its message; the
-    // label only has to stop reading as "offline", which is what a switch in
-    // progress is not.
-    ConnectionPhase.Disconnecting -> "Switching adapter…"
-    ConnectionPhase.Reconnecting -> "Adapter disconnected"
-    ConnectionPhase.RepairRequired -> "Pairing repair needed"
-    ConnectionPhase.Failed -> "Connection failed"
-    else -> "Adapter offline"
 }
 
 @Composable

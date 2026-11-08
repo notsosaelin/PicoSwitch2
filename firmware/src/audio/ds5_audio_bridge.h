@@ -64,6 +64,67 @@ void ds5_audio_bridge_set_ds5_exclusive_encode(bool enabled);
 bool ds5_audio_bridge_ds5_exclusive_encode(void);
 void ds5_audio_bridge_set_switch2_pro2_active(bool active);
 bool ds5_audio_bridge_switch2_pro2_active(void);
+// Companion audio downlink consumer (management/ns2_companion_audio.h).
+// Uses the Pro Controller 2 frame geometry and the same encoded-frame queue and
+// peek/commit pair, so it must never be active together with the genuine
+// Pro Controller 2 consumer; the caller's admission check enforces that.
+// `supported` is false on builds without the live encoder (Pico W).
+void ds5_audio_bridge_set_companion_active(bool active);
+bool ds5_audio_bridge_companion_active(void);
+bool ds5_audio_bridge_companion_supported(void);
+// Packet size of the next companion session, TOC included, at most
+// SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN. Set BEFORE activating; the genuine
+// Pro Controller 2 consumer always gets full 240-byte packets.
+void ds5_audio_bridge_set_companion_packet_bytes(uint16_t bytes);
+// The companion consumer's peek: like the Pro2 peek, plus the packet length
+// and the frame's encode index (for the wire sequence; may be NULL).
+// Commit with ds5_audio_bridge_commit_switch2_pro2_frame().
+bool ds5_audio_bridge_peek_companion_frame(
+    uint8_t frame[SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN], uint16_t *length,
+    uint32_t *index);
+// The active input source's physical jack (CONTROLLER_HEADSET_*), published by
+// the input seam on every source event and cleared when that source goes away.
+// Companion audio yields to it (ns2_companion_audio.h, EXCLUSIVITY).
+void ds5_audio_bridge_note_source_headset(uint8_t state);
+uint8_t ds5_audio_bridge_source_headset(void);
+// The kind of the active input source as the seam last saw it, for companion
+// audio's Controller Link gate (ns2_companion_audio.h, SCOPE).
+enum {
+    DS5_AUDIO_SOURCE_NONE = 0,       // no active source (none yet, or it left)
+    DS5_AUDIO_SOURCE_COMPANION = 1,  // Controller Link or the Android HID bridge
+    DS5_AUDIO_SOURCE_OTHER = 2,      // any physical controller
+};
+void ds5_audio_bridge_note_source_kind(uint8_t kind);
+uint8_t ds5_audio_bridge_source_kind(void);
+// The Android companion's HID connection (its Controller Link), by connection
+// index; cleared when THAT connection goes away, active or not.
+void ds5_audio_bridge_note_android_companion(uint8_t conn_index);
+void ds5_audio_bridge_forget_android_companion(uint8_t conn_index);
+bool ds5_audio_bridge_android_companion_present(void);
+// Whether any Bluetooth Classic HID link shares the radio. Published by the
+// Bluetooth host every service tick; selects the exclusive companion encode.
+void ds5_audio_bridge_set_classic_link_present(bool present);
+bool ds5_audio_bridge_classic_link_present(void);
+// Per-companion-session encoder health, reset when a session starts. The
+// global `audio status` counters span the whole boot and every consumer, so
+// they cannot say whether a loss happened during THIS session.
+typedef struct {
+    uint32_t frames;            // packets the encoder produced for the companion
+    uint32_t encode_max_us;     // worst wall-clock encode, preemption included
+    uint32_t encode_over_20ms;  // encodes slower than real time
+    uint32_t pcm_dropped;       // source blocks dropped before the encoder saw them
+    uint32_t queue_dropped;     // encoded packets displaced before transport took them
+} ds5_audio_bridge_companion_diag_t;
+void ds5_audio_bridge_companion_diag(ds5_audio_bridge_companion_diag_t *out);
+// Hold the CYW43 async-context lock across each companion encode while a
+// Bluetooth Classic HID link shares the radio (the Android companion's own
+// Controller Link, or any Classic controller) -- the same policy the DualSense
+// speaker path uses in production (ds5_audio_bridge_set_ds5_exclusive_encode).
+// Default on; `caudio lock on|off` toggles it for A/B tests. `..._applies`
+// says whether the policy is in effect right now.
+void ds5_audio_bridge_set_companion_exclusive_encode(bool enabled);
+bool ds5_audio_bridge_companion_exclusive_encode(void);
+bool ds5_audio_bridge_companion_exclusive_applies(void);
 void ds5_audio_bridge_set_switch2_pro2_complexity(uint8_t complexity);
 uint8_t ds5_audio_bridge_switch2_pro2_complexity(void);
 void ds5_audio_bridge_set_switch2_pro2_analysis(bool enabled);
@@ -105,6 +166,9 @@ typedef struct {
     uint32_t opus_encode_max_us;
     uint32_t pipeline_resets;
     uint32_t codec_calls_total;
+    uint32_t codec_stage;            // ds5_audio_codec_stage_t, last entered
+    uint32_t codec_stage_age_us;     // since it was entered
+    uint32_t encoder_reserve_short;  // encoder state larger than its static reserve
     uint32_t codec_no_encoder;
     uint32_t codec_disconnected;
     uint32_t codec_usb_inactive;
@@ -122,6 +186,21 @@ typedef struct {
     uint32_t usb_speaker_active_us;
     bool usb_speaker_active;
 } ds5_audio_diag_t;
+
+// The codec core's last stage, so a core that stopped answering says where.
+// A stage whose age keeps growing is where core 1 is stuck.
+typedef enum {
+    DS5_CODEC_STAGE_NONE = 0,
+    DS5_CODEC_STAGE_IDLE,          // waiting for work (__wfe)
+    DS5_CODEC_STAGE_MIC,           // companion microphone decode
+    DS5_CODEC_STAGE_PREPARE,       // encoder (re)configuration
+    DS5_CODEC_STAGE_SYNC,          // encoder reset for a new generation
+    DS5_CODEC_STAGE_ENCODE,        // speaker encode, preemptible
+    DS5_CODEC_STAGE_RADIO_LOCK,    // waiting for the CYW43 lock (exclusive encode)
+    DS5_CODEC_STAGE_ENCODE_LOCKED, // speaker encode holding the CYW43 lock
+} ds5_audio_codec_stage_t;
+
+const char *ds5_audio_codec_stage_name(uint32_t stage);
 
 void ds5_audio_diag_get(ds5_audio_diag_t *out);
 void ds5_audio_diag_reset(void);

@@ -1,4 +1,5 @@
 using PicoSwitch.Bridge.Core;
+using PicoSwitch.Companion.Platform.Input;
 using Windows.Devices.Enumeration;
 using Windows.Devices.HumanInterfaceDevice;
 using Windows.Gaming.Input;
@@ -42,39 +43,6 @@ public sealed class WindowsControllerSourceCatalog
     private const string ContainerIdProperty = "System.Devices.ContainerId";
 
     /// <summary>
-    /// Nintendo USB identities the adapter can emulate. Used ONLY to notice that
-    /// a candidate might be the connected adapter's own output — never to hide
-    /// anything, because a genuine controller carries the same identity.
-    /// </summary>
-    /// <remarks>
-    /// Keys are the management wire names from <c>Personalities.WireName</c>,
-    /// not invented ones — the adapter reports "jcl", not "joycon2l", and a
-    /// guessed key would silently never match, which is the worst outcome here:
-    /// the guard would look present and do nothing.
-    /// </remarks>
-    private static readonly IReadOnlyDictionary<string, ushort> PersonalityProducts =
-        new Dictionary<string, ushort>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["pro2"] = 0x2069,   // Pro Controller 2
-            ["gc"] = 0x2073,     // NSO GameCube Controller
-            ["jcl"] = 0x2067,    // Joy-Con 2 (L)
-            ["jcr"] = 0x2066,    // Joy-Con 2 (R)
-        };
-
-    private const ushort NintendoVendor = 0x057E;
-
-    /// <summary>
-    /// The USB product id a management personality wire name emulates, or null
-    /// when that name is not a controller personality. Exposed so a test can
-    /// prove every personality is covered — a missing one makes the
-    /// adapter-echo guard silently inert.
-    /// </summary>
-    public static ushort? PersonalityProductId(string? wireName) =>
-        wireName is not null && PersonalityProducts.TryGetValue(wireName, out var product)
-            ? product
-            : null;
-
-    /// <summary>
     /// Enumerate the current sources.
     /// </summary>
     /// <param name="adapterPersonality">
@@ -82,7 +50,7 @@ public sealed class WindowsControllerSourceCatalog
     /// or null when no adapter is connected. Used to flag a candidate that is
     /// probably this adapter echoing itself.
     /// </param>
-    public async Task<IReadOnlyList<WindowsControllerSource>> EnumerateAsync(
+    public async Task<IReadOnlyList<ControllerSource>> EnumerateAsync(
         string? adapterPersonality = null,
         CancellationToken cancellationToken = default)
     {
@@ -90,7 +58,7 @@ public sealed class WindowsControllerSourceCatalog
         var controllers = await ReadRawControllersAsync(names.Count, cancellationToken)
             .ConfigureAwait(false);
 
-        var sources = new List<WindowsControllerSource>();
+        var sources = new List<ControllerSource>();
         var index = 0;
         foreach (var raw in controllers)
         {
@@ -116,11 +84,11 @@ public sealed class WindowsControllerSourceCatalog
                 IsVirtual: false,
                 HasGamepadSource: true);
 
-            sources.Add(new WindowsControllerSource(
+            sources.Add(new ControllerSource(
                 candidate,
                 Attachment(hid?.ContainerId),
                 isGamepadClass,
-                MayBeThisAdapter(vendor, product, adapterPersonality),
+                AdapterEcho.MayBeThisAdapter(vendor, product, adapterPersonality),
                 hid?.Connection ?? ControllerConnection.Unknown));
         }
 
@@ -244,18 +212,6 @@ public sealed class WindowsControllerSourceCatalog
         containerId is null ? ControllerAttachment.Unknown
         : containerId.Value == MachineContainer ? ControllerAttachment.BuiltIn
         : ControllerAttachment.External;
-
-    private static bool MayBeThisAdapter(
-        ushort vendor, ushort product, string? adapterPersonality)
-    {
-        if (vendor != NintendoVendor || string.IsNullOrWhiteSpace(adapterPersonality))
-        {
-            return false;
-        }
-
-        return PersonalityProducts.TryGetValue(adapterPersonality, out var expected) &&
-               expected == product;
-    }
 
     /// <summary>
     /// Bluetooth HID over GATT. Present in the instance id of every BLE

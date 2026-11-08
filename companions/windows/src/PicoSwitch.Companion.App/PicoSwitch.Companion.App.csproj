@@ -63,12 +63,16 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="$(PicoSwitchWindowsAppSdkVersion)" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
+    <!-- SettingsCard: the native Windows 11 Settings row, so pages look like the OS they run on. -->
+    <PackageReference Include="CommunityToolkit.WinUI.Controls.SettingsControls" Version="8.2.250402" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="../PicoSwitch.Bridge.Core/PicoSwitch.Bridge.Core.csproj" />
     <ProjectReference Include="../PicoSwitch.Management.Core/PicoSwitch.Management.Core.csproj" />
     <ProjectReference Include="../PicoSwitch.Companion.Services/PicoSwitch.Companion.Services.csproj" />
+    <ProjectReference Include="../PicoSwitch.Companion.Platform/PicoSwitch.Companion.Platform.csproj" />
+    <ProjectReference Include="../PicoSwitch.Companion.Windows/PicoSwitch.Companion.Windows.csproj" />
   </ItemGroup>
 
   <ItemGroup>

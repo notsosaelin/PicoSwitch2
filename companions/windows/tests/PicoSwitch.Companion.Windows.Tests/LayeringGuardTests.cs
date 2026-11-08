@@ -72,12 +72,14 @@ public sealed class LayeringGuardTests
     {
         // Services composes the platform layer and owns application-level state.
         // A WinUI type here would make that state impossible to test without a
-        // XAML runtime, and impossible to reuse from anything but this shell.
+        // XAML runtime, and impossible to reuse from anything but this shell. The
+        // Linux (Avalonia) shell shares this project, so its toolkit is barred too.
         var source = ConcatenatedSources("src/PicoSwitch.Companion.Services");
         foreach (var forbidden in new[]
                  {
                      "Microsoft.UI.Xaml",
                      "Microsoft.UI.Windowing",
+                     "Avalonia",
                      "DependencyObject",
                      "ObservableCollection",
                  })
@@ -101,6 +103,7 @@ public sealed class LayeringGuardTests
         {
             "src/PicoSwitch.Bridge.Core",
             "src/PicoSwitch.Management.Core",
+            "src/PicoSwitch.Companion.Platform",
             "src/PicoSwitch.Companion.Services",
             "src/PicoSwitch.Companion.App",
         };
@@ -111,6 +114,52 @@ public sealed class LayeringGuardTests
                 "Windows.Devices.Bluetooth",
                 ConcatenatedSources(project),
                 StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void OnlyTheLinuxProjectIsAllowedToReferenceBlueZOrSdl()
+    {
+        // The Linux mirror of the rule above. PicoSwitch.Companion.Linux is where
+        // D-Bus, BlueZ and SDL live; the shared layers both companions compose
+        // must not reach past it, and neither may the Avalonia shell.
+        var projects = new[]
+        {
+            "src/PicoSwitch.Bridge.Core",
+            "src/PicoSwitch.Management.Core",
+            "src/PicoSwitch.Companion.Platform",
+            "src/PicoSwitch.Companion.Services",
+            "../linux/src/PicoSwitch.Companion.Linux.App",
+        };
+
+        foreach (var project in projects)
+        {
+            var source = ConcatenatedSources(project);
+            foreach (var forbidden in new[] { "Tmds.DBus", "org.bluez", "using SDL;", "SDL3.SDL" })
+            {
+                Assert.DoesNotContain(forbidden, source, StringComparison.Ordinal);
+            }
+        }
+    }
+
+    [Fact]
+    public void TheLinuxShellObeysTheSameRulesAsTheWindowsShell()
+    {
+        // Same reasons as the two App rules at the top of this class: a page that
+        // can name a transport is one refactor from a second management session.
+        var source = ConcatenatedSources("../linux/src/PicoSwitch.Companion.Linux.App");
+        foreach (var forbidden in new[]
+                 {
+                     "ManagementProtocol.",
+                     "ManagementCommands.",
+                     "ControllerReportEncoder.",
+                     "BleManagementContract.",
+                     "BluezManagementTransport",
+                     "IManagementTransport",
+                     "IBluezBus",
+                 })
+        {
+            Assert.DoesNotContain(forbidden, source, StringComparison.Ordinal);
         }
     }
 
@@ -346,8 +395,26 @@ public sealed class LayeringGuardTests
         var enter = shell[shell.IndexOf("public void ShowTouchGamepad", StringComparison.Ordinal)..];
         enter = enter[..enter.IndexOf("public void HideTouchGamepad", StringComparison.Ordinal)];
 
-        Assert.Contains("Navigation.Visibility = Visibility.Collapsed", enter, StringComparison.Ordinal);
+        // The shell is ShellLayer: the page frame, the scrim, the slide-out
+        // navigation and the toast (docs/architecture/companion-shell-layout.md).
+        // It must be gone, not painted over: the navigation is sent away first,
+        // then the whole layer collapses, and Open must refuse to bring the
+        // navigation back while the touch surface is mounted.
+        Assert.Contains("Dismiss(restoreFocus: false);", enter, StringComparison.Ordinal);
+        Assert.Contains("FinishHide();", enter, StringComparison.Ordinal);
+        Assert.Contains("ShellLayer.Visibility = Visibility.Collapsed", enter, StringComparison.Ordinal);
         Assert.Contains("SystemBackdrop = null", enter, StringComparison.Ordinal);
+
+        var xaml = File.ReadAllText(Path.Combine(
+            CompanionRoot, "src", "PicoSwitch.Companion.App", "MainWindow.xaml"));
+        var layer = xaml[xaml.IndexOf("x:Name=\"ShellLayer\"", StringComparison.Ordinal)..];
+        layer = layer[..layer.IndexOf("x:Name=\"TouchGamepadHost\"", StringComparison.Ordinal)];
+        Assert.Contains("x:Name=\"ContentFrame\"", layer, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"Nav\"", layer, StringComparison.Ordinal);
+
+        var open = shell[shell.IndexOf("private void Open(", StringComparison.Ordinal)..];
+        open = open[..open.IndexOf("\n    }", StringComparison.Ordinal)];
+        Assert.Contains("if (TouchGamepadHost.Children.Count > 0)", open, StringComparison.Ordinal);
     }
 
     /// <summary>

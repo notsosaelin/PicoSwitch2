@@ -1,6 +1,6 @@
 using PicoSwitch.Companion.Services;
 using PicoSwitch.Companion.Services.Presentation;
-using PicoSwitch.Companion.Windows.Storage;
+using PicoSwitch.Companion.Platform.Storage;
 using PicoSwitch.Management;
 using Xunit;
 
@@ -31,7 +31,7 @@ public sealed class KbmOfflineLibraryTests : IDisposable
 
     // No transport, no client, no connection. Deliberately.
     private KbmLibraryRepository Library() =>
-        new(new KbmProfileLibraryStore(new WindowsDocumentStore(root)));
+        new(new KbmProfileLibraryStore(new DocumentStore(root)));
 
     public void Dispose()
     {

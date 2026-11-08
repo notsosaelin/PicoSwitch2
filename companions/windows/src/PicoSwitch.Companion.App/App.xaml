@@ -10,6 +10,8 @@
                     does not build a custom visual language, it uses the system's.
                 -->
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+                <!-- One size scale for every page (see the file's header). -->
+                <ResourceDictionary Source="ms-appx:///Styles/Sizes.xaml" />
             </ResourceDictionary.MergedDictionaries>
 
             <!--

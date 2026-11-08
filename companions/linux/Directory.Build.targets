@@ -1,0 +1,12 @@
+<Project>
+
+  <!--
+    Build identity, mirroring the repository's attributable-artifact rule
+    (CLAUDE.md #Build Reproducibility). Overridable from CI so a release build
+    records the commit it came from rather than a timestamp.
+  -->
+  <PropertyGroup>
+    <PicoSwitchBuildRevision Condition="'$(PicoSwitchBuildRevision)' == ''">dev</PicoSwitchBuildRevision>
+  </PropertyGroup>
+
+</Project>

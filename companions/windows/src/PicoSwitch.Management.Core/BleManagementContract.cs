@@ -37,6 +37,22 @@ public static class BleManagementContract
     /// </summary>
     public const string ControllerLinkOutUuid = "6b33e18a-c45d-470e-b291-7f0c88ae3914";
 
+    /// <summary>
+    /// Adapter to companion: companion audio downlink (EXPERIMENTAL), one Opus
+    /// packet per notification. Same service, same bond. Firmware side is
+    /// <c>config_ble_audio_down_uuid</c>; wire contract in
+    /// <c>firmware/src/management/ns2_companion_audio.h</c>.
+    /// </summary>
+    public const string CompanionAudioDownUuid = "a31d6e52-9b04-4c8f-8e27-d5613af0b94c";
+
+    /// <summary>
+    /// Companion to adapter: companion microphone uplink (EXPERIMENTAL),
+    /// write-without-response, one Opus packet per write. Firmware side is
+    /// <c>config_ble_mic_up_uuid</c>; wire contract in
+    /// <c>firmware/src/management/ns2_companion_mic.h</c>.
+    /// </summary>
+    public const string CompanionMicUpUuid = "d4a7c3e1-5b2f-4e86-9c0d-71e3a5b8f2c6";
+
     public const int AttPayloadWithDefaultMtu = 20;
     public const int MaxReplyPayloadBytes = 511;
 

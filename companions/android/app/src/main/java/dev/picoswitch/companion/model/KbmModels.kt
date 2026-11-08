@@ -43,13 +43,6 @@ val KbmMode.title: String get() = when (this) {
     KbmMode.KeyboardMouse -> "Keyboard + Mouse"
 }
 
-val KbmMode.description: String get() = when (this) {
-    KbmMode.Automatic -> "Match whatever you connect"
-    KbmMode.Controller -> "Ignore keyboards and mice"
-    KbmMode.Keyboard -> "Keyboard drives both sticks"
-    KbmMode.KeyboardMouse -> "Mouse aims, keyboard moves"
-}
-
 /**
  * A mapping profile. These are genuinely independent layouts rather than one
  * being a superset of the other -- under Keyboard the keyboard carries both

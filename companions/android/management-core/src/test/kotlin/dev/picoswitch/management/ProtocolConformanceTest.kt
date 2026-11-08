@@ -43,6 +43,14 @@ class ProtocolConformanceTest {
             ble["controllerLinkOutUuid"]!!.jsonPrimitive.content,
         )
         assertEquals(
+            BleManagementContract.COMPANION_AUDIO_DOWN_UUID,
+            ble["companionAudioDownUuid"]!!.jsonPrimitive.content,
+        )
+        assertEquals(
+            BleManagementContract.COMPANION_MIC_UP_UUID,
+            ble["companionMicUpUuid"]!!.jsonPrimitive.content,
+        )
+        assertEquals(
             BleManagementContract.ATT_PAYLOAD_WITH_DEFAULT_MTU,
             ble["minimumMtuPayloadBytes"]!!.jsonPrimitive.int,
         )
@@ -285,6 +293,26 @@ class ProtocolConformanceTest {
                 !vector.reply.contains(forbidden, ignoreCase = true),
             )
         }
+    }
+
+    @Test fun `the console view rides on the input sources reply`() {
+        val vector = vector("inputSources")
+        val console = ManagementProtocol.inputSources(vector.command, vector.reply).console
+        assertEquals(2, console.player)
+        assertTrue(console.amiiboWanted)
+        // Firmware from before 2026-11-08 sends no "console": empty, not a failure.
+        val older = ManagementProtocol.inputSources(
+            "input sources",
+            """{"active":0,"pending":0,"explicit":false,"fresh":false,"transitions":0,"sources":[],"more":false}""",
+        ).console
+        assertEquals(ConsoleView(), older)
+        // A player number outside 1-4 is no player.
+        val odd = ManagementProtocol.inputSources(
+            "input sources",
+            """{"active":0,"pending":0,"explicit":false,"fresh":false,"transitions":0,"sources":[],"more":false,"console":{"player":9}}""",
+        ).console
+        assertEquals(0, odd.player)
+        assertFalse(odd.amiiboWanted)
     }
 
     @Test fun `Amiibo and wake fixtures decode exact semantics`() {

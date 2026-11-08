@@ -19,6 +19,13 @@ ns2_bt_le_link_params_t ns2_bt_mgmt_link_params(void)
     return params;
 }
 
+ns2_bt_le_link_params_t ns2_bt_companion_audio_link_params(void)
+{
+    ns2_bt_le_link_params_t params = ns2_bt_mgmt_link_params();
+    params.interval_max_units = 12u;  // 15 ms -- see the header
+    return params;
+}
+
 bool ns2_bt_le_link_params_valid(ns2_bt_le_link_params_t params)
 {
     // Core spec ranges.

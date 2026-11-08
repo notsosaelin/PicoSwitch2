@@ -1,6 +1,6 @@
 using PicoSwitch.Bridge.Touch;
 using PicoSwitch.Companion.Services.Diagnostics;
-using PicoSwitch.Companion.Windows.Storage;
+using PicoSwitch.Companion.Platform.Storage;
 using PicoSwitch.Management;
 using Xunit;
 
@@ -20,19 +20,19 @@ public sealed class TouchGamepadFixture : IDisposable
 
     public TouchGamepadFixture()
     {
-        Documents = new WindowsDocumentStore(root);
+        Documents = new DocumentStore(root);
         Diagnostics = new DiagnosticLog();
-        Profiles = new WindowsTouchProfileStore(Documents);
-        Legacy = new WindowsTouchOverrideStore(Documents);
+        Profiles = new TouchProfileStore(Documents);
+        Legacy = new TouchOverrideStore(Documents);
     }
 
-    public WindowsDocumentStore Documents { get; }
+    public DocumentStore Documents { get; }
 
     public DiagnosticLog Diagnostics { get; }
 
-    public WindowsTouchProfileStore Profiles { get; }
+    public TouchProfileStore Profiles { get; }
 
-    public WindowsTouchOverrideStore Legacy { get; }
+    public TouchOverrideStore Legacy { get; }
 
     public long Clock { get; set; } = 1_700_000_000_000L;
 
@@ -373,9 +373,9 @@ public sealed class TouchGamepadServiceTests
         Assert.Empty(gc.State.Value.Library.UserProfiles);
 
         Assert.NotNull(fixture.Documents.Read(
-            WindowsTouchProfileStore.DocumentName(TouchProfileId.Pro2)));
+            TouchProfileStore.DocumentName(TouchProfileId.Pro2)));
         Assert.Null(fixture.Documents.Read(
-            WindowsTouchProfileStore.DocumentName(TouchProfileId.GameCube)));
+            TouchProfileStore.DocumentName(TouchProfileId.GameCube)));
     }
 
     [Fact]
@@ -385,7 +385,7 @@ public sealed class TouchGamepadServiceTests
         // runtime is safe regardless because the factory profile needs nothing from
         // storage.
         using var fixture = new TouchGamepadFixture();
-        var name = WindowsTouchProfileStore.DocumentName(TouchProfileId.Pro2);
+        var name = TouchProfileStore.DocumentName(TouchProfileId.Pro2);
         fixture.Documents.Write(name, "{ this is not a layout }");
 
         var service = fixture.NewService();
@@ -410,7 +410,7 @@ public sealed class TouchGamepadServiceTests
         using var fixture = new TouchGamepadFixture();
 
         fixture.Documents.Write(
-            WindowsTouchOverrideStore.DocumentName(TouchProfileId.Pro2),
+            TouchOverrideStore.DocumentName(TouchProfileId.Pro2),
             TouchLayoutOverrideJsonCodec.Encode(new TouchLayoutOverride
             {
                 ProfileId = TouchProfileId.Pro2,

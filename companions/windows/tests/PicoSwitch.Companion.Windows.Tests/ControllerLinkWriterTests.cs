@@ -1,5 +1,6 @@
 using PicoSwitch.Bridge.Protocol;
 using PicoSwitch.Companion.Windows.ControllerLink;
+using PicoSwitch.Companion.Platform.ControllerLink;
 using Xunit;
 
 namespace PicoSwitch.Companion.Windows.Tests;

@@ -54,7 +54,7 @@ public sealed record ControllerLinkView(
                 detail ?? "Connect to a trusted PicoSwitch adapter first.",
                 false, false, false),
             ControllerLinkPhase.Ready or ControllerLinkPhase.Stopped => new(
-                phase, "Ready", "Use this PC as the adapter's controller source.",
+                phase, "Ready", "Use this computer as the adapter's controller source.",
                 managementReady, false, false),
             ControllerLinkPhase.Starting => new(
                 phase, "Starting…", "Handing controller input to the adapter.",
@@ -63,7 +63,7 @@ public sealed record ControllerLinkView(
             // step because there is no second connection to establish: if input
             // is streaming, the link is up.
             ControllerLinkPhase.Streaming => new(
-                phase, "Streaming", "This PC is the adapter's controller.",
+                phase, "Streaming", "This computer is the adapter's controller.",
                 false, true, false),
             ControllerLinkPhase.Stopping => new(
                 phase, "Stopping…", "Releasing controller input safely.",

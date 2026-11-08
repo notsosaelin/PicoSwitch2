@@ -208,9 +208,11 @@ source/JVM-tested as of 2026-08-20 and await the focused AYN Thor matrix in
 [`HARDWARE_VALIDATION.md`](../companions/android/HARDWARE_VALIDATION.md). The original app-led HID
 path through PicoSwitch2 into a real game remains hardware-confirmed from 2026-08-13.
 
-The application is organized around five destinations — **Adapter**, **Keyboard**, **Amiibo**,
-**Gamepad**, **Settings** — with **Diagnostics** and **Amiibo settings** pushed over them rather
-than holding permanent navigation space. Layout branches on measured content width, never on
+The application uses the shell shared by all three companions
+([`architecture/companion-shell-layout.md`](architecture/companion-shell-layout.md)): a dock with
+**Play** (where it opens), **Keyboard & Mouse**, **Amiibo**, **Customization** and **Adapter**,
+**Settings** behind the top bar's gear, and **Diagnostics** and **Amiibo settings** pushed over
+them rather than holding permanent navigation space. Layout branches on measured content width, never on
 orientation or device names. The full information architecture, shared Compose primitives,
 responsive rules, and the debug-only layout lab used to inspect them are documented in
 [`companions/android/README.md`](../companions/android/README.md).

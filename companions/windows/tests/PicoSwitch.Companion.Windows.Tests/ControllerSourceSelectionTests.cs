@@ -1,5 +1,6 @@
 using PicoSwitch.Bridge.Core;
 using PicoSwitch.Companion.Windows.Input;
+using PicoSwitch.Companion.Platform.Input;
 using PicoSwitch.Management;
 using Xunit;
 
@@ -15,7 +16,7 @@ namespace PicoSwitch.Companion.Windows.Tests;
 /// </summary>
 public sealed class ControllerSourceSelectionTests
 {
-    private static WindowsControllerSource Source(
+    private static ControllerSource Source(
         string id,
         string name = "Controller",
         ControllerAttachment attachment = ControllerAttachment.External,
@@ -228,11 +229,11 @@ public sealed class ControllerIdentityParsingTests
 
             var wire = Personalities.WireName(personality);
             Assert.True(
-                WindowsControllerSourceCatalog.PersonalityProductId(wire) is not null,
+                AdapterEcho.PersonalityProductId(wire) is not null,
                 $"personality '{wire}' has no USB product id in the adapter-echo guard");
         }
 
-        Assert.Null(WindowsControllerSourceCatalog.PersonalityProductId("joycon2l"));
-        Assert.Equal((ushort)0x2069, WindowsControllerSourceCatalog.PersonalityProductId("pro2"));
+        Assert.Null(AdapterEcho.PersonalityProductId("joycon2l"));
+        Assert.Equal((ushort)0x2069, AdapterEcho.PersonalityProductId("pro2"));
     }
 }

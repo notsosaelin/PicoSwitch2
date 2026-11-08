@@ -323,7 +323,7 @@ public sealed class TouchEditorViewTests
         // …and the whole explanation is one tap away in the menu, rather than laid across
         // the bottom of the controller.
         Assert.NotNull(view.LinkDetail);
-        Assert.Contains("Start Controller Link", view.LinkDetail!, StringComparison.Ordinal);
+        Assert.Contains("Start playing on Play", view.LinkDetail!, StringComparison.Ordinal);
 
         Assert.True(view.Editable);
     }
@@ -555,7 +555,7 @@ public sealed class TouchEditorViewTests
     {
         using var fixture = new TouchGamepadFixture();
         fixture.Documents.Write(
-            Companion.Windows.Storage.WindowsTouchProfileStore.DocumentName(TouchProfileId.Pro2),
+            Companion.Platform.Storage.TouchProfileStore.DocumentName(TouchProfileId.Pro2),
             "not a layout");
 
         var view = TouchEditorView.Of(fixture.NewService().State.Value, true);

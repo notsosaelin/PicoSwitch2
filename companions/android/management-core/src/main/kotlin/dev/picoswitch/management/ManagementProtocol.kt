@@ -116,6 +116,38 @@ object ManagementProtocol {
         )
     }
 
+    /** Companion audio downlink state, nested under "caudio" like "clink". */
+    fun companionAudio(command: String, response: String): CompanionAudioState = decode(command, response) { value ->
+        val audio = value["caudio"] as? JsonObject ?: throw IllegalArgumentException("Missing 'caudio'")
+        val frames = audio["frames"] as? JsonObject
+        fun frame(name: String) = frames?.optionalLong(name) ?: 0L
+        CompanionAudioState(
+            supported = audio.optionalBoolean("supported") ?: false,
+            active = audio.optionalBoolean("active") ?: false,
+            subscribed = audio.optionalBoolean("subscribed") ?: false,
+            usbSpeakerActive = audio.optionalBoolean("usb_speaker") ?: false,
+            version = audio.optionalInt("version") ?: 0,
+            codec = audio.optionalString("codec") ?: "",
+            sampleRate = audio.optionalInt("sample_rate") ?: 0,
+            channels = audio.optionalInt("channels") ?: 0,
+            frameMillis = audio.optionalInt("frame_ms") ?: 0,
+            frameBytes = audio.optionalInt("frame_bytes") ?: 0,
+            attMtu = audio.optionalInt("att_mtu") ?: 0,
+            minimumAttMtu = audio.optionalInt("min_att_mtu") ?: 0,
+            generation = audio.optionalLong("generation") ?: 0L,
+            admit = audio.optionalString("admit") ?: "",
+            lastStop = audio.optionalString("last_stop") ?: "",
+            framesSent = frame("sent"),
+            framesBusy = frame("busy"),
+            framesFailed = frame("failed"),
+            framesRejected = frame("rejected"),
+            sendMaxGapMicros = audio.optionalLong("send_max_gap_us") ?: 0L,
+            kbps = audio.optionalInt("kbps") ?: 0,
+            mic = audio.optionalBoolean("mic") ?: false,
+            micSupported = audio.optionalBoolean("mic_supported") ?: false,
+        )
+    }
+
     fun wakeStatus(command: String, response: String): WakeStatus = decode(command, response) { value ->
         WakeStatus(
             result = when (value.string("result")) {
@@ -400,6 +432,13 @@ object ManagementProtocol {
             transitions = transitions,
             sources = sources,
             truncated = value.requiredBoolean("more"),
+            // Optional: firmware before 2026-11-08 omits it.
+            console = (value["console"] as? JsonObject)?.let { console ->
+                ConsoleView(
+                    player = console.optionalInt("player")?.takeIf { it in 1..4 } ?: 0,
+                    amiiboWanted = console.optionalBoolean("amiibo_wanted") ?: false,
+                )
+            } ?: ConsoleView(),
         )
     }
 
@@ -723,6 +762,12 @@ object ManagementCommands {
     const val AMIIBO_STATUS = "amiibo status"
     const val KBM_STATUS = "kbm status"
     const val KBM_MOUSE = "kbm mouse"
+    /** Companion audio (EXPERIMENTAL): the console's audio as this device's headset. */
+    const val COMPANION_AUDIO_START = "caudio start"
+    /** Start (or re-plug) companion audio as a headset with this device's microphone. */
+    const val COMPANION_AUDIO_START_MIC = "caudio start mic"
+    const val COMPANION_AUDIO_STOP = "caudio stop"
+    const val COMPANION_AUDIO_STATUS = "caudio status"
 
     fun inputActive(sourceId: Long): String {
         require(sourceId in 0..0xFFFF_FFFFL)

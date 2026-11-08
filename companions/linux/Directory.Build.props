@@ -1,0 +1,22 @@
+<Project>
+
+  <!--
+    The Linux companion shares the Windows companion's portable projects
+    (Bridge.Core, Management.Core, Companion.Platform, Companion.Services), which
+    live under companions/windows/src. It inherits the same language, nullability
+    and warnings-as-errors defaults from there so the shared code compiles
+    identically in both solutions.
+  -->
+  <Import Project="../windows/Directory.Build.props" />
+
+  <PropertyGroup>
+    <PicoSwitchSharedSource>$(MSBuildThisFileDirectory)../windows/src/</PicoSwitchSharedSource>
+
+    <!-- Pinned with Avalonia: Avalonia.FreeDesktop 11.3.22 depends on exactly this. -->
+    <PicoSwitchTmdsDBusProtocolVersion>0.21.3</PicoSwitchTmdsDBusProtocolVersion>
+    <PicoSwitchAvaloniaVersion>11.3.22</PicoSwitchAvaloniaVersion>
+    <!-- SDL3 bindings plus the native libSDL3.so for linux-x64, in one package. -->
+    <PicoSwitchSdl3Version>2026.1002.1</PicoSwitchSdl3Version>
+  </PropertyGroup>
+
+</Project>

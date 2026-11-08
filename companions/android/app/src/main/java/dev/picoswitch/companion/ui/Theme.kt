@@ -55,6 +55,35 @@ object LayoutTokens {
     val DisabledAlpha = 0.38f
 
     val ContentMaxWidth = 1240.dp
+
+    // THE SHARED SIZE SCALE (docs/architecture/companion-shell-layout.md,
+    // "Sizes"), the same numbers as Windows' Styles/Sizes.xaml and Linux's
+    // Shell/Tokens.cs. Material keeps its own 48 dp minimum touch target around
+    // every control regardless, so a 36 dp control is still a 48 dp target.
+    val ControlHeight = 36.dp
+    val LargeControlHeight = 44.dp
+    val HeroControlHeight = 76.dp
+    /** Every action button (ActionButton): one height, one radius. */
+    val ActionHeight = 52.dp
+    val ActionRadius = 14.dp
+    val CommandMinWidth = 96.dp
+    val SelectorMinWidth = 220.dp
+    val CardSelectorWidth = 280.dp
+    val PageMaxWidth = 1000.dp
+    val WidePageMaxWidth = 1240.dp
+    /** Page padding: left/right and top/bottom, and the narrow-window version. */
+    val PagePaddingSide = 32.dp
+    val PagePaddingTop = 12.dp
+    val PagePaddingBottom = 24.dp
+    val NarrowPagePaddingSide = 14.dp
+    /** Below this window width the page uses the narrow padding. */
+    val NarrowPageWidth = 640.dp
+    /** The side navigation's width. */
+    val RailWidth = 80.dp
+    /** A top / bottom bar's height, its items' height, and the width below which it uses one-word names. */
+    val BarHeight = 64.dp
+    val NavItemHeight = 52.dp
+    val NavFullNamesMin = 720.dp
     val DetailWidth = 360.dp
     val EmptyStateWidth = 340.dp
     /**
@@ -121,6 +150,7 @@ object LayoutTokens {
 data class ThemeSelection(
     val mode: ThemeMode = ThemeMode.System,
     val palette: AccentPalette = AccentPalette.Standard,
+    val navigation: NavPlacement = NavPlacement.Auto,
 )
 
 enum class ThemeMode(val key: String, val title: String, val description: String) {
@@ -176,14 +206,16 @@ enum class AccentPalette(
 
 /** Pure codec keeps preference migration deterministic and easy to test without an Android device. */
 object ThemePreferenceCodec {
-    fun decode(modeKey: String?, paletteKey: String?): ThemeSelection = ThemeSelection(
+    fun decode(modeKey: String?, paletteKey: String?, navigationKey: String? = null): ThemeSelection = ThemeSelection(
         mode = ThemeMode.fromKey(modeKey),
         palette = AccentPalette.fromKey(paletteKey),
+        navigation = NavPlacement.fromKey(navigationKey),
     )
 
     fun encode(selection: ThemeSelection): Map<String, String> = mapOf(
         ThemePreferenceStore.MODE_KEY to selection.mode.key,
         ThemePreferenceStore.PALETTE_KEY to selection.palette.key,
+        ThemePreferenceStore.NAVIGATION_KEY to selection.navigation.key,
     )
 }
 
@@ -193,6 +225,7 @@ class ThemePreferenceStore(context: Context) {
     fun load(): ThemeSelection = ThemePreferenceCodec.decode(
         preferences.getString(MODE_KEY, null),
         preferences.getString(PALETTE_KEY, null),
+        preferences.getString(NAVIGATION_KEY, null),
     )
 
     fun save(selection: ThemeSelection) {
@@ -200,6 +233,7 @@ class ThemePreferenceStore(context: Context) {
         preferences.edit {
             putString(MODE_KEY, encoded.getValue(MODE_KEY))
             putString(PALETTE_KEY, encoded.getValue(PALETTE_KEY))
+            putString(NAVIGATION_KEY, encoded.getValue(NAVIGATION_KEY))
         }
     }
 
@@ -207,6 +241,7 @@ class ThemePreferenceStore(context: Context) {
         internal const val FILE_NAME = "appearance"
         internal const val MODE_KEY = "theme_mode"
         internal const val PALETTE_KEY = "accent_palette"
+        internal const val NAVIGATION_KEY = "navigation_placement"
     }
 }
 
@@ -394,6 +429,7 @@ internal fun ThemeSelection.resolveColorScheme(systemDark: Boolean): ColorScheme
     else -> lightColors(palette)
 }
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun CompanionTheme(
     selection: ThemeSelection = ThemeSelection(),
@@ -431,8 +467,20 @@ fun CompanionTheme(
         // a background only: the padding that keeps content clear of the bars
         // lives further in, on the Scaffold's safeDrawing insets, so nothing
         // here moves any content.
-        Box(Modifier.fillMaxSize().background(colors.background)) {
-            content()
+        // Controller navigation (GamepadNavigation): Material's focus state
+        // layer is 10 %, invisible from arm's length on a handheld. Make the
+        // focused control obvious; touch is unaffected (focus only follows keys).
+        androidx.compose.runtime.CompositionLocalProvider(
+            androidx.compose.material3.LocalRippleConfiguration provides
+                androidx.compose.material3.RippleConfiguration(
+                    rippleAlpha = androidx.compose.material.ripple.RippleAlpha(
+                        draggedAlpha = 0.16f, focusedAlpha = 0.32f, hoveredAlpha = 0.08f, pressedAlpha = 0.16f,
+                    ),
+                ),
+        ) {
+            Box(Modifier.fillMaxSize().background(colors.background)) {
+                content()
+            }
         }
     }
 }

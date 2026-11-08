@@ -104,6 +104,23 @@ public sealed class ControllerInputSession
     }
 
     /// <summary>
+    /// Hold or release a console button for as long as the player holds Play's
+    /// Home / Capture / C (companion-shell-layout.md, "Play": held, not
+    /// clicked). The console tells a tap from a hold — Capture records on a
+    /// long hold, Home opens the power menu — so the app passes the hold
+    /// through rather than tapping. Virtual, like <see cref="TapAsync"/>, so it
+    /// merges with the live source. The caller releases it on pointer up,
+    /// pointer capture loss and when the page goes away.
+    /// </summary>
+    public void SetConsoleButton(ControllerButton button, bool pressed)
+    {
+        lock (gate)
+        {
+            input.SetVirtualButton(button, pressed);
+        }
+    }
+
+    /// <summary>
     /// How long an app-injected console button is held.
     ///
     /// 120 ms comfortably exceeds one poll of any console this targets while
@@ -148,6 +165,22 @@ public sealed class ControllerInputSession
         return Snapshot;
     }
 
+    /// <summary>
+    /// Read a polled source once without taking a snapshot: the shell's menu
+    /// driver uses it while Controller Link is not running (and so is not
+    /// sampling). Harmless for an event-driven source, which has no sampler.
+    /// </summary>
+    public void SamplePhysical()
+    {
+        IControllerInputSampler? source;
+        lock (gate)
+        {
+            source = sampler;
+        }
+
+        source?.Sample();
+    }
+
     public InputAuthority Authority
     {
         get
@@ -155,6 +188,49 @@ public sealed class ControllerInputSession
             lock (gate)
             {
                 return input.Authority;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Every frame the physical controller delivered, whoever owns it. The shell
+    /// reads it to drive its own menus (<see cref="Presentation.GamepadUiNavigator"/>).
+    /// Raised on the source's thread, outside the lock.
+    /// </summary>
+    public event Action<ControllerButtonSet, AnalogFrame>? PhysicalFrameObserved;
+
+    /// <summary>Whether the app, not the console, owns the physical controller right now.</summary>
+    public bool AppHoldsPad
+    {
+        get { lock (gate) { return appHoldsPad; } }
+    }
+
+    private bool appHoldsPad;
+
+    /// <summary>
+    /// Give the physical controller to the app's own menus (true) or back to the
+    /// console (false) — <see cref="Presentation.PadOwnership"/>.
+    ///
+    /// Taking it NEUTRALIZES the console's view at once, so whatever was held as
+    /// the navigation or a page came up (a stick leaning, the D-pad that was
+    /// walking) does not stay held in the game while the controller drives
+    /// menus. While held, physical frames still arrive and are still observed;
+    /// they just never reach the console. Touch input is not the pad and is
+    /// left alone.
+    /// </summary>
+    public void SetAppHoldsPad(bool held)
+    {
+        lock (gate)
+        {
+            if (appHoldsPad == held)
+            {
+                return;
+            }
+
+            appHoldsPad = held;
+            if (held && !touch.Active)
+            {
+                input.Neutralize();
             }
         }
     }
@@ -167,18 +243,18 @@ public sealed class ControllerInputSession
         lock (gate)
         {
             physicalSource = source;
-            if (touch.Active)
+            if (!touch.Active && !appHoldsPad)
             {
-                return;
-            }
+                if (input.Source != source)
+                {
+                    input.SetSource(source);
+                }
 
-            if (input.Source != source)
-            {
-                input.SetSource(source);
+                input.ApplyPhysicalFrame(buttons, analog);
             }
-
-            input.ApplyPhysicalFrame(buttons, analog);
         }
+
+        PhysicalFrameObserved?.Invoke(buttons, analog);
     }
 
     /// <summary>The selected controller's battery, forwarded to the console.</summary>

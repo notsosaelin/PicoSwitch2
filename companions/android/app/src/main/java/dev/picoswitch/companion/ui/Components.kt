@@ -2,6 +2,10 @@
 
 package dev.picoswitch.companion.ui
 
+import androidx.compose.foundation.verticalScroll
+
+import androidx.compose.foundation.rememberScrollState
+
 import android.content.ClipData
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
@@ -137,7 +141,9 @@ fun ScreenHeader(
             Text(
                 title,
                 Modifier.semantics { heading() },
-                style = if (short) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall,
+                // Compact on every page: the shell's top bar already says where
+                // the user is, so a page title is a label, not a banner.
+                style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
             )
             if (subtitle.isNotBlank() && !short) {
@@ -163,10 +169,13 @@ fun SectionCard(
     contentPadding: Dp = LayoutTokens.CardPadding,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    // A short window (a landscape handheld) gets the tight rhythm: at the
+    // standard padding and gap a three-control card no longer fit its page.
+    val short = LocalShortWindow.current
     Card(modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = container)) {
         Column(
-            Modifier.fillMaxWidth().padding(contentPadding),
-            verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space3),
+            Modifier.fillMaxWidth().padding(if (short) minOf(contentPadding, LayoutTokens.Space3) else contentPadding),
+            verticalArrangement = Arrangement.spacedBy(if (short) LayoutTokens.Space2 else LayoutTokens.Space3),
         ) {
             if (title != null) {
                 Row(
@@ -607,8 +616,10 @@ fun PicoDialog(
         icon = icon?.let { { Icon(it, null) } },
         title = { Text(title, style = MaterialTheme.typography.headlineSmall) },
         text = {
+            // Scrolls, so a list of choices is never cut off on a short
+            // landscape screen (the Odin's 468 dp cut the Navigation dialog).
             Column(
-                Modifier.fillMaxWidth(),
+                Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space3),
                 content = content,
             )

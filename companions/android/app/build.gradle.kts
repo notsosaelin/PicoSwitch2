@@ -44,8 +44,8 @@ android {
         // bridge contract version, which changes only when the wire changes.
         //
         // versionCode scheme: major * 10000 + minor * 100 + patch.
-        versionCode = 20500
-        versionName = "2.5.0"
+        versionCode = 20600
+        versionName = "2.6.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -155,6 +155,11 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+    // Opus decode for companion audio (EXPERIMENTAL): the pure-Java port of
+    // libopus (the libopus BSD licence, no transitive dependencies), the Java sibling of
+    // the Concentus package the Windows companion uses. Chosen over MediaCodec
+    // because the receiver needs the decoder's packet-loss concealment.
+    implementation("io.github.jaredmdobson:concentus:1.0.2")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

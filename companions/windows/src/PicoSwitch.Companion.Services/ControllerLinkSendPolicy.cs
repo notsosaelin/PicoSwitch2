@@ -71,6 +71,18 @@ public static class ControllerLinkSendPolicy
         Moved(current.LeftTrigger, previous.LeftTrigger) ||
         Moved(current.RightTrigger, previous.RightTrigger);
 
+    /// <summary>
+    /// Did the motion block change in a way the adapter would act on?
+    ///
+    /// A new sensor sample (its timestamp advanced) or a validity edge. The
+    /// timestamp, not the values, is the identity of a sample: a perfectly still
+    /// controller still produces fresh samples, and the firmware's motion
+    /// sequence advances only when this field changes.
+    /// </summary>
+    public static bool MotionAdvanced(ControllerState current, ControllerState previous) =>
+        current.Motion.Valid != previous.Motion.Valid ||
+        (current.Motion.Valid && current.Motion.TimestampTicks != previous.Motion.TimestampTicks);
+
     private static bool Moved(int current, int previous) =>
         Math.Abs(current - previous) >= AnalogEpsilon;
 }

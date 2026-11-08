@@ -58,6 +58,16 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
     private val adapter get() = manager?.adapter
     private val session = SerializedManagementSession()
     private val lifecycle = Mutex()
+
+    /**
+     * One GATT operation at a time. Android's client rejects a second write
+     * while one awaits its callback (ERROR_GATT_WRITE_REQUEST_BUSY), and the
+     * microphone writes 50 times a second alongside management commands, so
+     * every individual write -- command chunk, descriptor, microphone frame --
+     * holds this for its write and its callback. A command's wait for its REPLY
+     * does not hold it: microphone frames keep flowing while the adapter answers.
+     */
+    private val gattOperation = Mutex()
     private val lifecycleScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val notifications = Channel<ByteArray>(capacity = 32)
     private val _connection = MutableStateFlow(ConnectionState())
@@ -72,6 +82,10 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         @Volatile var gatt: BluetoothGatt? = null
         @Volatile var rx: BluetoothGattCharacteristic? = null
         @Volatile var tx: BluetoothGattCharacteristic? = null
+        @Volatile var audioDown: BluetoothGattCharacteristic? = null
+        @Volatile var audioSubscribe: CompletableDeferred<Boolean>? = null
+        @Volatile var micUp: BluetoothGattCharacteristic? = null
+        @Volatile var micWrite: CompletableDeferred<Boolean>? = null
         @Volatile var writeReady: CompletableDeferred<Unit>? = null
         @Volatile var closeRequested = false
         @Volatile var terminalFailure = false
@@ -100,6 +114,7 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
     private data class PairingCandidate(val generation: Long, val device: BluetoothDevice)
 
     @Volatile private var current: OwnedGatt? = null
+    @Volatile private var audioListener: ((ByteArray) -> Unit)? = null
     @Volatile private var pairingCandidate: PairingCandidate? = null
     @Volatile private var nextContext = ManagementConnectionContext()
     private var nextGattGeneration = 0L
@@ -228,6 +243,9 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
                 ))
             owner.rx = service.getCharacteristic(UUID.fromString(BleManagementContract.RX_UUID))
             owner.tx = service.getCharacteristic(UUID.fromString(BleManagementContract.TX_UUID))
+            // Optional: firmware without companion audio does not expose it.
+            owner.audioDown = service.getCharacteristic(AUDIO_DOWN_UUID)
+            owner.micUp = service.getCharacteristic(MIC_UP_UUID)
             val output = owner.tx ?: return fail(owner, GattTransportException(
                 "Management notification characteristic is missing", null, GattFailureStage.Services,
             ))
@@ -267,6 +285,12 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
             val owner = ownerFor(gatt) ?: return staleCallback("descriptor", gatt)
+            if (descriptor.characteristic?.uuid == AUDIO_DOWN_UUID) {
+                // The companion audio subscription, never the management one.
+                log(owner, "gatt.audio_subscribe", "status=$status")
+                owner.audioSubscribe?.complete(status == BluetoothGatt.GATT_SUCCESS)
+                return
+            }
             log(owner, "gatt.subscribe", "status=$status")
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 _connection.value = connectionState(owner, ConnectionPhase.Connecting, "Verifying PicoSwitch2 identity")
@@ -283,8 +307,10 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
         @Deprecated("Deprecated in API 33")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-            if (ownerFor(gatt) != null && characteristic.uuid == TX_UUID) {
-                recordNotification(ownerFor(gatt), characteristic.value)
+            if (ownerFor(gatt) == null) return
+            when (characteristic.uuid) {
+                TX_UUID -> recordNotification(ownerFor(gatt), characteristic.value)
+                AUDIO_DOWN_UUID -> audioListener?.invoke(characteristic.value.copyOf())
             }
         }
 
@@ -293,11 +319,21 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
-            if (characteristic.uuid == TX_UUID) recordNotification(ownerFor(gatt), value)
+            when (characteristic.uuid) {
+                TX_UUID -> recordNotification(ownerFor(gatt), value)
+                // Straight to the audio session: 50 notifications a second must
+                // not queue behind management replies.
+                AUDIO_DOWN_UUID -> if (ownerFor(gatt) != null) audioListener?.invoke(value)
+            }
         }
 
         @Deprecated("Deprecated in API 33")
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            if (characteristic.uuid == MIC_UP_UUID) {
+                // A microphone frame, never a command chunk.
+                ownerFor(gatt)?.micWrite?.complete(status == BluetoothGatt.GATT_SUCCESS)
+                return
+            }
             ownerFor(gatt)?.let { owner ->
                 owner.commandTrace?.let { trace ->
                     trace.writeCallbacks += 1
@@ -516,6 +552,110 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         }
     }
 
+    override val attMtu: Int get() = current?.negotiatedMtu ?: BleManagementContract.DEFAULT_ATT_MTU
+
+    /**
+     * Subscribe to the companion audio downlink. Serialized with commands: the
+     * GATT client takes one operation at a time. Holds CONNECTION_PRIORITY_HIGH
+     * (11.25-15 ms) for the session -- the audio budget assumes a 15 ms
+     * interval, and the management link otherwise sits at BALANCED (30-50 ms)
+     * after identity (docs/experiments/companion-audio-downlink-prototype-2026-11-07.md).
+     */
+    override suspend fun openCompanionAudio(onFrame: (ByteArray) -> Unit): Boolean =
+        withContext(Dispatchers.IO) {
+            session.exchange {
+                val owner = current ?: return@exchange false
+                val gatt = owner.gatt ?: return@exchange false
+                val characteristic = owner.audioDown ?: return@exchange false
+                if (!owner.ready.isCompleted || owner.terminalFailure || owner.closed) return@exchange false
+                val ccc = characteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG) ?: return@exchange false
+                audioListener = onFrame
+                val subscribed = writeAudioSubscription(owner, gatt, characteristic, ccc, enable = true)
+                if (!subscribed) {
+                    audioListener = null
+                    return@exchange false
+                }
+                val high = runCatching {
+                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                }.getOrDefault(false)
+                log(owner, "gatt.priority", "source=companion-audio priority=high apiAccepted=$high")
+                true
+            }
+        }
+
+    override suspend fun closeCompanionAudio() {
+        withContext(Dispatchers.IO) {
+            session.exchange {
+                audioListener = null
+                val owner = current ?: return@exchange
+                val gatt = owner.gatt ?: return@exchange
+                val characteristic = owner.audioDown ?: return@exchange
+                if (owner.terminalFailure || owner.closed) return@exchange
+                val ccc = characteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG) ?: return@exchange
+                writeAudioSubscription(owner, gatt, characteristic, ccc, enable = false)
+                val balanced = runCatching {
+                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+                }.getOrDefault(false)
+                log(owner, "gatt.priority", "source=companion-audio priority=balanced apiAccepted=$balanced")
+            }
+        }
+    }
+
+    private suspend fun writeAudioSubscription(
+        owner: OwnedGatt,
+        gatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        ccc: BluetoothGattDescriptor,
+        enable: Boolean,
+    ): Boolean {
+        if (!gatt.setCharacteristicNotification(characteristic, enable)) return false
+        val done = CompletableDeferred<Boolean>()
+        val bytes = if (enable) {
+            BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+        } else {
+            BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
+        }
+        val result = gattOperation.withLock {
+            owner.audioSubscribe = done
+            if (!writeDescriptor(gatt, ccc, bytes)) {
+                owner.audioSubscribe = null
+                return false
+            }
+            val ok = withTimeoutOrNull(AUDIO_SUBSCRIBE_TIMEOUT_MILLIS) { done.await() } ?: false
+            owner.audioSubscribe = null
+            ok
+        }
+        log(owner, "gatt.audio_subscription", "enable=$enable ok=$result")
+        return result
+    }
+
+    override val companionMicAvailable: Boolean
+        get() = current?.let { it.micUp != null && it.ready.isCompleted && !it.closed && !it.terminalFailure } == true
+
+    /**
+     * One microphone frame as write-without-response. Android still reports
+     * such a write through onCharacteristicWrite, once its stack has taken the
+     * buffer, which is what bounds this to one frame in the stack at a time
+     * (CompanionMicWriter). A missing callback counts as a failure after
+     * [MIC_WRITE_TIMEOUT_MILLIS] rather than wedging the uplink.
+     */
+    override suspend fun writeCompanionMic(frame: ByteArray): Boolean = withContext(Dispatchers.IO) {
+        gattOperation.withLock {
+            val owner = current ?: return@withLock false
+            val gatt = owner.gatt ?: return@withLock false
+            val characteristic = owner.micUp ?: return@withLock false
+            if (!owner.ready.isCompleted || owner.terminalFailure || owner.closed) return@withLock false
+            val done = CompletableDeferred<Boolean>()
+            owner.micWrite = done
+            val accepted = writeCharacteristic(
+                gatt, characteristic, frame, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE,
+            ).accepted
+            val ok = accepted && (withTimeoutOrNull(MIC_WRITE_TIMEOUT_MILLIS) { done.await() } ?: false)
+            owner.micWrite = null
+            ok
+        }
+    }
+
     override fun markValidated() {
         val owner = current ?: return
         if (!owner.ready.isCompleted || owner.terminalFailure || owner.closed) return
@@ -656,7 +796,7 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
                         command,
                         BleManagementContract.attPayloadFor(owner.negotiatedMtu),
                     )
-                    for ((index, part) in chunks.withIndex()) {
+                    for ((index, part) in chunks.withIndex()) gattOperation.withLock {
                         owner.writeReady = CompletableDeferred()
                         log(
                             owner,
@@ -898,18 +1038,15 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         gatt: BluetoothGatt,
         characteristic: BluetoothGattCharacteristic,
         bytes: ByteArray,
+        writeType: Int = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
     ): GattApiResult {
         return if (Build.VERSION.SDK_INT >= 33) {
-            val status = gatt.writeCharacteristic(
-                characteristic,
-                bytes,
-                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-            )
+            val status = gatt.writeCharacteristic(characteristic, bytes, writeType)
             GattApiResult(status == BluetoothStatusCodes.SUCCESS, status)
         } else {
             @Suppress("DEPRECATION")
             run {
-                characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                characteristic.writeType = writeType
                 characteristic.value = bytes
                 GattApiResult(gatt.writeCharacteristic(characteristic), null)
             }
@@ -949,5 +1086,9 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         private const val REQUESTED_ATT_MTU = 517
         private val CLIENT_CHARACTERISTIC_CONFIG = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private val TX_UUID = UUID.fromString(BleManagementContract.TX_UUID)
+        private val AUDIO_DOWN_UUID = UUID.fromString(BleManagementContract.COMPANION_AUDIO_DOWN_UUID)
+        private const val AUDIO_SUBSCRIBE_TIMEOUT_MILLIS = 3_000L
+        private val MIC_UP_UUID = UUID.fromString(BleManagementContract.COMPANION_MIC_UP_UUID)
+        private const val MIC_WRITE_TIMEOUT_MILLIS = 250L
     }
 }

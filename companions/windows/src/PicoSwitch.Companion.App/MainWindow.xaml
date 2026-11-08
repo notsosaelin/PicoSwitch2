@@ -2,16 +2,20 @@
     x:Class="PicoSwitch.Companion.App.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     mc:Ignorable="d">
 
     <!--
-        Mica reaches the top edge because the title bar is extended into the
-        client area. The drag region MUST be declared explicitly (the Grid named
-        AppTitleBar below, passed to SetTitleBar) or the window becomes
-        unmovable - a standard WinUI 3 trap, called out in WINDOWS_PASS.md 17.2.
+        The shared shell layout (docs/architecture/companion-shell-layout.md,
+        "Navigation"): the page, and a slide-out navigation at the edge the
+        player chose. Built in MainWindow.xaml.cs; this file holds the layers.
+
+        The title bar is extended into the client area so Mica reaches the top
+        edge, and AppTitleBar is the window's drag region. It shows only while
+        the window is NOT full screen (F11): full screen has no caption, and the
+        page takes the whole height. Nothing is inside it but the app's name:
+        the connection indicator and Settings live in the navigation.
     -->
     <Window.SystemBackdrop>
         <MicaBackdrop />
@@ -23,100 +27,97 @@
         alone, because the strip's height is not the only thing that can be left
         unpainted at a given display scale.
     -->
-    <Grid x:Name="WindowRoot">
+    <Grid x:Name="WindowRoot" KeyDown="OnRootKeyDown" XYFocusKeyboardNavigation="Enabled">
+        <Grid.Resources>
+            <!-- One destination: a round pill, icon only at the side, icon and name at the top or bottom. -->
+            <Style x:Key="NavItemStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+                <Setter Property="Height" Value="52" />
+                <Setter Property="MinWidth" Value="52" />
+                <Setter Property="Padding" Value="14,0" />
+                <Setter Property="CornerRadius" Value="26" />
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="HorizontalAlignment" Value="Center" />
+                <Setter Property="VerticalAlignment" Value="Center" />
+                <Setter Property="HorizontalContentAlignment" Value="Center" />
+            </Style>
+            <Style x:Key="NavItemSelectedStyle" TargetType="Button" BasedOn="{StaticResource NavItemStyle}">
+                <Setter Property="Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                <Setter Property="Foreground" Value="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+            </Style>
+        </Grid.Resources>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
         <Grid x:Name="AppTitleBar" Grid.Row="0" Height="48" Padding="16,0,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition x:Name="CaptionInset" Width="138" />
+            </Grid.ColumnDefinitions>
             <TextBlock
                 x:Name="AppTitleTextBlock"
                 VerticalAlignment="Center"
+                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                 Style="{StaticResource CaptionTextBlockStyle}"
                 Text="PicoSwitch2 Companion" />
         </Grid>
 
-        <!--
-            Destinations keep the Android set and order: Adapter, Keyboard &amp;
-            Mouse, Amiibo, Gamepad, Settings. Diagnostics is reached FROM
-            Settings and is deliberately not a daily destination.
+        <Grid x:Name="ShellLayer" Grid.Row="1">
+            <Frame x:Name="ContentFrame" />
 
-            Full titles in the rail rather than the phone's truncated labels: a
-            NavigationView has the room, and re-truncating them in the name of
-            parity would be a regression.
-        -->
-        <muxc:NavigationView
-            x:Name="Navigation"
-            Grid.Row="1"
-            IsBackButtonVisible="Collapsed"
-            IsSettingsVisible="True"
-            PaneDisplayMode="Auto"
-            SelectionChanged="OnNavigationSelectionChanged">
+            <!-- Over the page while the navigation is out; a tap sends it away. -->
+            <Border
+                x:Name="Scrim"
+                Background="{ThemeResource SmokeFillColorDefaultBrush}"
+                Opacity="0"
+                Tapped="OnScrimTapped"
+                Visibility="Collapsed" />
 
-            <muxc:NavigationView.MenuItems>
-                <muxc:NavigationViewItem Content="Adapter" Tag="adapter">
-                    <muxc:NavigationViewItem.Icon>
-                        <!-- The Symbol enum has no Bluetooth member; E702 is the system glyph. -->
-                        <FontIcon Glyph="&#xE702;" />
-                    </muxc:NavigationViewItem.Icon>
-                </muxc:NavigationViewItem>
-                <muxc:NavigationViewItem Content="Keyboard &amp; Mouse" Tag="kbm">
-                    <muxc:NavigationViewItem.Icon>
-                        <SymbolIcon Symbol="Keyboard" />
-                    </muxc:NavigationViewItem.Icon>
-                </muxc:NavigationViewItem>
-                <muxc:NavigationViewItem Content="Amiibo" Tag="amiibo">
-                    <muxc:NavigationViewItem.Icon>
-                        <SymbolIcon Symbol="Tag" />
-                    </muxc:NavigationViewItem.Icon>
-                </muxc:NavigationViewItem>
-                <muxc:NavigationViewItem Content="Gamepad" Tag="gamepad">
-                    <muxc:NavigationViewItem.Icon>
-                        <SymbolIcon Symbol="Play" />
-                    </muxc:NavigationViewItem.Icon>
-                </muxc:NavigationViewItem>
-            </muxc:NavigationView.MenuItems>
+            <!--
+                The navigation. Always a slide-out: it moves by Translation only
+                (220 ms in, 120 ms out), so the page is never re-measured, and it
+                is collapsed once it has left so focus can never land in it.
+            -->
+            <Border
+                x:Name="Nav"
+                Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                Visibility="Collapsed">
+                <Border.Shadow>
+                    <ThemeShadow />
+                </Border.Shadow>
+            </Border>
 
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-
-                <!--
-                    The connection banner is global because connection state
-                    affects every page. Absent when the session is Ready; carries
-                    the primary recovery action for the current phase.
-                -->
-                <muxc:InfoBar
-                    x:Name="ConnectionBanner"
-                    Grid.Row="0"
-                    Margin="24,12,24,0"
-                    IsOpen="False"
-                    IsClosable="False"
-                    Severity="Informational"
-                    Title="Adapter" />
-
-                <Frame x:Name="ContentFrame" Grid.Row="1" />
-            </Grid>
-        </muxc:NavigationView>
+            <Border
+                x:Name="Toast"
+                MaxWidth="480"
+                Margin="24"
+                Padding="18,12"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Top"
+                Background="{ThemeResource AcrylicInAppFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="12"
+                IsHitTestVisible="False"
+                Visibility="Collapsed">
+                <TextBlock x:Name="ToastText" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+            </Border>
+        </Grid>
 
         <!--
             The Touch Gamepad is a MODE, not a destination (WINDOWS_PASS.md §15.4),
             and it REPLACES the shell rather than covering it: ShowTouchGamepad
-            collapses the NavigationView above, empties the title strip and drops
-            the window's Mica backdrop. This is the Windows form of the Android
-            companion's early return, where the scaffold is simply never composed.
-
-            It occupies row 1, which is the whole client area once the title strip
-            is reduced to the caption band. Row 0 keeps that band because an
-            extended title bar is the window's only drag region, and a windowed
-            controller that cannot be moved is not finished.
+            collapses the page and the navigation, empties the title strip and
+            drops the window's Mica backdrop. This is the Windows form of the
+            Android companion's early return, where the scaffold is simply never
+            composed.
 
             Do NOT give this host a translucent background or restore an overlay
             arrangement here. The first version layered the surface over a live
-            NavigationView, and the rail, cards and status bars showed through the
+            shell, and the rail, cards and status bars showed through the
             controller.
         -->
         <Grid

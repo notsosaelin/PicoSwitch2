@@ -258,6 +258,13 @@ bool config_wireless_command_allowed(const char *command)
            // transport it is designed for.
            strcmp(command, "clink") == 0 ||
            strncmp(command, "clink ", 6) == 0 ||
+           // Companion audio downlink (EXPERIMENTAL). Same narrow authority as
+           // clink: it arms a plane on the connection that issued it and opens
+           // no radio surface. Its one console-visible effect -- advertising a
+           // headphone jack so the console routes audio here -- ends with the
+           // management session.
+           strcmp(command, "caudio") == 0 ||
+           strncmp(command, "caudio ", 7) == 0 ||
            strcmp(command, "save") == 0 ||
            strcmp(command, "save status") == 0 ||
            strncmp(command, "amiibo ", 7) == 0 ||

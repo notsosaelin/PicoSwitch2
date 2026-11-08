@@ -203,7 +203,7 @@ recovery ran decided whether the pairing survived. They agree now.
 
 Destructive paths that remain, all explicitly user-driven: Phase 5 `peers forget`, `bonds remove`,
 the BOOTSEL triple-tap wipe, the `btfresh` diagnostic, the MouthPad clear-bond command, and the
-first-boot install reset.
+first boot of a clean-install UF2.
 
 `ns2_bt_classic_auth_failure_forgets_existing()` states the rule once and is pinned across all 256
 status values. Reintroducing automatic deletion has to come past it.
@@ -282,30 +282,47 @@ Merging is by identity address. A dual-mode device whose LE identity address dif
 Classic BD_ADDR appears as two `unknown` peers rather than one. That is incomplete rather than
 wrong, and is preferred over asserting an association the adapter cannot demonstrate.
 
-## Install-reset marker
+## Install marker: update UF2 and clean-install UF2
 
-Every UF2 carries a dedicated pending marker page in the application image. On the first boot after
-that UF2 is written, core 0 runs before USB, CYW43 and core 1:
+Every UF2 carries a dedicated pending marker page in the application image,
+consumed (programmed to zero) on the first boot after that UF2 is written, on
+core 0 before USB, CYW43 and core 1. What that first boot does depends on the
+build (`NS2_INSTALL_RESET`, `firmware/build.ps1 -Wipe`):
 
-1. Validate marker placement below the reserved persistence boundary.
-2. Erase the complete six-sector region (`SIZE-6S` through end of flash).
-3. Program the marker page from its pending magic to zero.
-4. Load default settings and an empty Amiibo store.
-5. Initialize BTstack/TLV on core 1.
-6. Recreate `JPLK=1` before enabling discovery or Classic connectability.
+| UF2 | File | First boot after flashing |
+|---|---|---|
+| **Update** (default since 2026-11-08) | `PicoSwitchWGA-<board>.uf2` | Consumes the marker and logs `New firmware image: settings, amiibo slots and Bluetooth pairings kept`. Nothing is erased; pairing admission is not locked. |
+| **Clean install** | `PicoSwitchWGA-<board>-wipe.uf2` | Erases the complete six-sector region (`SIZE-6S` to end of flash), consumes the marker, loads defaults and an empty Amiibo store, and recreates `JPLK=1` before discovery or Classic connectability. |
 
-Erase precedes marker consumption. Power loss before consumption repeats the erase safely. Power
-loss after consumption but before `JPLK` recreation still leaves no trust material; the independent
+Why the default changed (owner, 2026-11-08): the wipe on every flash dates
+from when stale bonds and automatic reconnects made test results ambiguous ("so
+a stale controller cannot reconnect after a flash"). Since then every
+reconnect path keeps the credential and fails boundedly (above), and every
+store validates its own records: the settings record migrates by schema
+version and is sanitised, Amiibo records carry a magic and version, and the
+BTstack TLV banks carry their own magic and epoch. Re-pairing every controller,
+the companion and the console after each update had become the cost without
+the benefit.
+
+**When the clean-install UF2 is required:** a release whose persistence layout
+cannot read the previous one (a sector moved, a store changed incompatibly)
+must say so and ship only the clean-install image, or turn
+`NS2_INSTALL_RESET` on for its standard build. Tests that need a known-empty
+adapter use the clean-install image or the BOOTSEL triple-tap wipe.
+
+Clean-install ordering: erase precedes marker consumption, so power loss
+before consumption repeats the erase safely. Power loss after consumption but
+before `JPLK` recreation still leaves no trust material; the independent
 fresh-admission rule rejects new trust while no explicit window is open.
 
-The previous implementation erased only five sectors while the verifier and reserved layout began
-at `SIZE-6S`. That left Amiibo bank 0 outside the reset despite a log claiming all slots were reset.
-The 2026-08-20 correction makes the runtime erase match the six-sector contract.
+The 2026-08-20 correction made the erase cover all six sectors; an earlier
+version erased five while the layout began at `SIZE-6S`, which left Amiibo
+bank 0 outside the reset.
 
 ## Firmware flashing terminology
 
-“UF2 flashed” is not enough evidence to identify what happened. For the release UF2 path above, a
-newly written marker deliberately resets persistent state once. A debug/programmer operation that
+“UF2 flashed” is not enough evidence to identify what happened. An update UF2 keeps persistent
+state; a clean-install UF2 deliberately resets it once. A debug/programmer operation that
 does not rewrite the marker page may preserve state. A full-chip erase removes everything. Test
 reports MUST name the exact flashing method and record bond state before the remote is powered on.
 

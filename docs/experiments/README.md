@@ -89,6 +89,7 @@ that were disproven, why they were attractive, and the evidence against them.
 
 ## Audio
 
+- [Companion audio downlink prototype (Windows first) — 2026-11-07](companion-audio-downlink-prototype-2026-11-07.md)
 - [DualSense live-Opus first hardware pass — failed](2026-07-17-dualsense-live-opus-failure.md)
 
 ## USB personalities and controller hardware

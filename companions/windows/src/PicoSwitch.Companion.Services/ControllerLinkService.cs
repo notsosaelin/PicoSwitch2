@@ -3,7 +3,7 @@ using PicoSwitch.Bridge.Core;
 using PicoSwitch.Bridge.Protocol;
 using PicoSwitch.Companion.Services.Diagnostics;
 using PicoSwitch.Companion.Services.Presentation;
-using PicoSwitch.Companion.Windows.ControllerLink;
+using PicoSwitch.Companion.Platform.ControllerLink;
 using PicoSwitch.Management;
 
 namespace PicoSwitch.Companion.Services;
@@ -107,6 +107,7 @@ public sealed class ControllerLinkService : IAsyncDisposable
     private readonly IControllerLinkManagement management;
     private readonly ControllerInputSession input;
     private readonly IControllerOutputBackend output;
+    private readonly IMotionBackend motion;
     private readonly DiagnosticLog diagnostics;
     private readonly StateValue<ControllerLinkView> view;
     private readonly SemaphoreSlim lifecycle = new(1, 1);
@@ -126,6 +127,12 @@ public sealed class ControllerLinkService : IAsyncDisposable
     private long outputReportsDecoded;
     private long malformedOutputReports;
     private long outputDeliveryFailures;
+    private long reportsWithMotion;
+
+    // Set from the adapter's feedback (BridgeOutputCodec.MotionRequested), which
+    // the firmware raises only while the console is consuming motion. Read by
+    // the publisher on every tick.
+    private volatile bool motionRequested;
     private ControllerLinkMetrics finalMetrics = ControllerLinkMetrics.Empty;
     private bool disposed;
 
@@ -133,11 +140,13 @@ public sealed class ControllerLinkService : IAsyncDisposable
         IControllerLinkManagement management,
         ControllerInputSession input,
         IControllerOutputBackend output,
-        DiagnosticLog diagnostics)
+        DiagnosticLog diagnostics,
+        IMotionBackend? motion = null)
     {
         this.management = management;
         this.input = input;
         this.output = output;
+        this.motion = motion ?? NoMotionBackend.Instance;
         this.diagnostics = diagnostics;
         view = new StateValue<ControllerLinkView>(ReadyView());
         management.Changed += OnManagementChanged;
@@ -155,6 +164,7 @@ public sealed class ControllerLinkService : IAsyncDisposable
                 return finalMetrics with
                 {
                     ReportsGenerated = Interlocked.Read(ref reportsGenerated),
+                    ReportsWithMotion = Interlocked.Read(ref reportsWithMotion),
                 };
             }
 
@@ -175,7 +185,8 @@ public sealed class ControllerLinkService : IAsyncDisposable
                 Interlocked.Read(ref outputReportsDecoded),
                 Interlocked.Read(ref malformedOutputReports),
                 Interlocked.Read(ref outputDeliveryFailures),
-                plane.AttMtu);
+                plane.AttMtu,
+                Interlocked.Read(ref reportsWithMotion));
         }
     }
 
@@ -356,6 +367,17 @@ public sealed class ControllerLinkService : IAsyncDisposable
                 // the wire as sample age.
                 var state = input.SampleAndSnapshot();
 
+                // Motion rides the same report, sampled at encode time, and only
+                // while the console asked for it -- exactly the Kotlin
+                // BridgeSession.buildReport rule. A host with no IMU never sets
+                // the valid flag, so the adapter publishes no motion rather than
+                // a latched zero.
+                var motionLive = motionRequested && motion.Available;
+                if (motionLive)
+                {
+                    state = state with { Motion = motion.Sample() };
+                }
+
                 // Send on CHANGE, not on a clock. A fixed cadence makes a press
                 // that lands just after a tick wait a whole period for no reason,
                 // and spends radio repeating states the adapter already has. This
@@ -370,9 +392,15 @@ public sealed class ControllerLinkService : IAsyncDisposable
                     lastSent is null ||
                     ControllerLinkSendPolicy.DigitalChanged(state, lastSent);
 
+                // A fresh IMU sample is an analog-class change. Keyed on the
+                // SENSOR timestamp, never on time: the adapter de-duplicates on
+                // that field, and resending one sample is harmless while
+                // inventing a new one is integrated as real movement
+                // (MotionConvention, "Timestamps").
                 var analogChanged =
                     lastSent is null ||
-                    ControllerLinkSendPolicy.AnalogMoved(state, lastSent);
+                    ControllerLinkSendPolicy.AnalogMoved(state, lastSent) ||
+                    ControllerLinkSendPolicy.MotionAdvanced(state, lastSent);
                 var changed = digitalChanged || analogChanged;
 
                 var sinceSent = now - lastSentTicks;
@@ -420,6 +448,10 @@ public sealed class ControllerLinkService : IAsyncDisposable
                 ControllerLinkDataPlane.EncodeInput(payload, unchecked(sequence++), frame);
                 dataPlane?.PublishInput(frame);
                 Interlocked.Increment(ref reportsGenerated);
+                if (state.Motion.Valid)
+                {
+                    Interlocked.Increment(ref reportsWithMotion);
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -449,6 +481,8 @@ public sealed class ControllerLinkService : IAsyncDisposable
 
         Interlocked.Increment(ref outputReportsDecoded);
 
+        SetMotionRequested(decoded.Value.MotionRequested);
+
         shapedLeft = RumbleShaping.Shape(decoded.Value.Rumble.Left, shapedLeft);
         shapedRight = RumbleShaping.Shape(decoded.Value.Rumble.Right, shapedRight);
         ApplyOutput(new RumbleRequest(shapedLeft, shapedRight));
@@ -461,6 +495,49 @@ public sealed class ControllerLinkService : IAsyncDisposable
                 $"output reports={count} malformed={Interlocked.Read(ref malformedOutputReports)} " +
                 $"player={decoded.Value.PlayerIndicator} motion={decoded.Value.MotionRequested}");
         }
+    }
+
+    /// <summary>
+    /// Follow the console's motion demand. Sensors run only while it is consumed,
+    /// so an idle host is not polling an IMU nobody reads.
+    /// </summary>
+    private void SetMotionRequested(bool requested)
+    {
+        if (requested == motionRequested)
+        {
+            return;
+        }
+
+        motionRequested = requested;
+        if (!motion.Available)
+        {
+            diagnostics.Info(
+                "controller-link",
+                requested
+                    ? "console requested motion; this host has no motion source"
+                    : "console stopped motion");
+            return;
+        }
+
+        try
+        {
+            if (requested)
+            {
+                motion.Start();
+            }
+            else
+            {
+                motion.Stop();
+            }
+        }
+        catch (Exception error)
+        {
+            diagnostics.Warn("controller-link", $"motion {(requested ? "start" : "stop")} failed: {error.Message}");
+        }
+
+        diagnostics.Info(
+            "controller-link",
+            requested ? "console requested motion" : "console stopped motion");
     }
 
     private void ApplyOutput(RumbleRequest request)
@@ -616,6 +693,7 @@ public sealed class ControllerLinkService : IAsyncDisposable
         }
 
         currentCancellation?.Dispose();
+        SetMotionRequested(false);
         input.Neutralize();
         ApplyOutput(RumbleRequest.None);
     }
@@ -698,6 +776,7 @@ public sealed class ControllerLinkService : IAsyncDisposable
         outputReportsDecoded = 0;
         malformedOutputReports = 0;
         outputDeliveryFailures = 0;
+        reportsWithMotion = 0;
         shapedLeft = 0;
         shapedRight = 0;
         sequence = 0;
@@ -742,7 +821,8 @@ public sealed record ControllerLinkMetrics(
     long OutputReportsDecoded,
     long MalformedOutputReports,
     long OutputDeliveryFailures,
-    int AttMtu)
+    int AttMtu,
+    long ReportsWithMotion = 0)
 {
     public static readonly ControllerLinkMetrics Empty = new(
         0, 0, 0, 0, 0, 0,
@@ -757,5 +837,6 @@ public sealed record ControllerLinkMetrics(
         $"writeAvgMs={AverageWriteLatency.TotalMilliseconds:F2} " +
         $"writeMaxMs={MaximumWriteLatency.TotalMilliseconds:F2} " +
         $"output={OutputFramesReceived}/{OutputReportsDecoded} " +
-        $"malformed={MalformedOutputReports} outputFailures={OutputDeliveryFailures} mtu={AttMtu}";
+        $"malformed={MalformedOutputReports} outputFailures={OutputDeliveryFailures} mtu={AttMtu} " +
+        $"motionReports={ReportsWithMotion}";
 }

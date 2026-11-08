@@ -1,180 +1,202 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-
 package dev.picoswitch.companion.ui
 
-import androidx.compose.foundation.gestures.detectTapGestures
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import dev.picoswitch.bridge.core.ControllerButton
-import dev.picoswitch.bridge.session.BridgeLinkPhase
-import dev.picoswitch.companion.data.ColorTarget
+import dev.picoswitch.companion.data.AdapterId
 import dev.picoswitch.companion.model.*
 
-/**
- * The home page for the physical adapter.
- *
- * It answers, in order: which adapter is this, what is it doing, what is
- * plugged into it, and what can I change about it. Personality and appearance
- * live here rather than on a separate page because they are properties of this
- * one device; splitting them across two destinations made changing a colour a
- * navigation task.
- *
- * Technical detail is deliberately absent -- it is in Diagnostics.
- */
-@Composable
-fun AdapterScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
-    var colorTarget by remember { mutableStateOf<ColorTarget?>(null) }
-
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val twoColumn = twoColumnLayout(maxWidth)
-        val short = LocalShortWindow.current
-        val gap = if (short) LayoutTokens.Space3 else LayoutTokens.Space4
-
-        // FOUR TILES, ONE SUBJECT EACH: what the adapter is and what the console
-        // sees it as, how it looks, what it can press, and what tag it holds.
-        // Controller mode used to be a fifth card of its own, which separated
-        // "this is your adapter" from "this is what it pretends to be" — two
-        // halves of the same sentence.
-        val controller: @Composable () -> Unit = { AdapterOverviewCard(ui, viewModel) }
-        // Half of a two-column page still leaves room for three swatches on a
-        // tablet; a phone in one column does not, and neither does a narrow
-        // window. Decided from the page's own width, which it already knows.
-        val narrowColours = twoColumn && maxWidth < LayoutTokens.ColorTileRowMinWidth * 2
-        val appearance: @Composable () -> Unit = {
-            AppearanceCard(ui, narrowColours) { colorTarget = it }
-        }
-        val console: @Composable () -> Unit = { ConsoleButtonsCard(ui, viewModel) }
-        val amiibo: @Composable () -> Unit = { AdapterAmiiboCard(ui, viewModel) }
-
-        Column(Modifier.fillMaxSize()) {
-            ScreenHeader(AppSection.Adapter.title, subtitle = AppSection.Adapter.subtitle)
-            Spacer(Modifier.height(LayoutTokens.Space3))
-            if (twoColumn) {
-                // IntrinsicSize.Min so the two tiles in a row agree on a height:
-                // otherwise each column stacks to its own content and the four
-                // tiles form a ragged grid.
-                Column(
-                    Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(gap),
-                ) {
-                    TileRow(gap, controller, appearance)
-                    TileRow(gap, console, amiibo)
-                    Spacer(Modifier.height(LayoutTokens.Space5))
-                }
-            } else {
-                Column(
-                    Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(gap),
-                ) {
-                    controller(); appearance(); console(); amiibo()
-                    Spacer(Modifier.height(LayoutTokens.Space5))
-                }
-            }
-        }
-    }
-
-    colorTarget?.let { target ->
-        ColorPickerDialog(
-            title = target.title,
-            initial = target.current(ui.snapshot.config),
-            enabled = ui.connection.connected && !ui.busy,
-            onDismiss = { colorTarget = null },
-            onApply = { viewModel.saveColor(target, it); colorTarget = null },
-        )
-    }
-}
+private val adapterTabs = listOf(
+    PageTab("Console", Icons.Default.Tv),
+    PageTab("Controllers", Icons.Default.Gamepad),
+    PageTab("Adapters", Icons.Default.Cable),
+)
 
 /**
- * Two tiles side by side, sharing a height.
+ * The adapter as a device (docs/architecture/companion-shell-layout.md, "What
+ * lives where"): a header (name, state, firmware, Connect/Disconnect) over three
+ * tabs, so the page fits the screen instead of scrolling.
  *
- * Each tile is a Row child measured at IntrinsicSize.Min, so the taller of the
- * pair sets the row and the shorter stretches to match. Without it the two
- * columns stack independently and the grid goes ragged — the same unevenness a
- * card whose height follows its content always produces beside one whose does
- * not.
+ *  - Console: the controller on the console, the emulated controller, the input
+ *    source, and the Amiibo the adapter is serving.
+ *  - Controllers: pair a controller; connected, paired and recent controllers.
+ *  - Adapters: add an adapter; the adapters this phone remembers.
+ *
+ * Opens on Adapters when none is remembered yet, since that is the only tab
+ * with anything to do. Colours are on Customization; Wake console is on Play.
  */
 @Composable
-private fun TileRow(
-    gap: androidx.compose.ui.unit.Dp,
-    left: @Composable () -> Unit,
-    right: @Composable () -> Unit,
+fun AdapterScreen(
+    ui: CompanionUiState,
+    viewModel: CompanionViewModel,
+    onConnectAdapter: () -> Unit,
+    onPairAdapter: () -> Unit,
+    onRepairAdapter: (AdapterId?) -> Unit,
 ) {
-    Row(
-        Modifier.fillMaxWidth().height(IntrinsicSize.Min),
-        horizontalArrangement = Arrangement.spacedBy(gap),
-    ) {
-        Box(Modifier.weight(1f).fillMaxHeight()) { left() }
-        Box(Modifier.weight(1f).fillMaxHeight()) { right() }
+    var tab by rememberSaveable { mutableIntStateOf(if (ui.adapters.isEmpty()) 2 else 0) }
+
+    PageFrame(LayoutTokens.PageMaxWidth, scroll = false) {
+        // On a short window (a landscape handheld) the tabs join the header row
+        // and the header drops the adapter's name, which the top bar already
+        // shows: one row of chrome instead of three.
+        val tabs: @Composable () -> Unit = { PageTabs(adapterTabs, tab, { tab = it }) }
+        if (LocalShortWindow.current) {
+            AdapterHeader(ui, viewModel, onConnectAdapter, onRepairAdapter, leading = tabs)
+        } else {
+            AdapterHeader(ui, viewModel, onConnectAdapter, onRepairAdapter)
+            tabs()
+        }
+        TabBody {
+            when (tab) {
+                0 -> ConsoleTab(ui, viewModel)
+                1 -> AdapterControllersTab(ui, viewModel)
+                else -> AdapterAdaptersTab(ui, viewModel, onPairAdapter, onRepairAdapter)
+            }
+        }
     }
 }
 
-/**
- * The one high-level status block: identity, state, and what is attached.
- *
- * Human-readable throughout. The firmware build hash, bridge contract, and
- * capability states that used to sit near the top are diagnostics and are no
- * longer shown here.
- */
 @Composable
-private fun AdapterOverviewCard(ui: CompanionUiState, viewModel: CompanionViewModel) {
-    val snapshot = ui.snapshot
+private fun AdapterHeader(
+    ui: CompanionUiState,
+    viewModel: CompanionViewModel,
+    onConnectAdapter: () -> Unit,
+    onRepairAdapter: (AdapterId?) -> Unit,
+    leading: (@Composable () -> Unit)? = null,
+) {
     val connected = ui.connection.connected
-    SectionCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.primaryContainer,
-                modifier = Modifier.size(44.dp),
-            ) {
-                Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Gamepad, null) }
-            }
+    val hasAdapter = ui.adapterRelationship != null
+    val actionEnabled = !ui.busy && !ui.relationshipStatus.attemptActive
+    val name = ui.adapterRelationship?.displayName ?: ui.connection.deviceName ?: "No adapter"
+
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        if (leading != null) {
+            leading()
             Spacer(Modifier.width(LayoutTokens.Space3))
-            Column(Modifier.weight(1f)) {
+        }
+        Column(Modifier.weight(1f)) {
+            if (leading == null) {
                 Text(
-                    ui.connection.deviceName ?: ui.adapterRelationship?.displayName ?: "PicoSwitch2",
+                    name,
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+            }
+            val firmware = ui.snapshot.firmware.version.takeIf { connected && it.isNotBlank() }
+            // No state here: the top bar is the app's ONE connection indicator
+            // (companion-shell-layout.md), and repeating "Connected" a few
+            // pixels under it read as two notifications for one fact.
+            firmware?.let {
                 Text(
-                    if (connected) "Acting as ${snapshot.personality.current.title}" else "Not connected",
-                    style = MaterialTheme.typography.bodySmall,
+                    "Firmware $it",
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            IconButton(
-                onClick = viewModel::wake,
-                enabled = connected && !ui.busy && snapshot.capabilities.wake != CapabilityState.Unsupported,
-            ) { Icon(Icons.Default.PowerSettingsNew, "Wake console") }
+            // Only a real message (why a connect failed). "Add one below." used
+            // to sit here, repeating the Adapters tab's "Add an adapter" card
+            // and pointing at nothing on the other two tabs.
+            val detail = if (connected) null else ui.connection.message
+            detail?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
-
-        if (!connected) {
-            InlineNotice("Connect to the adapter to see its state and change its settings.")
-            return@SectionCard
+        Spacer(Modifier.width(LayoutTokens.Space2))
+        when {
+            connected -> {
+                IconButton(onClick = viewModel::refresh, enabled = !ui.busy) {
+                    Icon(Icons.Default.Refresh, "Refresh adapter")
+                }
+                OutlinedButton(
+                    onClick = viewModel::disconnect,
+                    enabled = !ui.busy,
+                    modifier = Modifier.widthIn(min = LayoutTokens.CommandMinWidth),
+                ) { Text("Disconnect") }
+            }
+            ui.connection.phase == ConnectionPhase.RepairRequired -> {
+                // Forgetting the Android bond is the one repair step this app
+                // cannot perform: BluetoothDevice.removeBond() is a @SystemApi
+                // gated on BLUETOOTH_PRIVILEGED. Offer the shortest supported
+                // route to it instead of leaving the user to find it.
+                val context = LocalContext.current
+                TextButton(
+                    onClick = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }
+                    },
+                    enabled = actionEnabled,
+                ) { Text("Bluetooth settings") }
+                Button(onClick = { onRepairAdapter(ui.activeAdapterId) }, enabled = actionEnabled) {
+                    Text("Repair")
+                }
+            }
+            hasAdapter -> Button(
+                onClick = onConnectAdapter,
+                enabled = actionEnabled && !AdapterStatus.inProgress(ui.connection.phase),
+                modifier = Modifier.widthIn(min = LayoutTokens.CommandMinWidth),
+            ) { Text("Connect") }
         }
+    }
+}
 
-        HorizontalDivider()
+/** What the console sees: the controller on it, what the adapter pretends to be, and who drives it. */
+@Composable
+private fun ConsoleTab(ui: CompanionUiState, viewModel: CompanionViewModel) {
+    if (!ui.connection.connected) {
+        InlineNotice("Connect to the adapter to see what the console sees and change it.")
+        return
+    }
+    // Three subjects side by side on a wide window, so a landscape handheld
+    // (about 960 x 540 dp) shows the whole tab without scrolling.
+    val cards: List<@Composable () -> Unit> = listOf(
+        { ConsoleControllerCard(ui, viewModel) },
+        { InputSourceCard(ui, viewModel) },
+        // The Amiibo the adapter is serving. On Android it stays here because
+        // it is the one place a tag that is NOT in the library can be seen,
+        // saved or cleared; the library's inspector only shows tags it holds.
+        { AdapterAmiiboCard(ui, viewModel) },
+    )
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        if (maxWidth >= ConsoleThreeColumnWidth) {
+            Row(Modifier.height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space3)) {
+                cards.forEach { card -> Box(Modifier.weight(1f)) { card() } }
+            }
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space3)) { cards.forEach { it() } }
+        }
+    }
+}
 
-        val controller = snapshot.controller
+/** Three readable card columns need this much width; below it they stack. */
+private val ConsoleThreeColumnWidth = 840.dp
+
+@Composable
+private fun ConsoleControllerCard(ui: CompanionUiState, viewModel: CompanionViewModel) {
+    val controller = ui.snapshot.controller
+    SectionCard(title = "Controller on the console", icon = Icons.Default.SportsEsports) {
         DeviceStatusRow(
             role = "Controller",
             name = controller.name,
@@ -211,336 +233,99 @@ private fun AdapterOverviewCard(ui: CompanionUiState, viewModel: CompanionViewMo
                 trailing = { Icon(Icons.Default.ChevronRight, null) },
             )
         }
-
-        // What the console sees this adapter as, beside what the adapter IS.
-        PersonalityPicker(ui, viewModel)
-
-        // The happy path applies automatically. This recovery action exists only
-        // when persistence succeeded but USB re-enumeration did not.
-        if (ui.identityRefreshPending) {
-            Surface(
-                Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.small,
-                color = MaterialTheme.colorScheme.tertiaryContainer,
-            ) {
-                Row(
-                    Modifier.padding(horizontal = LayoutTokens.Space3, vertical = LayoutTokens.Space2),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("USB identity refresh pending", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            "The color is saved; retry the brief USB reconnect.",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    Spacer(Modifier.width(LayoutTokens.Space2))
-                    TextButton(onClick = viewModel::applyIdentityChanges, enabled = !ui.busy) {
-                        Text("Retry")
-                    }
-                }
-            }
-        }
+        HorizontalDivider()
+        EmulatedControllerRow(ui, viewModel)
     }
 }
 
 /**
- * Controller mode, as a single choice rather than a row of buttons.
- *
- * A chip per personality put four equally-weighted controls on screen for a
- * setting with exactly one value, and grew a row every time a personality was
- * added. A menu states the current mode in one line and keeps the alternatives
- * one tap away, which is the shape this setting actually has.
+ * The emulated controller, as a single choice rather than a row of buttons: a
+ * menu states the current mode in one line and keeps the alternatives one tap
+ * away, which is the shape this setting actually has.
  */
 @Composable
-private fun PersonalityPicker(ui: CompanionUiState, viewModel: CompanionViewModel) {
+private fun EmulatedControllerRow(ui: CompanionUiState, viewModel: CompanionViewModel) {
     var open by remember { mutableStateOf(false) }
     val choices = ui.snapshot.personality.available.ifEmpty {
         listOf(Personality.Pro2, Personality.GameCube, Personality.JoyConLeft, Personality.JoyConRight)
     }
     val current = ui.snapshot.personality.current
-    val enabled = ui.connection.connected && !ui.busy &&
-        ui.snapshot.capabilities.personality != CapabilityState.Unsupported
+    val enabled = !ui.busy && ui.snapshot.capabilities.personality != CapabilityState.Unsupported
 
-    Box(Modifier.fillMaxWidth()) {
-        SettingsRow(
-            title = "Controller mode",
-            supporting = if (enabled || current != Personality.Unknown) {
-                current.title
-            } else {
-                "Connect to change"
-            },
-            leading = Icons.Default.Cable,
-            enabled = enabled,
-            onClick = { open = true },
-            trailing = { Icon(Icons.Default.ArrowDropDown, null) },
-        )
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            choices.forEach { mode ->
-                DropdownMenuItem(
-                    text = { Text(mode.title) },
-                    leadingIcon = if (mode == current) {
-                        { Icon(Icons.Default.Check, null) }
-                    } else null,
-                    onClick = {
-                        open = false
-                        // Switching re-enumerates USB, so asking for the mode it
-                        // is already in would drop the console's controller for
-                        // no change at all.
-                        if (mode != current) viewModel.switchPersonality(mode)
-                    },
-                )
+    run {
+        Box(Modifier.fillMaxWidth()) {
+            SettingsRow(
+                title = "Emulated controller",
+                supporting = current.title,
+                leading = Icons.Default.Cable,
+                enabled = enabled,
+                onClick = { open = true },
+                trailing = { Icon(Icons.Default.ArrowDropDown, null) },
+            )
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                choices.forEach { mode ->
+                    DropdownMenuItem(
+                        text = { Text(mode.title) },
+                        leadingIcon = if (mode == current) {
+                            { Icon(Icons.Default.Check, null) }
+                        } else null,
+                        onClick = {
+                            open = false
+                            // Switching re-enumerates USB, so asking for the mode
+                            // it is already in would drop the console's
+                            // controller for no change at all.
+                            if (mode != current) viewModel.switchPersonality(mode)
+                        },
+                    )
+                }
             }
         }
     }
 }
 
-/**
- * One compact appearance block for all three identity colours.
- *
- * Previously each colour owned a whole card with three sliders, which made
- * appearance the tallest thing on the page for a setting most people change
- * once. The current values stay immediately visible as swatches; editing moves
- * into a focused dialog.
- */
+/** Which of the adapter's controllers drives the console. */
 @Composable
-private fun AppearanceCard(
-    ui: CompanionUiState,
-    /** True when this tile occupies a half-width column and cannot fit three swatches. */
-    narrow: Boolean,
-    onEdit: (ColorTarget) -> Unit,
-) {
-    val config = ui.snapshot.config
-    val connected = ui.connection.connected
-    val enabled = connected && !ui.busy
-    val targets = ColorTarget.entries
-    SectionCard(title = "Appearance", icon = Icons.Default.Palette) {
-        Text(
-            "Colours the console reads when the adapter connects.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        if (!connected) {
-            // The disconnected snapshot's colours are zeroes, not the adapter's.
-            // Three black swatches labelled #000000 would be a confident,
-            // wrong answer to "what colour is my controller".
-            InlineNotice("Connect to see and change the adapter's colours.")
-            return@SectionCard
-        }
-        // TOLD, NOT MEASURED. This used BoxWithConstraints, which is a
-        // SubcomposeLayout and cannot answer an intrinsic measurement — so the
-        // moment the page asked the tiles to agree on a height, the card
-        // crashed. The page already knows whether this is a half-width column,
-        // which is the only thing the measurement was ever used to decide.
-        if (!narrow) {
-            Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
-                targets.forEach { target ->
-                    ColorTile(target, target.current(config), enabled, Modifier.weight(1f)) { onEdit(target) }
-                }
-            }
-        } else {
-            Column {
-                targets.forEach { target ->
+private fun InputSourceCard(ui: CompanionUiState, viewModel: CompanionViewModel) {
+    val input = ui.snapshot.input
+    SectionCard(title = "Input source", icon = Icons.Default.SwapHoriz) {
+        when {
+            ui.snapshot.capabilities.activeInput == CapabilityState.Unsupported -> InlineNotice(
+                "This firmware does not support controller switching.",
+            )
+            input.sources.isEmpty() -> InlineNotice("No controller is currently available to the adapter.")
+            else -> {
+                input.sources.forEach { source ->
+                    val selected = source.id == input.activeId || source.id == input.pendingId
                     SettingsRow(
-                        title = target.title,
-                        supporting = target.current(config).hex(),
-                        enabled = enabled,
-                        onClick = { onEdit(target) },
-                        trailing = {
-                            ColorSwatch(Color(target.current(config).argb()), "${target.title} colour")
-                            Icon(Icons.Default.ChevronRight, null, Modifier.size(LayoutTokens.IconSize))
+                        title = source.name,
+                        supporting = when {
+                            // Active wins over pending: once the adapter has
+                            // applied the switch both ids name this source, and
+                            // reporting "switching" then would leave a streaming
+                            // controller permanently labelled as waiting.
+                            source.id == input.activeId && input.awaitingFresh ->
+                                "Switching · waiting for fresh input"
+                            source.id == input.activeId -> "Controlling the console"
+                            source.id == input.pendingId -> "Switching · waiting for fresh input"
+                            else -> "Available"
                         },
+                        enabled = !ui.busy,
+                        onClick = { viewModel.setActiveInput(source.id) },
+                        role = Role.RadioButton,
+                        trailing = { RadioButton(selected = selected, onClick = null, enabled = !ui.busy) },
                     )
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ColorTile(
-    target: ColorTarget,
-    color: RgbColor,
-    enabled: Boolean,
-    modifier: Modifier,
-    onClick: () -> Unit,
-) {
-    Surface(
-        onClick = onClick,
-        modifier = modifier.heightIn(min = 96.dp),
-        enabled = enabled,
-        shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.surface,
-    ) {
-        Column(
-            Modifier.padding(LayoutTokens.Space3).fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space2),
-        ) {
-            ColorSwatch(Color(color.argb()), "${target.title} colour", size = 32.dp)
-            Text(
-                target.title,
-                style = MaterialTheme.typography.labelMedium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            )
-            Text(color.hex(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
-/**
- * The colour editor.
- *
- * Channel sliders rather than a colour wheel: the value that matters is the
- * exact byte triple the console is told, and a wheel cannot express that
- * precisely. The live preview is what makes the numbers legible.
- */
-@Composable
-private fun ColorPickerDialog(
-    title: String,
-    initial: RgbColor,
-    enabled: Boolean,
-    onDismiss: () -> Unit,
-    onApply: (RgbColor) -> Unit,
-) {
-    var red by remember(initial) { mutableFloatStateOf(initial.red.toFloat()) }
-    var green by remember(initial) { mutableFloatStateOf(initial.green.toFloat()) }
-    var blue by remember(initial) { mutableFloatStateOf(initial.blue.toFloat()) }
-    val current = RgbColor(red.toInt(), green.toInt(), blue.toInt())
-    PicoDialog(
-        onDismiss = onDismiss,
-        title = title,
-        confirmLabel = "Save",
-        onConfirm = { onApply(current) },
-        confirmEnabled = enabled,
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            ColorSwatch(Color(current.argb()), "Preview", size = 40.dp)
-            Spacer(Modifier.width(LayoutTokens.Space3))
-            Text(current.hex(), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-        }
-        ChannelSlider("Red", red, Color(0xFFE05B5B)) { red = it }
-        ChannelSlider("Green", green, Color(0xFF4CAF6A)) { green = it }
-        ChannelSlider("Blue", blue, Color(0xFF5B8FE0)) { blue = it }
-    }
-}
-
-@Composable
-private fun ChannelSlider(label: String, value: Float, tint: Color, onValue: (Float) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            label,
-            Modifier.width(52.dp),
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = tint,
-        )
-        Slider(
-            value = value,
-            onValueChange = onValue,
-            valueRange = 0f..255f,
-            modifier = Modifier.weight(1f).semantics { contentDescription = "$label ${value.toInt()}" },
-        )
-        Text(
-            value.toInt().toString().padStart(3),
-            Modifier.width(36.dp),
-            style = MaterialTheme.typography.labelMedium,
-        )
-    }
-}
-
-/**
- * Console buttons a typical Android handheld has no physical key for.
- *
- * These report press and release rather than a completed click, because the
- * console distinguishes a tap from a hold (Capture screenshots on release but
- * records on a long hold, and Home has its own hold behaviour).
- */
-@Composable
-private fun ConsoleButtonsCard(ui: CompanionUiState, viewModel: CompanionViewModel) {
-    // Only meaningful while this handheld is actually streaming to the console;
-    // at any other phase a press would go nowhere.
-    val live = ui.bridge.phase == BridgeLinkPhase.Playing
-    SectionCard(title = "Console buttons", icon = Icons.Default.Gamepad) {
-        Text(
-            if (live) "Buttons this handheld does not have"
-            else "Available while this handheld is the controller",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
-            HoldButton(Modifier.weight(1f), Icons.Default.Home, "Home", live) {
-                viewModel.setConsoleButton(ControllerButton.Home, it)
-            }
-            HoldButton(Modifier.weight(1f), Icons.Default.PhotoCamera, "Capture", live) {
-                viewModel.setConsoleButton(ControllerButton.Capture, it)
-            }
-            HoldButton(Modifier.weight(1f), Icons.AutoMirrored.Filled.Chat, "GameChat", live) {
-                viewModel.setConsoleButton(ControllerButton.C, it)
-            }
-        }
-    }
-}
-
-@Composable
-private fun HoldButton(
-    modifier: Modifier,
-    icon: ImageVector,
-    label: String,
-    enabled: Boolean,
-    onHold: (Boolean) -> Unit,
-) {
-    Surface(
-        modifier
-            .heightIn(min = 56.dp)
-            .then(
-                if (!enabled) Modifier else Modifier.pointerInput(label) {
-                    detectTapGestures(
-                        onPress = {
-                            onHold(true)
-                            // Releases on cancel too, so a drag off the button or an
-                            // interrupted gesture can never latch the button down.
-                            tryAwaitRelease()
-                            onHold(false)
-                        },
+                if (input.truncated) {
+                    InlineNotice(
+                        "More controllers are connected than this firmware can report.",
+                        tone = ChipTone.Error,
                     )
-                },
-            )
-            .semantics { contentDescription = label },
-        shape = MaterialTheme.shapes.medium,
-        color = if (enabled) MaterialTheme.colorScheme.secondaryContainer
-        else MaterialTheme.colorScheme.surface,
-    ) {
-        Column(
-            Modifier.padding(LayoutTokens.Space2).fillMaxWidth(),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Icon(icon, null, Modifier.size(LayoutTokens.IconSize))
-            Spacer(Modifier.height(LayoutTokens.Space1))
-            Text(
-                label,
-                style = MaterialTheme.typography.labelMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+                }
+                OutlinedButton(
+                    onClick = { viewModel.setActiveInput(0) },
+                    enabled = !ui.busy && (input.activeId != 0L || input.pendingId != 0L),
+                ) { Text("Pause console input") }
+            }
         }
     }
 }
-
-private val ColorTarget.title: String
-    get() = when (this) {
-        ColorTarget.Body -> "Body"
-        ColorTarget.LeftAccent -> "Left accent"
-        ColorTarget.RightAccent -> "Right accent"
-    }
-
-private fun ColorTarget.current(config: AdapterConfig): RgbColor = when (this) {
-    ColorTarget.Body -> config.bodyColor
-    ColorTarget.LeftAccent -> config.leftAccent
-    ColorTarget.RightAccent -> config.rightAccent
-}
-
-private fun RgbColor.hex(): String = "#%02X%02X%02X".format(red, green, blue)

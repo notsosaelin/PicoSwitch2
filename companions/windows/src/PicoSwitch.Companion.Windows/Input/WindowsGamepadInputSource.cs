@@ -53,8 +53,8 @@ public sealed class WindowsGamepadInputSource
     private readonly Task pollTask;
     private Gamepad? selected;
     private ControllerSourceIdentity? selectedIdentity;
-    private WindowsControllerSource? selectedSource;
-    private IReadOnlyList<WindowsControllerSource> sources = [];
+    private ControllerSource? selectedSource;
+    private IReadOnlyList<ControllerSource> sources = [];
     private string? rememberedId;
     private string? unresolvedReason;
     private long framesPublished;
@@ -72,13 +72,13 @@ public sealed class WindowsGamepadInputSource
     }
 
     /// <summary>Everything Windows currently offers, usable or not.</summary>
-    public IReadOnlyList<WindowsControllerSource> Sources
+    public IReadOnlyList<ControllerSource> Sources
     {
         get { lock (gate) { return sources; } }
     }
 
     /// <summary>The resolved source, or null when none is usable or the user must choose.</summary>
-    public WindowsControllerSource? SelectedSource
+    public ControllerSource? SelectedSource
     {
         get { lock (gate) { return selectedSource; } }
     }
@@ -155,7 +155,7 @@ public sealed class WindowsGamepadInputSource
     /// is one. A non-gamepad-class source still resolves and is still reported;
     /// it simply has no projection to read.
     /// </summary>
-    private void BindLocked(WindowsControllerSource? source)
+    private void BindLocked(ControllerSource? source)
     {
         selected = null;
         selectedIdentity = null;

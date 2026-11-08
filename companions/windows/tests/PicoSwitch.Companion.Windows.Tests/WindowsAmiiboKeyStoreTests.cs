@@ -1,4 +1,5 @@
 using PicoSwitch.Companion.Windows.Storage;
+using PicoSwitch.Companion.Platform.Storage;
 using PicoSwitch.Management;
 using Xunit;
 

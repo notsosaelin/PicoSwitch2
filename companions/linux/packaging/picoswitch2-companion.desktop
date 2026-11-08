@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=PicoSwitch2 Companion
+GenericName=Controller adapter companion
+Comment=Pair, configure and drive a PicoSwitch2 controller adapter
+Exec=AppRun
+Icon=picoswitch2-companion
+Terminal=false
+Categories=Game;Utility;
+Keywords=controller;gamepad;switch;bluetooth;adapter;
+StartupWMClass=PicoSwitch2Companion

@@ -38,6 +38,8 @@
 #include "ns2_rumble_trace.h"                     // console->handheld rumble observability
 #include "ns2_wake.h"                             // post-sleep real-input wake intent
 #include "platform/platform.h"                    // platform_time_ms()
+#include "ds5_audio_bridge.h"                      // companion audio consumer state
+#include "controller_headset.h"                    // CONTROLLER_HEADSET_NONE on source loss
 #ifdef NS2_PRO
 #include "usb.h"                                  // g_usb_personality (read-only cross-core check,
                                                    // GameCube-mode analog-fold suppression only)
@@ -395,6 +397,25 @@ void router_submit_input(const input_event_t *e) {
                               in.accel, in.gyro);
     }
 #ifdef NS2_DS5_AUDIO
+    // The arbiter lets exactly one source reach this point, so this is the jack
+    // of the controller in use. Companion audio yields to it: a headset in the
+    // player's hand outranks one on the PC (ns2_companion_audio.h, EXCLUSIVITY).
+    ds5_audio_bridge_note_source_headset(e->headset_state);
+    {
+        bool const companion = e->from_android_bridge ||
+                               e->transport == INPUT_TRANSPORT_COMPANION;
+        // Companion audio's Controller Link gate ends a session when another
+        // controller takes over (ns2_companion_audio.h, SCOPE).
+        ds5_audio_bridge_note_source_kind(companion ? DS5_AUDIO_SOURCE_COMPANION
+                                                    : DS5_AUDIO_SOURCE_OTHER);
+    }
+    // The source's PHYSICAL jack only. The companion's virtual headset is
+    // applied at the output boundary (switch_pro2.c, every report), NOT here:
+    // this function runs only when a source controller sends an event, so a
+    // companion toggle made while no controller is sending -- Controller Link
+    // off, touch gamepad idle -- would never reach the console. Found on
+    // hardware 2026-11-07: Headset off left the console streaming to the
+    // adapter because no input event followed to clear the jack.
     in.headset_state = e->headset_state;
 #endif
 
@@ -456,6 +477,11 @@ void router_device_disconnected_with_generation(uint8_t dev_addr,
     // revoke the active source here.
     if (bthid_rebind_in_progress())
         return;
+#ifdef NS2_DS5_AUDIO
+    // Any teardown of the Android companion's HID link ends its Controller
+    // Link, active or not (companion audio's gate, ns2_companion_audio.h).
+    ds5_audio_bridge_forget_android_companion(dev_addr);
+#endif
 
     // Release any KB/M role this peer held first. A composite source survives
     // losing one of its two peers, so this clears exactly that role's state
@@ -469,6 +495,13 @@ void router_device_disconnected_with_generation(uint8_t dev_addr,
     // now represent.
     if (!was_active)
         return;
+#ifdef NS2_DS5_AUDIO
+    // The jack belonged to the source that just left. Without this, unplugging
+    // the controller itself would leave companion audio refused until some
+    // other source happened to publish an event.
+    ds5_audio_bridge_note_source_headset(CONTROLLER_HEADSET_NONE);
+    ds5_audio_bridge_note_source_kind(DS5_AUDIO_SOURCE_NONE);
+#endif
     uint8_t wake_source = dev_addr < NS2_WAKE_SESSION_SOURCES ? dev_addr : 0;
     if (wake_session_active[wake_source]) {
         wake_session_active[wake_source] = false;

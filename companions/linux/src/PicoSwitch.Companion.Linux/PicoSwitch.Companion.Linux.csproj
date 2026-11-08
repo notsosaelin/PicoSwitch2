@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The Linux platform backend: the ONLY Linux project allowed to touch BlueZ,
+    D-Bus or SDL. The Linux counterpart of PicoSwitch.Companion.Windows.
+
+    - Bluetooth/   BlueZ over the system D-Bus: discovery, pairing, the GATT
+                   management transport and the Path C Controller Link data plane.
+    - Input/       SDL3 gamepads: buttons, sticks, triggers, rumble, battery and
+                   gyro/accelerometer motion.
+    - LinuxCompanionPlatform  the ICompanionPlatform Services composes.
+
+    Plain net9.0: everything here is reached through P/Invoke or a socket, so
+    the project builds on any OS. It only RUNS usefully on Linux.
+  -->
+  <PropertyGroup>
+    <TargetFramework>$(PicoSwitchPortableTargetFramework)</TargetFramework>
+    <RootNamespace>PicoSwitch.Companion.Linux</RootNamespace>
+    <AssemblyName>PicoSwitch.Companion.Linux</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PicoSwitch.Companion.Linux.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Tmds.DBus.Protocol" Version="$(PicoSwitchTmdsDBusProtocolVersion)" />
+    <PackageReference Include="ppy.SDL3-CS" Version="$(PicoSwitchSdl3Version)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(PicoSwitchSharedSource)PicoSwitch.Bridge.Core/PicoSwitch.Bridge.Core.csproj" />
+    <ProjectReference Include="$(PicoSwitchSharedSource)PicoSwitch.Management.Core/PicoSwitch.Management.Core.csproj" />
+    <ProjectReference Include="$(PicoSwitchSharedSource)PicoSwitch.Companion.Platform/PicoSwitch.Companion.Platform.csproj" />
+  </ItemGroup>
+
+</Project>

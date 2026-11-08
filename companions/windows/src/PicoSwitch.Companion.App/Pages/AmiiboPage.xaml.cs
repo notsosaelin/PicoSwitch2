@@ -9,7 +9,9 @@ using PicoSwitch.Bridge.Core;
 using PicoSwitch.Companion.Services;
 using PicoSwitch.Companion.Services.Presentation;
 using PicoSwitch.Companion.Windows.Bluetooth;
+using PicoSwitch.Companion.Platform.Bluetooth;
 using PicoSwitch.Companion.Windows.Storage;
+using PicoSwitch.Companion.Platform.Storage;
 using PicoSwitch.Management;
 using Windows.Storage;
 using Windows.Storage.Pickers;
@@ -192,7 +194,7 @@ public sealed class AmiiboTile(
 /// Every `async void` handler goes through <see cref="GuardAsync"/>: an exception
 /// escaping one has no handler at all and terminates the process.
 /// </remarks>
-public sealed partial class AmiiboPage : Page
+public sealed partial class AmiiboPage : Page, IShellPage
 {
     private readonly AdapterConnectionService adapters = AppServices.Adapters;
     private readonly AmiiboLibrary library = AppServices.AmiiboLibrary;
@@ -242,7 +244,6 @@ public sealed partial class AmiiboPage : Page
     private const int MaximumCachedArtwork = 400;
 
     /// <summary>The "no filter" row. Not a series anyone owns.</summary>
-    private const string AllFilter = "All";
 
     /// <summary>Which inspector category is showing.</summary>
     /// <remarks>
@@ -275,6 +276,11 @@ public sealed partial class AmiiboPage : Page
     public AmiiboPage()
     {
         InitializeComponent();
+
+        // handledEventsToo: a GridViewItem marks Enter handled (it selects),
+        // so a plain KeyDown never saw Enter on a card and A/Enter could not
+        // open its details.
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnPageKeyDown), true);
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
     }
@@ -571,8 +577,82 @@ public sealed partial class AmiiboPage : Page
         }
     }
 
-    private void OnCloseInspector(object sender, RoutedEventArgs e) =>
+    private void OnCloseInspector(object sender, RoutedEventArgs e)
+    {
         SetInteraction(AmiiboInteraction.CloseInspector(interaction));
+        FocusFocusedTile();
+    }
+
+    /* ------------------------------------------------- the shell's controller */
+
+    /// <summary>Back cancels a selection, then closes the details (focus returns to the card); otherwise the shell's.</summary>
+    public bool HandleBack()
+    {
+        var wasOpen = interaction.InspectorOpen;
+        var next = AmiiboInteraction.Escape(interaction);
+        if (next == interaction)
+        {
+            return false;
+        }
+
+        SetInteraction(next);
+        if (wasOpen && !interaction.InspectorOpen)
+        {
+            FocusFocusedTile();
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// A on the highlighted card opens its details and moves focus into them
+    /// (companion-shell-layout.md, "What lives where": under a controller the
+    /// focused card IS the highlighted one).
+    /// </summary>
+    public bool HandleConfirm(DependencyObject? focused)
+    {
+        if (interaction.Selecting || focused is not Microsoft.UI.Xaml.Controls.Primitives.SelectorItem { Content: AmiiboTile tile })
+        {
+            return false;
+        }
+
+        SetInteraction(AmiiboInteraction.OpenInspector(interaction, tile.Id));
+        DispatcherQueue.TryEnqueue(() => CloseInspectorButton.Focus(FocusState.Keyboard));
+        return true;
+    }
+
+    /// <summary>Under a controller, the library's first stop is the highlighted card.</summary>
+    public Control? PreferredFocus =>
+        (tiles.FirstOrDefault(tile => tile.Id == selectedId) ?? tiles.FirstOrDefault()) is { } item
+            ? ActiveHost.ContainerFromItem(item) as Control
+            : null;
+
+    /// <summary>Play's Amiibo tile: land on this figure, highlighted and in view.</summary>
+    public void FocusOn(string id)
+    {
+        interaction = AmiiboInteraction.Focus(interaction, id);
+        if (IsLoaded)
+        {
+            SetInteraction(interaction);
+        }
+
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            if (tiles.FirstOrDefault(tile => tile.Id == selectedId) is { } tile)
+            {
+                ActiveHost.ScrollIntoView(tile);
+            }
+        });
+    }
+
+    private void FocusFocusedTile() => DispatcherQueue.TryEnqueue(() =>
+    {
+        if (tiles.FirstOrDefault(tile => tile.Id == selectedId) is { } tile &&
+            ActiveHost.ContainerFromItem(tile) is Control container)
+        {
+            container.Focus(FocusState.Keyboard);
+        }
+    });
 
     /// <summary>
     /// The explicit "Details" command, and the accessible route to inspection.
@@ -654,7 +734,15 @@ public sealed partial class AmiiboPage : Page
     /// </remarks>
     private void OnPageKeyDown(object sender, KeyRoutedEventArgs e)
     {
-        if (e.Key != global::Windows.System.VirtualKey.Escape)
+        // Enter on a card is A on a controller: its details.
+        if (e.Key == global::Windows.System.VirtualKey.Enter && HandleConfirm(e.OriginalSource as DependencyObject))
+        {
+            e.Handled = true;
+            return;
+        }
+
+        // Escape a control already consumed (a closing ComboBox) is not Back.
+        if (e.Key != global::Windows.System.VirtualKey.Escape || e.Handled)
         {
             return;
         }
@@ -788,11 +876,13 @@ public sealed partial class AmiiboPage : Page
 
         // Distinguishes "you have nothing" from "your filter matched nothing",
         // which need completely different actions from the user.
-        EmptyLibraryText.Visibility = tiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        EmptyLibraryText.Text = total == 0
-            ? "Import a .bin dump, a folder of them, or a library ZIP — including one " +
-              "exported from the phone app or another tool."
-            : "Nothing matches. Clear the search and filters to see the whole library.";
+        EmptyState.Visibility = tiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        libraryEmpty = total == 0;
+        EmptyLibraryText.Text = libraryEmpty ? "No Amiibo yet" : "Nothing matches";
+        EmptyLibraryDetail.Text = libraryEmpty
+            ? ".bin dumps, folders and library ZIPs from other tools all work."
+            : "Clear the search and filters to see the whole library.";
+        EmptyAction.Content = libraryEmpty ? "Import" : "Clear filters";
 
         ExportArchiveButton.IsEnabled = total > 0;
         ClearFiltersButton.IsEnabled = filters.Any;
@@ -864,14 +954,16 @@ public sealed partial class AmiiboPage : Page
     {
         var options = AmiiboGallery.Options(view.Library, catalog.Find);
         suppressSelection = true;
-        Fill(GameSeriesBox, options.GameSeries, filters.GameSeries);
-        Fill(AmiiboSeriesBox, options.AmiiboSeries, filters.AmiiboSeries);
-        Fill(TypeBox, options.Types, filters.Type);
+        // Each filter names itself in its "everything" row: three dropdowns
+        // all reading "All" side by side gave no clue which was which.
+        Fill(GameSeriesBox, "All game series", options.GameSeries, filters.GameSeries);
+        Fill(AmiiboSeriesBox, "All Amiibo series", options.AmiiboSeries, filters.AmiiboSeries);
+        Fill(TypeBox, "All types", options.Types, filters.Type);
         suppressSelection = false;
 
-        static void Fill(ComboBox box, ValueList<string> values, string selected)
+        static void Fill(ComboBox box, string all, ValueList<string> values, string selected)
         {
-            var items = new List<string> { AllFilter };
+            var items = new List<string> { all };
             items.AddRange(values);
 
             // Only rebuilt when the choices actually changed, so a render does
@@ -881,7 +973,7 @@ public sealed partial class AmiiboPage : Page
                 box.ItemsSource = items;
             }
 
-            box.SelectedItem = selected.Length == 0 ? AllFilter : selected;
+            box.SelectedItem = selected.Length == 0 ? all : selected;
         }
     }
 
@@ -1317,10 +1409,10 @@ public sealed partial class AmiiboPage : Page
             return;
         }
 
-        // "All" is a sentinel row rather than a real value, so it maps back to
-        // the empty string the filter model uses for "unset".
-        var value = box.SelectedItem as string ?? AllFilter;
-        var chosen = value == AllFilter ? "" : value;
+        // Row 0 is the "All ..." sentinel rather than a real value, so it maps
+        // back to the empty string the filter model uses for "unset". Matched
+        // by position, not text, so no real series name can collide with it.
+        var chosen = box.SelectedIndex <= 0 ? "" : box.SelectedItem as string ?? "";
 
         filters = box.Name switch
         {
@@ -1493,6 +1585,22 @@ public sealed partial class AmiiboPage : Page
     /// One control for every kind of file: the picker is multi-select and takes
     /// dumps and ZIPs together, and the library works out which is which.
     /// </remarks>
+    /// <summary>Whether the last render found the library itself empty (not just filtered).</summary>
+    private bool libraryEmpty;
+
+    /// <summary>The empty state's button does what its message asks for.</summary>
+    private void OnEmptyAction(object sender, RoutedEventArgs e)
+    {
+        if (libraryEmpty)
+        {
+            OnImport(sender, e);
+        }
+        else
+        {
+            OnClearFilters(sender, e);
+        }
+    }
+
     private async void OnImport(object sender, RoutedEventArgs e) =>
         await GuardAsync(async () =>
         {

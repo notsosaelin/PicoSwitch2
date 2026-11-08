@@ -195,10 +195,13 @@ public sealed class TouchVisualParityTests
         // The root has no height to get wrong, and any row added to that Grid
         // later inherits the ground rather than becoming the next white band.
         Assert.Contains("WindowRoot.Background", Shell, StringComparison.Ordinal);
-        Assert.Contains(
-            "<Grid x:Name=\"WindowRoot\">",
+        // The root's opening tag may carry handlers (F11 lives there) but never
+        // a height of its own.
+        var root = System.Text.RegularExpressions.Regex.Match(
             Read("src/PicoSwitch.Companion.App/MainWindow.xaml"),
-            StringComparison.Ordinal);
+            "<Grid x:Name=\"WindowRoot\"[^>]*>");
+        Assert.True(root.Success, "MainWindow.xaml has no WindowRoot Grid");
+        Assert.DoesNotContain("Height", root.Value, StringComparison.Ordinal);
     }
 
     [Fact]

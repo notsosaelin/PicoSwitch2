@@ -101,6 +101,12 @@ static void test_wireless_command_policy(void)
     assert(config_wireless_command_allowed("clink status"));
     assert(config_wireless_command_allowed("clink start"));
     assert(config_wireless_command_allowed("clink stop"));
+    // Companion audio downlink (EXPERIMENTAL): same narrow authority as clink.
+    assert(config_wireless_command_allowed("caudio"));
+    assert(config_wireless_command_allowed("caudio status"));
+    assert(config_wireless_command_allowed("caudio start"));
+    assert(config_wireless_command_allowed("caudio stop"));
+    assert(!config_wireless_command_allowed("caudiox"));
     assert(config_wireless_command_allowed("mgmt"));
     assert(config_wireless_command_allowed("mgmt status"));
     assert(config_wireless_command_allowed("mgmt off"));

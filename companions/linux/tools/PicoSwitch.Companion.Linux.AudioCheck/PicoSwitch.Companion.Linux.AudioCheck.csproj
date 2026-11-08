@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Companion audio on a real Linux audio stack, without an adapter.
+
+    Runs the shipped CompanionAudioService, Concentus decoder and SDL3 sink
+    against a simulated adapter: a real CELT 96 kbit/s stereo tone, framed as
+    the adapter frames it, delivered on a BLE-like schedule (connection events,
+    at most two notifications per event, an adapter clock offset, optional
+    stalls). Then the shipped SDL3 microphone capture and Opus encoder into a
+    counting uplink. Reports the service's own metrics and exits non-zero when
+    a check fails.
+
+    It answers "does the Linux device plane hold?" (PipeWire, PulseAudio or
+    ALSA through SDL3) separately from the radio and the firmware, which it
+    does not exercise. Usage: companions/linux/README.md, section 3.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>$(PicoSwitchPortableTargetFramework)</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/PicoSwitch.Companion.Linux/PicoSwitch.Companion.Linux.csproj" />
+    <ProjectReference Include="$(PicoSwitchSharedSource)PicoSwitch.Companion.Services/PicoSwitch.Companion.Services.csproj" />
+  </ItemGroup>
+
+</Project>

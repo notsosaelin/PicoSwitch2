@@ -43,9 +43,11 @@ public sealed record KeyboardCluster(
 ///
 /// ## Why draw a keyboard at all
 ///
-/// The Android app pages through a list because a phone cannot show 104 keys.
-/// Windows can draw the real thing, and §16.3 says it should — clicking the key
-/// you want is immediate in a way that scrolling to "Keyboard 0x1A" never is.
+/// Clicking the key you want is immediate in a way that scrolling to
+/// "Keyboard 0x1A" never is (§16.3). Every companion draws this picture; Android
+/// keeps a Kotlin copy (<c>companions/android/.../model/KeyboardGeometry.kt</c>),
+/// and its <c>KeyboardGeometryParityTest</c> parses THIS file, so change the two
+/// together.
 ///
 /// ## Which keyboard, given there are many
 ///

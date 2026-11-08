@@ -1,6 +1,6 @@
 using System.Text;
 using System.Text.Json;
-using PicoSwitch.Companion.Windows.Storage;
+using PicoSwitch.Companion.Platform.Storage;
 using PicoSwitch.Management;
 
 namespace PicoSwitch.Companion.Services;
@@ -17,7 +17,7 @@ namespace PicoSwitch.Companion.Services;
 /// Decoded TOTALLY, like every other document here: an unreadable file must cost
 /// the user their profiles, never their ability to launch the app.
 /// </remarks>
-public sealed class KbmProfileLibraryStore(WindowsDocumentStore documents)
+public sealed class KbmProfileLibraryStore(DocumentStore documents)
 {
     public const string DocumentName = "kbm-profiles.json";
 

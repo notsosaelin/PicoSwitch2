@@ -1,5 +1,5 @@
 using PicoSwitch.Companion.Services.Presentation;
-using PicoSwitch.Companion.Windows.Storage;
+using PicoSwitch.Companion.Platform.Storage;
 using PicoSwitch.Management;
 using Xunit;
 
@@ -20,7 +20,7 @@ public sealed class KbmBankViewTests : IDisposable
         Path.Combine(Path.GetTempPath(), "picoswitch-bank-" + Guid.NewGuid().ToString("N"));
 
     private KbmLibraryRepository Library() =>
-        new(new KbmProfileLibraryStore(new WindowsDocumentStore(root)));
+        new(new KbmProfileLibraryStore(new DocumentStore(root)));
 
     public void Dispose()
     {

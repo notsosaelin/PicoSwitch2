@@ -141,6 +141,30 @@ generic mapping framework. A config CRC or A/B record is a separate durability d
 
 These items are accepted directions but should be performed as separate coherent engineering passes.
 
+## Companion UI redesign (all platforms)
+
+Accepted 2026-11-06. The layout contract is
+[`docs/architecture/companion-shell-layout.md`](docs/architecture/companion-shell-layout.md).
+Windows is built first so the layout can be reviewed on the desktop; Linux and Android follow it.
+
+| Pass | Windows | Linux | Android |
+|---|---|---|---|
+| Shell: slide-out navigation (replaced the top bar and dock, 2026-11-08), Play home, controller navigation | Partial: implementation complete; controller path not yet run with a real pad | Partial: implementation complete; Game Mode fill measured on hardware, navigation driven in the harness only | Partial: implementation complete; reviewed on an AYN Odin 2 Mini |
+| Remaining pages restyled (compact headers, less prose, wide-window flow) | Not Started | Not Started | Not Started |
+| Customization page: app-drawn controller, zone colouring, presets | Not Started | Not Started | Not Started |
+| Controller input tester (source vs what the console receives, rate/delay) | Not Started | Not Started | Not Started |
+| KB/M tester (system keyboard layout, live presses, mouse movement) | Not Started | Not Started | Not Started |
+| Link health readout in the shell | Not Started | Not Started | Not Started |
+| Stick and gyro tuning (dead zone, curve, gyro sensitivity, invert) | Not Started | Not Started | Not Started |
+
+Customization requires firmware and management-protocol work. Today only the Pro Controller 2
+`body_color` is configurable. Button, highlight and grip are emitted at retail defaults (`docs/switch2/usb-spec.md` §9).
+Exposing all four needs config fields, a management command, a contract decision and hardware
+validation. The console's own controller icon renders these zones, which is the hardware check.
+
+The face-button letter/position override (formerly "Button labels") moves off Play into the
+controller tester and Settings; auto-detection stays the default.
+
 # Platform Backend Expansion
 
 The platform-neutral bridge architecture intentionally allows additional host platforms.
@@ -170,20 +194,19 @@ against a firmware hazard that was characterised on hardware, and the second is 
 
 ## Linux
 
-A Linux companion/backend is an accepted future direction.
+**v1 implemented 2026-11-06; hardware validation pending** (`companions/linux/`, C#/Avalonia,
+single-file executable for x86_64 and arm64). It reuses the Windows companion's portable C# layers and adds a BlueZ + SDL3 backend.
+Steam Deck / SteamOS x86_64 is the primary target.
 
-The first implementation should prove the minimum transport and input path required to use Linux
-devices as PicoSwitch2 controller sources.
+Next, in order:
 
-Potential Linux input sources include:
-
-- standard evdev gamepads
-- built-in handheld controls
+1. **Hardware validation pass** on a Steam Deck with a real adapter: pairing, management,
+   Controller Link, motion frame, and the open questions in `companions/linux/README.md` §6.
+2. **Feature parity pages**: Touch Gamepad, Virtual Amiibo, KB/M, companion audio (headset and microphone) — ported (software only; the
+   hardware validation pass above covers them).
+3. **Decky Loader plugin** for Game Mode, once the app is polished. Not started.
 
 The Pico remains responsible for Switch-facing controller emulation.
-
-A direct Linux implementation should consume the shared bridge architecture rather than duplicate
-Android behavior.
 
 ### ROCKNIX / H700 target
 

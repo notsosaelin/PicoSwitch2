@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    PicoSwitch2 Companion for Linux: the Avalonia shell.
+
+    The Linux counterpart of PicoSwitch.Companion.App (WinUI). It composes the
+    same shared layers and paints the same Services.Presentation projections;
+    the only platform code it reaches is PicoSwitch.Companion.Linux (BlueZ, SDL).
+
+    UI is built in C#, not AXAML, deliberately: every page paints a pure
+    projection record imperatively (the WinUI pages' pattern), so there is no
+    binding layer for markup to describe, and one language keeps the pages
+    reviewable next to their WinUI counterparts.
+
+    Published as one self-contained single-file executable for linux-x64 and
+    linux-arm64 by packaging/build-linux.sh. `dotnet run` works on any OS for UI work; the
+    BlueZ/SDL backends are inert where they do not exist.
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>$(PicoSwitchPortableTargetFramework)</TargetFramework>
+    <RootNamespace>PicoSwitch.Companion.Linux.App</RootNamespace>
+    <AssemblyName>PicoSwitch2Companion</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <ApplicationIcon />
+    <BuiltInComInteropSupport>false</BuiltInComInteropSupport>
+    <!--
+      No ICU dependency: SteamOS is not guaranteed to ship libicu, and nothing
+      here formats culture-sensitively (protocol text is invariant by
+      construction and the UI is English).
+    -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="$(PicoSwitchAvaloniaVersion)" />
+    <PackageReference Include="Avalonia.Desktop" Version="$(PicoSwitchAvaloniaVersion)" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="$(PicoSwitchAvaloniaVersion)" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="$(PicoSwitchAvaloniaVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../PicoSwitch.Companion.Linux/PicoSwitch.Companion.Linux.csproj" />
+    <ProjectReference Include="$(PicoSwitchSharedSource)PicoSwitch.Companion.Services/PicoSwitch.Companion.Services.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PicoSwitch.Companion.Linux.Screenshots" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AvaloniaResource Include="Assets/**" />
+  </ItemGroup>
+
+</Project>

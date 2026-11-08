@@ -839,6 +839,31 @@ static void test_disconnect_convergence_after_btstack_1_8(void)
     }
 }
 
+/*
+ * Companion audio caps the management link's interval at 15 ms (the figure
+ * its simulations assume) and changes nothing else. A Linux (BlueZ) central
+ * otherwise keeps its 30-50 ms default under the permissive management range.
+ */
+static void test_companion_audio_link_params(void)
+{
+    const ns2_bt_le_link_params_t mgmt = ns2_bt_mgmt_link_params();
+    const ns2_bt_le_link_params_t audio = ns2_bt_companion_audio_link_params();
+
+    assert(ns2_bt_le_link_params_valid(audio));
+    assert(audio.interval_max_units * 125u <= 1500u);       // <= 15 ms
+    assert(audio.interval_max_units >= audio.interval_min_units);
+
+    // A faster central is not slowed: the floor is the spec minimum.
+    assert(audio.interval_min_units == 6u);
+
+    // The ride-through margin and the no-skipped-events rule are kept.
+    assert(audio.latency == 0u);
+    assert(audio.supervision_timeout_units == mgmt.supervision_timeout_units);
+
+    // The session's end restores a range wider than the audio one.
+    assert(mgmt.interval_max_units > audio.interval_max_units);
+}
+
 int main(void)
 {
     test_disconnect_convergence_after_btstack_1_8();
@@ -851,6 +876,7 @@ int main(void)
     test_defer_classic_encryption_is_narrow();
     test_mgmt_link_params_ride_through_peer_stalls();
     test_le_link_params_validity_rules();
+    test_companion_audio_link_params();
     test_classic_trust_is_cross_transport();
     test_companion_session_trust_is_peer_bound();
     test_inquiry_restart_gap();

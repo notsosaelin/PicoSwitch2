@@ -52,6 +52,17 @@ data class PersonalityState(
     val available: List<Personality> = emptyList(),
 )
 
+/**
+ * What the console itself has told the adapter (input sources reply,
+ * "console"). Empty from firmware that predates it.
+ */
+data class ConsoleView(
+    /** The player number the console assigned (its player LEDs), 1-4; 0 when none. */
+    val player: Int = 0,
+    /** A game is waiting for an amiibo: the console has an NFC scan running. */
+    val amiiboWanted: Boolean = false,
+)
+
 data class AmiiboUpload(val active: Boolean = false, val received: Int = 0, val size: Int = 0)
 
 data class AmiiboStatus(
@@ -323,6 +334,8 @@ data class AdapterInputState(
     val transitions: Long = 0,
     val sources: List<AdapterInputSource> = emptyList(),
     val truncated: Boolean = false,
+    /** What the console has told the adapter; empty from older firmware. */
+    val console: ConsoleView = ConsoleView(),
 ) {
     val activeSource: AdapterInputSource? get() = sources.firstOrNull { it.id == activeId }
 }
@@ -785,6 +798,40 @@ enum class KbmMouseField(val wire: String) {
 }
 
 enum class WakeResult { Pending, Advertised, ConsoleAwake, NoIdentity, RadioBusy, Unknown }
+/**
+ * Companion audio (EXPERIMENTAL), as `caudio start|stop|status` reports it.
+ * Mirrors the Windows `CompanionAudioState`; `admit` is the adapter's
+ * admission verdict (`ok`, `no_controller_link`, `controller_headset`, ...)
+ * and `lastStop` why the last session ended.
+ */
+data class CompanionAudioState(
+    val supported: Boolean = false,
+    val active: Boolean = false,
+    val subscribed: Boolean = false,
+    val usbSpeakerActive: Boolean = false,
+    val version: Int = 0,
+    val codec: String = "",
+    val sampleRate: Int = 0,
+    val channels: Int = 0,
+    val frameMillis: Int = 0,
+    val frameBytes: Int = 0,
+    val attMtu: Int = 0,
+    val minimumAttMtu: Int = 0,
+    val generation: Long = 0,
+    val admit: String = "",
+    val lastStop: String = "",
+    val framesSent: Long = 0,
+    val framesBusy: Long = 0,
+    val framesFailed: Long = 0,
+    val framesRejected: Long = 0,
+    val sendMaxGapMicros: Long = 0,
+    val kbps: Int = 0,
+    /** The session carries this device's microphone (the adapter shows a headset). */
+    val mic: Boolean = false,
+    /** This adapter build can decode the companion microphone. */
+    val micSupported: Boolean = false,
+)
+
 data class WakeStatus(
     val result: WakeResult,
     val consoleAsleep: Boolean,
