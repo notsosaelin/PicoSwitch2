@@ -57,7 +57,9 @@ internal sealed class FakeBluezBus : IBluezBus
     /// <summary>
     /// Dual-mode BlueZ whose most recent sighting of the adapter was Classic:
     /// Device1.Connect goes over BR/EDR (and the adapter refuses it) until a
-    /// fresh LE advertisement is seen. The Ally in Game Mode, 2026-11-08.
+    /// fresh LE advertisement is seen. That is BlueZ with an adapter advertising
+    /// Flags 0x06; with 0x02 the advertisement refreshes the BR/EDR sighting too
+    /// and Connect stays on BR/EDR (the Ally in Game Mode, 2026-11-08).
     /// </summary>
     public bool LastSeenClassic { get; set; }
 

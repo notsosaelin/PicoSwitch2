@@ -92,6 +92,8 @@ internal sealed class MainWindow : Window
     private readonly Stopwatch clock = Stopwatch.StartNew();
     private readonly BackKeyGesture back = new();
     private readonly GamepadUiNavigator gamepadNavigator = new();
+    private readonly BackChordGesture backChord = new();
+    private string? padIgnoredReason;
     private readonly ControllerInputSession pad = AppServices.PadInput;
     private readonly CancellationTokenSource inputPoll = new();
 
@@ -199,7 +201,9 @@ internal sealed class MainWindow : Window
         {
             back.Cancel();
             backTimer.Stop();
+            AppServices.Diagnostics.Info("pad", "window deactivated");
         };
+        Activated += (_, _) => AppServices.Diagnostics.Info("pad", "window activated");
 
         PropertyChanged += (_, e) =>
         {
@@ -869,13 +873,25 @@ internal sealed class MainWindow : Window
 
     private void OnPadFrame(ControllerButtonSet buttons, AnalogFrame analog)
     {
+        var fresh = !buttons.Equals(lastButtons);
         lastButtons = buttons;
         lastAnalog = analog;
-        if (!AppOwnsPad())
+        if (FeedBackChord())
         {
             return;
         }
 
+        if (!AppOwnsPad())
+        {
+            if (fresh && !buttons.Equals(ControllerButtonSet.Empty))
+            {
+                NotePadIgnored();
+            }
+
+            return;
+        }
+
+        padIgnoredReason = null;
         foreach (var command in gamepadNavigator.Feed(buttons, analog, clock.ElapsedMilliseconds))
         {
             OnPadCommand(command);
@@ -884,14 +900,66 @@ internal sealed class MainWindow : Window
 
     private void OnPadTick()
     {
+        if (FeedBackChord())
+        {
+            return;
+        }
+
         if (AppOwnsPad() && gamepadNavigator.Tick(clock.ElapsedMilliseconds) is { } command)
         {
             OnPadCommand(command);
         }
     }
 
+    /// <summary>
+    /// View + Menu held: Back, whoever owns the pad (<see cref="BackChordGesture"/>).
+    /// Also fed by the timer, since a held chord sends no new frames.
+    /// </summary>
+    private bool FeedBackChord()
+    {
+        if (!WindowActive || touchHost.IsVisible || !backChord.Feed(lastButtons, clock.ElapsedMilliseconds))
+        {
+            return false;
+        }
+
+        AppServices.Diagnostics.Info("pad", "View + Menu held: Back");
+        keysDriving = true;
+        Back();
+        return true;
+    }
+
+    /// <summary>
+    /// A press the menus did not take, and why: logged once per reason, so a
+    /// controller that "does nothing" says which gate stopped it.
+    /// </summary>
+    private void NotePadIgnored()
+    {
+        var reason = !appHeldPad ? "console owns the pad"
+            : touchHost.IsVisible ? "touch gamepad open"
+            : !WindowActive ? "window not active"
+            : "unknown";
+        if (reason != padIgnoredReason)
+        {
+            padIgnoredReason = reason;
+            AppServices.Diagnostics.Info("pad", $"press ignored: {reason}");
+        }
+    }
+
     /// <summary>The app's menus read the controller: not streaming, or something of the app's on top.</summary>
-    private bool AppOwnsPad() => appHeldPad && !touchHost.IsVisible && IsActive;
+    private bool AppOwnsPad() => appHeldPad && !touchHost.IsVisible && WindowActive;
+
+    /// <summary>
+    /// Whether this window is the one the player is looking at. Under gamescope
+    /// (Steam Game Mode) Avalonia never reports the window active: no FocusIn
+    /// reaches it although the window holds X input focus, so IsActive stays
+    /// false and every controller press was dropped (ROG Xbox Ally X, Bazzite,
+    /// 2026-11-08: "press ignored: window not active", no "window activated"
+    /// line, `xdotool getwindowfocus` = this window). gamescope shows one app
+    /// at a time and this is it, so there the window counts as active.
+    /// Known cost: Steam's own overlay (Quick Access) does not take the
+    /// hidraw stream away, so presses made in it also reach these menus.
+    /// </summary>
+    private bool WindowActive => IsActive || UnderGamescope;
 
     /// <summary>
     /// A controller step, delivered as the key a keyboard would send, so every
@@ -967,10 +1035,9 @@ internal sealed class MainWindow : Window
 
         appHeldPad = held;
         pad.SetAppHoldsPad(held);
-        if (AppServices.ControllerLinkStreaming)
-        {
-            AppServices.Diagnostics.Info("controller", held ? "pad.owner: app (console neutralized)" : "pad.owner: console");
-        }
+        AppServices.Diagnostics.Info("controller", held
+            ? AppServices.ControllerLinkStreaming ? "pad.owner: app (console neutralized)" : "pad.owner: app"
+            : "pad.owner: console");
 
         // Whatever is held at the hand-off is not a fresh press for the menus.
         gamepadNavigator.Reset();

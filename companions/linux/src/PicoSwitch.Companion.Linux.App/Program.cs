@@ -52,6 +52,18 @@ internal static class Program
     public static AppBuilder BuildAvaloniaApp() =>
         AppBuilder.Configure<App>()
             .UsePlatformDetect()
+            // Under gamescope (Steam Game Mode) every popup -- a ComboBox's
+            // list, a flyout, a menu -- is drawn INSIDE the main window. As its
+            // own X11 window it took focus, gamescope handed focus straight
+            // back, and the main window's deactivation closed the popup about
+            // 15 ms after it opened: no dropdown could be used (ROG Xbox Ally X,
+            // Bazzite, 2026-11-08; the log shows "[pad] window deactivated" /
+            // "activated" pairs on each tap). A desktop keeps native popups.
+            .With(new X11PlatformOptions
+            {
+                OverlayPopups = PicoSwitch.Companion.Linux.Display.GamescopeScale.UnderGamescope(
+                    Environment.GetEnvironmentVariable),
+            })
             .WithInterFont()
             .LogToTrace();
 }

@@ -809,19 +809,25 @@ internal sealed class BluezManagementTransport : IManagementTransport, IControll
     /// </summary>
     /// <remarks>
     /// The adapter is dual-mode (Classic for controllers and Controller Link, LE
-    /// for management) and LE pairing derives a Classic key too, so BlueZ holds
-    /// both bonds. Device1.Connect then picks the bearer it saw the device on
-    /// MOST RECENTLY, and anything Classic (an inquiry, a failed Classic attempt)
-    /// makes that BR/EDR: Connect fails with "br-connection-refused", or brings
-    /// up a Classic link that has no GATT. Measured on the Ally (Steam Game
-    /// Mode, BlueZ 5.87, 2026-11-08): every connect went to BR/EDR.
-    /// PreferredBearer and Bearer.LE1.Connect would name the bearer outright but
-    /// are experimental and absent there.
+    /// for management). BlueZ's select_conn_bearer() (src/device.c, 5.87) picks
+    /// the bearer for Device1.Connect AND Device1.Pair: the bonded one if only
+    /// one is bonded, otherwise the one seen most recently, with a TIE GOING TO
+    /// BR/EDR. PreferredBearer and Bearer.LE1.Connect would name the bearer
+    /// outright but are experimental and absent on the Ally (BlueZ 5.87).
     ///
-    /// One advertisement received by an LE-only discovery updates BlueZ's LE
-    /// "last seen", and BlueZ breaks a tie toward LE, so a Connect right after it
-    /// goes over LE. Only a FRESH advertisement counts: the discovery's report of
-    /// a cached or already-connected device carries no RSSI. If none arrives in
+    /// One advertisement received by an LE-only discovery makes the LE sighting
+    /// the most recent, so a Connect right after it goes over LE -- PROVIDED the
+    /// advertisement carries the "BR/EDR Not Supported" flag. Without it BlueZ
+    /// (src/adapter.c) refreshes the BR/EDR sighting from the same advertisement,
+    /// the tie goes to BR/EDR, and this refresh guarantees the wrong bearer:
+    /// firmware before 2026-11-08 advertised flags 0x02 and every Pair and
+    /// Connect from the Ally went Classic (Pair "AuthenticationRejected",
+    /// Connect "br-connection-refused"). The adapter now advertises 0x06.
+    /// A bond made over Classic by such firmware still pins BR/EDR (the bonded
+    /// rule comes first); only removing it and pairing again clears that.
+    ///
+    /// Only a FRESH advertisement counts: the discovery's report of a cached or
+    /// already-connected device carries no RSSI. If none arrives in
     /// <see cref="LeRefreshMillis"/> (the adapter is serving another host and not
     /// advertising, say), Connect runs anyway, exactly as before.
     /// </remarks>

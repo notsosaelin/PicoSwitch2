@@ -189,4 +189,39 @@ public sealed class ShellNavigationTests
         session.SetConsoleButton(ControllerButton.Capture, false);
         Assert.False(session.Snapshot.Buttons.Contains(ControllerButton.Capture));
     }
+    [Fact]
+    public void ViewAndMenuHeldTogetherFireBackOncePerHold()
+    {
+        var chord = new BackChordGesture();
+        var both = ControllerButtonSet.Empty.With(ControllerButton.Select).With(ControllerButton.Start);
+
+        Assert.False(chord.Feed(both, 0));
+        Assert.False(chord.Feed(both, BackChordGesture.HoldMillis - 1));
+        Assert.True(chord.Feed(both, BackChordGesture.HoldMillis));
+        Assert.False(chord.Feed(both, BackChordGesture.HoldMillis * 4));
+
+        // Letting go of only one is not a new hold.
+        Assert.False(chord.Feed(ControllerButtonSet.Empty.With(ControllerButton.Start), 3000));
+        Assert.False(chord.Feed(both, 3000));
+        Assert.False(chord.Feed(both, 4000));
+
+        // Both released: the next hold fires again.
+        Assert.False(chord.Feed(ControllerButtonSet.Empty, 5000));
+        Assert.False(chord.Feed(both, 5000));
+        Assert.True(chord.Feed(both, 5000 + BackChordGesture.HoldMillis));
+    }
+
+    [Fact]
+    public void EitherButtonAloneOrAShortChordIsNotBack()
+    {
+        var chord = new BackChordGesture();
+        var view = ControllerButtonSet.Empty.With(ControllerButton.Select);
+        var both = view.With(ControllerButton.Start);
+
+        Assert.False(chord.Feed(view, 0));
+        Assert.False(chord.Feed(view, 5000));
+        Assert.False(chord.Feed(both, 5000));
+        Assert.False(chord.Feed(view, 5000 + BackChordGesture.HoldMillis - 10));
+        Assert.False(chord.Feed(both, 5000 + BackChordGesture.HoldMillis));
+    }
 }

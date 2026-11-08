@@ -59,12 +59,29 @@ Software-verified, not yet hardware-validated, not yet in a release:
   ROG Xbox Ally X (1920×1080 window on the 1920×1080 screen); not yet confirmed
   by eye. It also sets its own UI scale there (gamescope publishes none, so it
   drew at 1x): one unit is an Odin 2 Mini dp, 1.7x on the Ally.
-- **Linux management connects over LE on dual-mode BlueZ** (2026-11-08): in
-  Game Mode BlueZ sent every adapter connect over Classic (`br-connection-refused`,
-  or a Classic link with no GATT that passed for LE). The transport now checks
-  for the management service, drops a link without it, and refreshes BlueZ's LE
-  sighting with a short LE scan before Connect. Unit-tested against a fake
-  BlueZ; not yet confirmed against the adapter.
+- **Linux controller navigation in Game Mode** (2026-11-08): Avalonia never
+  reports the window active under gamescope, so the shell dropped every press
+  (confirmed from the app log). The window now counts as active there, and
+  View + Menu held 0.5 s is Back from the controller (owner confirmed both,
+  2026-11-08). Drop-downs closed as they opened (their own X11 windows lost
+  focus back to the main window); popups are now drawn inside the window under
+  gamescope (owner confirmed, 2026-11-08).
+- **GameCube beans are smooth on every companion** (2026-11-08): Windows and
+  Linux drew the twenty traced anchors as a polygon. All three now draw the
+  shared Catmull-Rom outline (`TouchGameCubeGeometry` smooth outline, pinned by
+  matching Kotlin and C# tests and a desktop renderer guard). Owner confirmed
+  on Linux; Windows built and tested, not yet looked at on screen.
+- **Linux pairing and connecting went over Classic** (2026-11-08, root cause
+  confirmed from BlueZ logs and the BlueZ 5.87 source). The adapter advertised
+  Flags `0x02` (no "BR/EDR Not Supported"). BlueZ counted every advertisement as
+  a Classic sighting too and broke the tie toward BR/EDR, so Pair ran Classic SSP
+  (declined: `AuthenticationRejected`) and Connect went BR/EDR
+  (`br-connection-refused`). The firmware now advertises `0x06`. The Linux
+  transport also checks for the management service, drops a link without it, and
+  refreshes the LE sighting before Connect. Confirmed on the Ally
+  (2026-11-08): with the new firmware it paired and connected over LE first
+  time. A bond the old firmware made must be removed on the
+  computer and paired again.
 - **Version 2.6.0** in the Android and Windows manifests (no tag; Linux takes
   its version from the tag at packaging).
 - **The adapter's amiibo shows on connect** (2026-11-08): the app read

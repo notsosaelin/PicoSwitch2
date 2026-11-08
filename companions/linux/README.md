@@ -159,19 +159,33 @@ reads or writes real companion data; the same variable works for the app.
    `AVALONIA_GLOBAL_SCALE_FACTOR` in the launch options overrides it.
 
 **Dual-mode BlueZ picks the wrong bearer.** The adapter is dual-mode (Classic
-for controllers and Controller Link, LE for management), and LE pairing also
-derives a Classic key, so BlueZ holds both bonds and `Device1.Connect` uses the
-bearer it saw the adapter on most recently. In Game Mode that was Classic every
-time (Ally, BlueZ 5.87, 2026-11-08): Connect failed `br-connection-refused`, or
-brought up a Classic link whose SDP set `ServicesResolved` with no GATT at all,
-which the transport then took for a working LE link ("did not expose its
-management service"). `PreferredBearer` and `Bearer.LE1.Connect` are
-experimental and absent there. The transport therefore judges a link by the
-management service being present, drops a link without it, and runs a short
-LE-only scan until one fresh advertisement arrives (refreshing BlueZ's LE
-"last seen"; ties go to LE) immediately before Connect.
-`AuthenticationRejected` on Pair is the adapter declining a new management bond
-outside its pairing window, by design.
+for controllers and Controller Link, LE for management). BlueZ chooses the
+bearer for both `Device1.Pair` and `Device1.Connect` in `select_conn_bearer()`
+(`src/device.c`, 5.87): the bonded bearer if only one is bonded, otherwise the
+one it saw the device on most recently, **with a tie going to BR/EDR**. An LE
+advertisement whose Flags lack "BR/EDR Not Supported" also counts as a BR/EDR
+sighting (`src/adapter.c`), so every advertisement produced a tie.
+
+The adapter firmware advertised Flags `0x02` until 2026-11-08. On the Ally
+(BlueZ 5.87, Game Mode) that made everything go Classic (**confirmed**: agent
+over SSH, BlueZ and companion logs plus the BlueZ 5.87 source):
+
+- Pair ran Classic SSP, which the adapter declines as an unadmitted Classic
+  attempt, and BlueZ reported `AuthenticationRejected` even with the pairing
+  window open. (The firmware log line is "Rejecting unadmitted Classic SSP
+  confirmation", not the management Just Works one.)
+- A Pair that did succeed left a Classic bond and a Classic link with no GATT.
+  After that, every Connect failed with `br-connection-refused` or
+  `BREDR.ProfileUnavailable`, even right after a fresh LE advertisement.
+
+The firmware now advertises Flags `0x06` (LE General Discoverable + BR/EDR Not
+Supported), so advertisements count only as LE sightings. A bond made by the
+older firmware still pins BR/EDR, because the bonded rule comes first: remove
+the adapter from the computer (`bluetoothctl remove <address>`) and pair again.
+`PreferredBearer` and `Bearer.LE1.Connect` would name the bearer outright, but
+they are experimental and absent on BlueZ 5.87. The transport also judges a link
+by whether the management service is present, drops a link without it, and runs
+a short LE-only scan just before Connect so the LE sighting is the freshest.
 
 Settings live in `~/.local/share/PicoSwitch2` (`$XDG_DATA_HOME`).
 Amiibo backups are in `amiibo/` there. **Amiibo keys** are in `amiibo-private/`,
@@ -251,8 +265,11 @@ may appear (see §6).
 | Game Mode input via Steam's virtual pad (ROG Xbox Ally X, Bazzite) | User, 2026-11-06 | Buttons and sticks work; back buttons absent (no codes on that pad) |
 | Game Mode window fills the panel (non-Steam game on the ROG Xbox Ally X, Bazzite, gamescope 3.17) | Agent over SSH, 2026-11-08: launched with `steam://rungameid`, X window geometry and the app's own `[window] full screen` log | 1920x1080 at +0+0 on a 1920x1080 screen (first pass 1200x760, filled by the 500 ms pass); not yet confirmed by eye |
 | Game Mode UI scale (same device) | Agent over SSH, 2026-11-08: the app's startup line | `monitor 1920x1080 px, 150x90 mm -> scale 1.7 (1129x635 units)`; window still fills the screen; owner to judge the size |
-| Management connect over LE on dual-mode BlueZ | `BluezManagementTransportTests` (fake BlueZ that connects Classic until an LE advertisement is seen) | Pass; **not yet confirmed against the adapter** (Game Mode logs before the fix show every connect on BR/EDR) |
-| Controller and keyboard navigation of the shell and Amiibo | Screenshot harness `--keys` / `--pad` | Pass; **not yet run with a real pad** |
+| Management connect over LE on dual-mode BlueZ | `BluezManagementTransportTests` (fake BlueZ that connects Classic until an LE advertisement is seen, i.e. firmware advertising Flags `0x06`) | Pass; **not yet confirmed against the adapter**. Against Flags `0x02` firmware the LE scan did not help (Ally, 2026-11-08: still `br-connection-refused` right after a fresh advertisement), which is how the advertising flag was found |
+| Pair and connect over LE (adapter Flags `0x06`) | Owner and agent over SSH, 2026-11-08 | Pass: paired at once with the window open, management connected over LE (`connected ... contract=4`), Controller Link and companion audio ran |
+| Controller and keyboard navigation of the shell and Amiibo | Screenshot harness `--keys` / `--pad` | Pass |
+| Controller navigation in Game Mode (Ally, Bazzite) | Agent over SSH, 2026-11-08: app log | Before the fix every press logged `press ignored: window not active` (Avalonia never activates under gamescope). After the fix: works (owner, 2026-11-08) |
+| Drop-downs in Game Mode | Agent over SSH, 2026-11-08: app log | Each tap logged a deactivate/activate pair and the list closed at once; popups now drawn inside the window under gamescope; works (owner, 2026-11-08) |
 | Steam Deck-format hidraw reader (back buttons, motion) | Unit tests on captured Ally reports; user on the ROG Xbox Ally X, 2026-11-06 | Back buttons and gyro reach the console; gyro reported "very off" (open) |
 | Motion frame mapping on a real pad | — | **Not yet validated** (Hypothesis) |
 | Keyboard & Mouse and Amiibo pages against a real adapter | — | **Not yet validated**; layout reviewed in the screenshot harness only |

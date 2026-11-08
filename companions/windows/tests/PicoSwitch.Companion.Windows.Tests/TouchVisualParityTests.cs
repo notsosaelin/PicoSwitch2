@@ -65,6 +65,38 @@ public sealed class TouchVisualParityTests
     }
 
     /// <summary>
+    /// The GameCube beans are drawn from the shared smooth outline on BOTH
+    /// desktop renderers, never as straight lines between the twenty anchors:
+    /// both first ports did that and the beans came out blocky beside Android's
+    /// (owner, 2026-11-08). The Linux renderer is read from its sibling tree.
+    /// </summary>
+    [Theory]
+    [InlineData("windows/src/PicoSwitch.Companion.App/Touch/TouchControlRenderer.cs")]
+    [InlineData("linux/src/PicoSwitch.Companion.Linux.App/Touch/TouchControlRenderer.cs")]
+    public void GameCubeBeansAreDrawnAsTheSharedSmoothOutline(string relative)
+    {
+        var cursor = new DirectoryInfo(AppContext.BaseDirectory);
+        string? path = null;
+        while (cursor is not null && path is null)
+        {
+            var candidate = Path.Combine(cursor.FullName, "companions", relative.Replace('/', Path.DirectorySeparatorChar));
+            path = File.Exists(candidate) ? candidate : null;
+            cursor = cursor.Parent;
+        }
+
+        Assert.NotNull(path);
+        var source = File.ReadAllText(path!);
+        var start = source.IndexOf("private static Geometry Contour(", StringComparison.Ordinal);
+        Assert.True(start >= 0, "Contour() not found");
+        var end = source.IndexOf("private static Geometry Rotate(", start, StringComparison.Ordinal);
+        var contour = source[start..end];
+
+        Assert.Contains("TouchGameCubeGeometry.SmoothOutline(", contour);
+        Assert.Contains("BezierSegment", contour);
+        Assert.DoesNotContain("LineSegment", contour);
+    }
+
+    /// <summary>
     /// Every proportion the two renderers share, with its Android source.
     /// </summary>
     /// <remarks>

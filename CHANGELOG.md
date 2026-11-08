@@ -32,13 +32,22 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Fixed
 
+- **Linux: the controller drives the menus in Steam Game Mode.** The app ignored every press there,
+  because it never believed its window was in front. Holding View and Menu together for half a
+  second is now Back from the controller (show or hide the menu), including while playing.
+- **Linux: drop-down lists open in Steam Game Mode.** They closed the moment they opened.
+- **Windows and Linux: the GameCube X and Y buttons are smooth.** They were drawn as polygons; every
+  companion now draws them from the same shared curve as Android.
+
 - **Linux: Steam Game Mode fills the screen.** Launched as a non-Steam game, the companion showed at
   its default window size, scaled and letterboxed. It now fills the screen at the game resolution
   Steam gives it (the panel's native resolution by default), at a UI size matched to a handheld
   instead of the tiny 1x it drew at before.
-- **Linux: the adapter connects after pairing.** On a computer whose Bluetooth also speaks Classic,
-  connecting could go over the wrong kind of Bluetooth link and fail with "The adapter did not
-  expose its management service". The companion now makes sure it connects over Bluetooth LE.
+- **Linux: pairing and connecting to the adapter.** On a Linux computer whose Bluetooth also speaks
+  Classic, pairing was declined ("The pairing request was declined") and connecting failed, because
+  Linux used the wrong kind of Bluetooth link. The adapter now advertises itself as LE only for
+  management, and the companion makes sure it connects over Bluetooth LE. Update the adapter
+  firmware, then remove the adapter from the computer's Bluetooth settings and pair again.
 
 - **Two paired controllers no longer both drive the console.** With, say, a DualSense and an Xbox
   controller paired at once, both could move the console even though the companion showed only

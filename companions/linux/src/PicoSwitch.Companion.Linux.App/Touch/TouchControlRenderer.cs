@@ -690,11 +690,15 @@ public sealed class TouchControlRenderer(Canvas canvas)
                 control.Spec.VisualRotationDegrees);
 
             var figure = Figure(new Point(control.CenterX + points[0].X, control.CenterY + points[0].Y));
-            foreach (var point in points.Skip(1))
+            // Smooth, never a polyline: the anchors sample a curve (see SmoothOutline).
+            Point At(TouchVector v) => new(control.CenterX + v.X, control.CenterY + v.Y);
+            foreach (var segment in TouchGameCubeGeometry.SmoothOutline(points))
             {
-                figure.Segments!.Add(new LineSegment
+                figure.Segments!.Add(new BezierSegment
                 {
-                    Point = new Point(control.CenterX + point.X, control.CenterY + point.Y),
+                    Point1 = At(segment.Control1),
+                    Point2 = At(segment.Control2),
+                    Point3 = At(segment.End),
                 });
             }
 

@@ -68,6 +68,25 @@ while the navigation was hidden closed the app.
   streaming releases Controller Link through the same `BackKeyGesture`). A
   press at the navigation's screen edge calls it up, as a swipe does on
   Android.
+- **View + Menu held 0.5 s is Back from the controller** (Linux,
+  `BackChordGesture`; owner's choice, 2026-11-08). A handheld PC has no Back
+  key outside its gamepad, and while streaming on Play every button goes to
+  the console, so in Steam Game Mode only touch could bring the navigation in.
+  The chord works whoever owns the pad. The two buttons still reach the game
+  while held, because holding them back would delay every − and +. Not yet
+  wired on Windows.
+- **Under gamescope the window counts as active.** Avalonia never reports it
+  active there (no FocusIn arrives, although the window holds X input focus),
+  and the shell drops controller presses for an inactive window: on the Ally in
+  Game Mode the controller drove nothing at all (2026-11-08, logged as
+  `[pad] press ignored: window not active`). Known cost: Steam's Quick Access
+  overlay does not take the hidraw stream away, so presses made in it also
+  reach these menus.
+- **Under gamescope popups are drawn inside the window** (Avalonia
+  `X11PlatformOptions.OverlayPopups`). As separate X11 windows they took
+  focus, gamescope gave it straight back, and the owner window's deactivation
+  closed them about 15 ms after opening, so no dropdown could be used
+  (2026-11-08). Desktop sessions keep native popups.
 - **The controller** is read from the frames the shell already gets (SDL on
   Linux, Windows.Gaming.Input on Windows), because neither UI toolkit delivers
   gamepad keys. `PadOwnership` decides who owns it exactly as on Android;

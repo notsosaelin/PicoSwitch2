@@ -579,31 +579,18 @@ private fun gameCubeFacePath(
     height: Float,
     rotationDegrees: Float,
 ): Path {
-    val oriented = orientedGameCubeFaceContour(role, width, height, rotationDegrees)
+    val oriented = TouchGameCubeGeometry.orientedContour(role, width, height, rotationDegrees)
     val centerX = left + width / 2f
     val centerY = top + height / 2f
-    fun point(index: Int): Offset {
-        val source = oriented[(index + oriented.size) % oriented.size]
-        return Offset(centerX + source.x, centerY + source.y)
-    }
-
+    // The shared smooth outline (Catmull-Rom through the twenty anchors), the
+    // same segments the Windows and Linux renderers draw.
     return Path().apply {
-        val first = point(0)
-        moveTo(first.x, first.y)
-        oriented.indices.forEach { index ->
-            val previous = point(index - 1)
-            val current = point(index)
-            val next = point(index + 1)
-            val following = point(index + 2)
-            // Uniform Catmull-Rom converted to a cubic. Twenty equal-arc anchors retain
-            // the source contour while keeping the Android path smooth at any scale.
+        moveTo(centerX + oriented[0].x, centerY + oriented[0].y)
+        TouchGameCubeGeometry.smoothOutline(oriented).forEach { segment ->
             cubicTo(
-                current.x + (next.x - previous.x) / 6f,
-                current.y + (next.y - previous.y) / 6f,
-                next.x - (following.x - current.x) / 6f,
-                next.y - (following.y - current.y) / 6f,
-                next.x,
-                next.y,
+                centerX + segment.control1.x, centerY + segment.control1.y,
+                centerX + segment.control2.x, centerY + segment.control2.y,
+                centerX + segment.end.x, centerY + segment.end.y,
             )
         }
         close()

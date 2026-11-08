@@ -793,8 +793,18 @@ static const uint8_t config_ble_mic_up_uuid[] = {  // companion -> adapter
 // Advertisement UUID bytes use Bluetooth little-endian wire order. The full
 // friendly name lives in scan response data so the primary advertisement stays
 // below the 31-byte legacy limit while remaining service-filterable.
+//
+// FLAGS 0x06 = LE General Discoverable + "BR/EDR Not Supported". The second
+// bit is deliberate even though the radio is dual-mode: management is LE only,
+// and without the bit a dual-mode host treats this advertisement as a sighting
+// of the CLASSIC bearer too. BlueZ (adapter.c, 5.87) then refreshes the device's
+// BR/EDR last-seen on every advertisement, and select_conn_bearer() breaks the
+// resulting tie toward BR/EDR -- so Device1.Pair ran Classic SSP (declined
+// below as an unadmitted Classic attempt: "AuthenticationRejected") and
+// Device1.Connect went BR/EDR ("br-connection-refused"). Measured on a Bazzite
+// ROG Xbox Ally X, 2026-11-08; see companions/linux/README.md. Do not drop it.
 static uint8_t config_ble_adv_data[] = {
-    2, BLUETOOTH_DATA_TYPE_FLAGS, 0x02,
+    2, BLUETOOTH_DATA_TYPE_FLAGS, 0x06,
     17, BLUETOOTH_DATA_TYPE_COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS,
     0x83, 0xC0, 0xC7, 0x05, 0x85, 0x05, 0x16, 0xB3,
     0x7C, 0x41, 0x31, 0x27, 0xED, 0xD4, 0x5A, 0x7C,

@@ -163,6 +163,56 @@ public sealed class BackKeyGesture(long holdMillis = BackKeyGesture.HoldMillis)
 }
 
 /// <summary>
+/// Back from the controller itself: View and Menu (the Switch's − and +) held
+/// together for <see cref="HoldMillis"/>. A handheld PC has no Back key outside
+/// its gamepad (the Odin's system Back is what Android uses), and while
+/// Controller Link streams every button goes to the console, so without this
+/// the Ally in Game Mode could only bring the navigation in by touch (owner,
+/// 2026-11-08, chose this chord). It fires once per hold; both buttons must be
+/// let go before it can fire again. The buttons still reach the console while
+/// held: holding them back would delay every − and + a game sees.
+/// </summary>
+public sealed class BackChordGesture(long holdMillis = BackChordGesture.HoldMillis)
+{
+    public const long HoldMillis = 500;
+
+    private long? since;
+    private bool fired;
+
+    /// <summary>One frame (or a timer tick with the last frame). True when Back fires now.</summary>
+    public bool Feed(ControllerButtonSet buttons, long nowMillis)
+    {
+        var both = buttons.Contains(ControllerButton.Select) && buttons.Contains(ControllerButton.Start);
+        if (!both)
+        {
+            var neither = !buttons.Contains(ControllerButton.Select) && !buttons.Contains(ControllerButton.Start);
+            since = null;
+            if (neither)
+            {
+                fired = false;
+            }
+
+            return false;
+        }
+
+        since ??= nowMillis;
+        if (fired || nowMillis - since.Value < holdMillis)
+        {
+            return false;
+        }
+
+        fired = true;
+        return true;
+    }
+
+    public void Reset()
+    {
+        since = null;
+        fired = false;
+    }
+}
+
+/// <summary>
 /// Who owns this computer's controller while Controller Link streams
 /// (companion-shell-layout.md, "Who owns the handheld's controller").
 ///

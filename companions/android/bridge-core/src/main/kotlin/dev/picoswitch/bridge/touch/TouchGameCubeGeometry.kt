@@ -36,6 +36,30 @@ object TouchGameCubeGeometry {
     }
 
     /** Contour hit test with an optional rounded expansion for touch comfort. */
+    /**
+     * The closed outline every renderer draws: one cubic per anchor, the uniform
+     * Catmull-Rom spline through [points] (an [orientedContour]) as Bezier control
+     * points. Segment i runs from point i to point i + 1, wrapping. Shared so the
+     * desktops cannot draw the anchors as a polygon again (they did, 2026-11-08);
+     * the C# TouchGameCubeGeometry.SmoothOutline is the same arithmetic.
+     * Hit testing stays on the polygon ([contains]).
+     */
+    fun smoothOutline(points: List<TouchVector>): List<TouchCubic> {
+        val count = points.size
+        fun at(index: Int) = points[((index % count) + count) % count]
+        return List(count) { index ->
+            val previous = at(index - 1)
+            val current = at(index)
+            val next = at(index + 1)
+            val following = at(index + 2)
+            TouchCubic(
+                TouchVector(current.x + (next.x - previous.x) / 6f, current.y + (next.y - previous.y) / 6f),
+                TouchVector(next.x - (following.x - current.x) / 6f, next.y - (following.y - current.y) / 6f),
+                next,
+            )
+        }
+    }
+
     fun contains(
         role: TouchVisualRole,
         x: Float,
@@ -126,3 +150,6 @@ object TouchGameCubeGeometry {
         TouchVector(0.8517f, 0.0610f), TouchVector(0.7268f, 0.0122f),
     )
 }
+
+/** One cubic Bezier segment of a drawn outline: two control points and its end. */
+data class TouchCubic(val control1: TouchVector, val control2: TouchVector, val end: TouchVector)

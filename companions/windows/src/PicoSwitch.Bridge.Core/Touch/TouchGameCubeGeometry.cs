@@ -46,6 +46,39 @@ public static class TouchGameCubeGeometry
         return points;
     }
 
+    /// <summary>
+    /// The closed outline every renderer DRAWS: one cubic per anchor, the
+    /// uniform Catmull-Rom spline through <paramref name="points"/> (an
+    /// <see cref="OrientedContour"/>) converted to Bezier control points.
+    /// Segment i runs from point i to point i + 1, wrapping.
+    ///
+    /// Shared, not per renderer, because the first desktop ports joined the
+    /// twenty anchors with straight lines and the beans came out as visible
+    /// polygons beside Android's smooth ones (owner, 2026-11-08, Linux and
+    /// Windows). Twenty anchors are a sampling of a curve, never corners.
+    /// Hit testing stays on the polygon (<see cref="Contains"/>), as on Android.
+    /// The Kotlin <c>smoothOutline</c> is the same arithmetic.
+    /// </summary>
+    public static IReadOnlyList<TouchCubic> SmoothOutline(IReadOnlyList<TouchVector> points)
+    {
+        var count = points.Count;
+        var segments = new TouchCubic[count];
+        TouchVector At(int index) => points[((index % count) + count) % count];
+        for (var index = 0; index < count; index++)
+        {
+            var previous = At(index - 1);
+            var current = At(index);
+            var next = At(index + 1);
+            var following = At(index + 2);
+            segments[index] = new TouchCubic(
+                new TouchVector(current.X + ((next.X - previous.X) / 6f), current.Y + ((next.Y - previous.Y) / 6f)),
+                new TouchVector(next.X - ((following.X - current.X) / 6f), next.Y - ((following.Y - current.Y) / 6f)),
+                next);
+        }
+
+        return segments;
+    }
+
     /// <summary>Contour hit test with an optional rounded expansion for touch comfort.</summary>
     public static bool Contains(
         TouchVisualRole role,
@@ -156,3 +189,6 @@ public static class TouchGameCubeGeometry
         new(0.8517f, 0.0610f), new(0.7268f, 0.0122f),
     ];
 }
+
+/// <summary>One cubic Bezier segment of a drawn outline: two control points and its end.</summary>
+public readonly record struct TouchCubic(TouchVector Control1, TouchVector Control2, TouchVector End);
