@@ -7,7 +7,7 @@ NFC boundary section below carries the short form and the open experiment.
 
 Working branch: `main` (`ns2-testing` was fast-forwarded into `main` and retired on 2026-11-06)
 
-Latest published release: `v2.5.0` (2026-09-04)
+Latest published release: `v2.6.0` (2026-11-08)
 
 Always run `git status`, `git log -1`, and read `STATUS.md` at the start of a new session. This file
 deliberately does not pin the latest commit because it should remain useful after later checkpoints.

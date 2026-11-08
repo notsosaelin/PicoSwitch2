@@ -3,9 +3,21 @@
 Release notes describe user-visible behavior. Detailed implementation history remains in
 `docs/archive/` and the experiment records.
 
-## 2.6.0 — Unreleased
+## 2.6.0 — 2026-11-08
+
+> **Update firmware and companions together.** The bridge contract is still 4, but the Linux
+> companion needs 2.6.0 firmware to pair, and Play's player number and amiibo prompt come from it.
 
 ### Added
+
+- **Firmware updates keep your pairings, settings and amiibo.** `PicoSwitchWGA-<board>.uf2` is now
+  an update: flashing it no longer erases the adapter, so controllers, the console and the
+  companion stay paired. `PicoSwitchWGA-<board>-wipe.uf2` is the clean install, which erases
+  everything once on its first boot — use it if an adapter misbehaves after updating.
+- **Companion headset (experimental, Pico 2 W).** Play → Headset sends the console's audio to the
+  companion over its existing Bluetooth link, at the Pro Controller 2's own 96 kbit/s, and Mic sends
+  the companion's microphone back to the console (the microphone is not yet tested on hardware).
+  Needs Controller Link running; Pico W replies that it is unsupported.
 
 - **A console-style home screen and navigation on every companion.** Play is the home screen on
   Android, Windows and Linux: the headset strip and the controller card on the left, with Start /
@@ -22,8 +34,9 @@ Release notes describe user-visible behavior. Detailed implementation history re
 - **Linux companion (preview).** PicoSwitch2 Companion for Linux, one self-contained
   executable for x86_64 and arm64 that starts from Steam Game Mode with no launch options: pair and manage the adapter, and use any controller Linux
   sees — including the Deck's own controls, with gyro — as the adapter's controller. Includes the
-  Keyboard & Mouse and Amiibo pages, and a layout that adapts to any screen size. Not yet
-  validated on hardware.
+  Keyboard & Mouse and Amiibo pages, and a layout that adapts to any screen size. Pairing and
+  connecting are confirmed on a ROG Xbox Ally X running Bazzite; the rest is not yet validated on
+  hardware.
 
 ### Changed
 

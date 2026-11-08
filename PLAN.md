@@ -18,7 +18,9 @@ a known technical requirement.
 
 # Current Baseline
 
-PicoSwitch2 v2.5.0 is released (2026-09-04). It extends the v2.0 baseline with the Windows
+PicoSwitch2 v2.6.0 is released (2026-11-08). It adds the Linux companion (preview), one shell with
+Play as home on all three companions, controller navigation, firmware updates that keep pairings,
+and the experimental companion headset. v2.5.0 (2026-09-04) added the Windows
 companion (management, Controller Link, installer), an editable Touch Gamepad on both companions,
 and Bluetooth keyboard and keyboard + mouse input.
 

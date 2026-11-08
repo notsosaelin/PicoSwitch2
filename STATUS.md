@@ -9,13 +9,13 @@ This page is kept short on purpose. The detailed per-subsystem record and the da
 entries it replaced are archived in
 [`docs/archive/status-through-2026-11-06.archived.md`](docs/archive/status-through-2026-11-06.archived.md).
 
-_Last updated 2026-11-06._
+_Last updated 2026-11-08._
 
 ## At a glance
 
 | | |
 | --- | --- |
-| Released baseline | **v2.5.0** (2026-09-04): firmware for both boards, Android APK, Windows installer and portable ZIP |
+| Released baseline | **v2.6.0** (2026-11-08): firmware for both boards (update and clean-install UF2), Windows installer and portable ZIP (x64, arm64), Linux single-file executables (x64, arm64). The Android APK for 2.6.0 is not yet attached (release key not on the build machine); v2.5.0 is the latest published APK |
 | Development branch | `main` |
 | Release blockers | None known |
 | Bridge contract | 4 (`ANDROID_BRIDGE_CONTRACT_VERSION` / `BridgeContract.VERSION`); firmware and companions must come from the same release |
@@ -23,9 +23,9 @@ _Last updated 2026-11-06._
 | Toolchain | Pico SDK 2.3.0, BTstack 1.8.2, Arm GCC 15.2.Rel1 |
 | Boards | Pico 2 W: production, 300 MHz, live DualSense audio. Pico W: validated non-audio profile. Keep them different. |
 
-## Unreleased on `main`
+## New in v2.6.0
 
-Software-verified, not yet hardware-validated, not yet in a release:
+Released 2026-11-08. Each entry states its own validation; most are software-verified only:
 
 - **Firmware updates keep pairings, settings and amiibo** (2026-11-08). The
   standard UF2 no longer erases persistence on its first boot; a separate
@@ -88,8 +88,8 @@ Software-verified, not yet hardware-validated, not yet in a release:
   (2026-11-08): with the new firmware it paired and connected over LE first
   time. A bond the old firmware made must be removed on the
   computer and paired again.
-- **Version 2.6.0** in the Android and Windows manifests (no tag; Linux takes
-  its version from the tag at packaging).
+- **Version 2.6.0**, tagged `v2.6.0`: Android and Windows manifests; Linux takes
+  its version from the tag at packaging.
 - **The adapter's amiibo shows on connect** (2026-11-08): the app read
   `amiibo status` only on the Amiibo page or a manual refresh, which the old
   wipe-on-every-flash hid; after an update UF2 Play said "No Amiibo" while the
