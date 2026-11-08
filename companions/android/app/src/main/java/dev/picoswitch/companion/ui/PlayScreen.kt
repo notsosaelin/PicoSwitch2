@@ -55,12 +55,18 @@ import dev.picoswitch.companion.model.*
  * Play, the home page (docs/architecture/companion-shell-layout.md, "Play"),
  * laid out like a console home screen rather than a settings form:
  *
- * - the HERO (left, largest): which controller this device is reading, the
- *   state in one word, and the one big Start / Stop; underneath, the console
- *   buttons while playing and the secondary actions otherwise;
- * - the HEADSET tile: one tap plugs it in (LIVE), one tap pulls it out; the
- *   microphone comes with it and only mutes;
- * - the AMIIBO tile: the figure the adapter is holding, as art and a name.
+ * - the left column in four rows (owner, 2026-11-08: the controller card was
+ *   mostly empty, and the console buttons REPLACED Touch Gamepad while
+ *   streaming, so there was no way into it once play started):
+ *   1. the HEADSET strip: one tap plugs it in (LIVE), one tap pulls it out; the
+ *      microphone comes with it and only mutes;
+ *   2. the CONTROLLER row: input -> output (the controller this device reads ->
+ *      what the console sees, with its Player N), the state in a few words, and
+ *      one quick-settings menu (which controller, which emulated controller);
+ *   3. the CONSOLE BUTTONS: Home, Capture, C as tiles, always in place, held
+ *      while playing and disabled otherwise;
+ *   4. the ACTIONS: Start / Stop, Touch Gamepad, Wake or the adapter's next step;
+ * - the AMIIBO tile (right, full height): the figure the adapter holds.
  *
  * Everything fits the page without scrolling on a landscape handheld; only a
  * window too narrow or too short for side-by-side tiles stacks and scrolls.
@@ -99,27 +105,30 @@ fun PlayScreen(
         val short = LocalShortWindow.current
         val gap = if (short) LayoutTokens.Space2 else LayoutTokens.Space3
         val hub = maxWidth >= HUB_MIN_WIDTH && maxHeight >= HUB_MIN_HEIGHT
-        val hero: @Composable (Modifier) -> Unit = { modifier ->
-            HeroCard(ui, viewModel, action, onHero, playing, hasAdapter, onOpenTouchGamepad, onConnectAdapter, modifier)
+        val actions: @Composable (Modifier) -> Unit = { modifier ->
+            ActionRow(ui, viewModel, action, onHero, hasAdapter, onOpenTouchGamepad, onConnectAdapter, modifier)
         }
         if (hub) {
+            val padTop = if (short) LayoutTokens.Space1 else LayoutTokens.PagePaddingTop
+            val padBottom = if (short) LayoutTokens.Space2 else LayoutTokens.PagePaddingBottom
+            // The controller row and the console tiles share the spare height
+            // (1.4 : 1); the tiles stop at 140 so a tall window gives the rest
+            // to the controller row, which centres its content.
+            val spare = maxHeight - padTop - padBottom - HEADSET_STRIP_HEIGHT - LayoutTokens.ActionHeight - gap * 3
+            val consoleHeight = (spare / 2.4f).coerceIn(72.dp, 140.dp)
             Row(
                 Modifier
                     .widthIn(max = LayoutTokens.WidePageMaxWidth)
                     .fillMaxSize()
                     .padding(horizontal = if (short) LayoutTokens.Space4 else LayoutTokens.PagePaddingSide)
-                    .padding(
-                        top = if (short) LayoutTokens.Space1 else LayoutTokens.PagePaddingTop,
-                        bottom = if (short) LayoutTokens.Space2 else LayoutTokens.PagePaddingBottom,
-                    ),
+                    .padding(top = padTop, bottom = padBottom),
                 horizontalArrangement = Arrangement.spacedBy(gap),
             ) {
-                // Left: the headset as a slim strip, the controller card taking
-                // the rest. Right: the Amiibo, full height, so its art is the
-                // picture on the home screen (owner, 2026-11-08).
                 Column(Modifier.weight(1.35f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(gap)) {
                     HeadsetTileCard(viewModel, Modifier.fillMaxWidth().height(HEADSET_STRIP_HEIGHT))
-                    hero(Modifier.weight(1f).fillMaxWidth())
+                    ControllerCard(ui, viewModel, action, playing, Modifier.weight(1f).fillMaxWidth())
+                    ConsoleTile(viewModel, playing, Modifier.fillMaxWidth().height(consoleHeight))
+                    actions(Modifier.fillMaxWidth())
                 }
                 AmiiboTileCard(ui, viewModel, Modifier.weight(1f).fillMaxHeight())
             }
@@ -132,7 +141,9 @@ fun PlayScreen(
                     .padding(top = LayoutTokens.PagePaddingTop, bottom = LayoutTokens.PagePaddingBottom),
                 verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space3),
             ) {
-                hero(Modifier.fillMaxWidth().heightIn(min = 300.dp))
+                actions(Modifier.fillMaxWidth())
+                ControllerCard(ui, viewModel, action, playing, Modifier.fillMaxWidth())
+                ConsoleTile(viewModel, playing, Modifier.fillMaxWidth().height(112.dp))
                 HeadsetTileCard(viewModel, Modifier.fillMaxWidth().height(STACKED_TILE_HEIGHT))
                 AmiiboTileCard(ui, viewModel, Modifier.fillMaxWidth().height(STACKED_AMIIBO_HEIGHT))
             }
@@ -146,17 +157,16 @@ private val STACKED_TILE_HEIGHT = 120.dp
 private val STACKED_AMIIBO_HEIGHT = 300.dp
 private val HEADSET_STRIP_HEIGHT = 96.dp
 
-/** The big card: the controller, its state, Start / Stop, and what goes with it. */
+/**
+ * The controller row: input -> output at a glance, the state in a few words,
+ * and the quick-settings menu. Centred in whatever height the column gives it.
+ */
 @Composable
-private fun HeroCard(
+private fun ControllerCard(
     ui: CompanionUiState,
     viewModel: CompanionViewModel,
     action: PlayAction.View,
-    onHero: () -> Unit,
     playing: Boolean,
-    hasAdapter: Boolean,
-    onOpenTouchGamepad: () -> Unit,
-    onConnectAdapter: () -> Unit,
     modifier: Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -171,12 +181,12 @@ private fun HeroCard(
         modifier
             .clip(RoundedCornerShape(LayoutTokens.CardRadius))
             .background(Brush.linearGradient(listOf(glow, colors.surfaceContainerHigh))),
+        contentAlignment = Alignment.Center,
     ) {
         Column(
-            Modifier.fillMaxSize().padding(if (short) LayoutTokens.Space3 else LayoutTokens.Space4),
-            verticalArrangement = Arrangement.spacedBy(if (short) LayoutTokens.Space1 else LayoutTokens.Space2),
+            Modifier.fillMaxWidth().padding(if (short) LayoutTokens.Space3 else LayoutTokens.Space4),
+            verticalArrangement = Arrangement.spacedBy(if (short) LayoutTokens.Space2 else LayoutTokens.Space3),
         ) {
-            ControllerHeader(ui, viewModel)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     headline,
@@ -184,101 +194,166 @@ private fun HeroCard(
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
+                    modifier = Modifier.weight(1f),
                 )
-                // The number the console gave this controller (its player
-                // LEDs), so the player knows which slot they are in.
-                ConsoleCues.playerLabel(ui.connection.connected, ui.snapshot.input.console)?.let { label ->
-                    Spacer(Modifier.width(LayoutTokens.Space3))
-                    PlayerBadge(label)
-                }
+                QuickSettings(ui, viewModel)
             }
+            InputOutput(ui)
             if (!playing) ActionLine(action, ui)
-            // The actions sit at the bottom edge, where the thumbs are.
-            Spacer(Modifier.weight(1f))
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2),
-            ) {
-                if (playing) {
-                    ConsoleButtons(viewModel)
-                } else {
-                    // Not gated on a physical input: the screen itself is a complete controller.
-                    QuickAction(Icons.Default.TouchApp, "Touch Gamepad", enabled = hasAdapter, onClick = onOpenTouchGamepad)
-                    if (ui.connection.connected) {
-                        QuickAction(
-                            Icons.Default.PowerSettingsNew, "Wake",
-                            enabled = !ui.busy && ui.snapshot.capabilities.wake != CapabilityState.Unsupported,
-                            onClick = viewModel::wake,
-                        )
-                    } else {
-                        val connects = AdapterStatus.nextStepConnects(false, ui.connection.phase, hasAdapter)
-                        QuickAction(
-                            Icons.Default.Cable,
-                            AdapterStatus.nextStep(false, ui.connection.phase, hasAdapter),
-                            enabled = !AdapterStatus.inProgress(ui.connection.phase) && !ui.busy,
-                            onClick = { if (connects) onConnectAdapter() else viewModel.navigate(AppSection.Adapter) },
-                        )
-                    }
-                }
-            }
-            HeroButton(action, onHero)
         }
     }
 }
 
-/** Which controller this device is reading. A choice opens as a menu, so the header stays one line. */
+/** Input -> output: the controller this device reads, and what the console sees with its player. */
 @Composable
-private fun ControllerHeader(ui: CompanionUiState, viewModel: CompanionViewModel) {
+private fun InputOutput(ui: CompanionUiState) {
     val selected = ui.sourceDevices.firstOrNull { it.descriptor == ui.selectedSourceDescriptor }
-    val view = ControllerCardStatus.of(selected?.name, selected != null, ui.sourceDevices.size)
-    val choose = ui.sourceChoiceRequired || (selected == null && ui.sourceDevices.isNotEmpty())
-    var open by remember { mutableStateOf(false) }
+    val input = ControllerCardStatus.of(selected?.name, selected != null, ui.sourceDevices.size)
+    val connected = ui.connection.connected
+    val playing = ui.bridge.phase == BridgeLinkPhase.Playing
+    val outputName = if (connected) ui.snapshot.personality.current.title else "No adapter"
+    val outputLine = if (!connected) {
+        AdapterStatus.of(false, ui.connection.phase, ui.adapterRelationship != null).words
+    } else {
+        ConsoleCues.playerLabel(true, ui.snapshot.input.console) ?: if (playing) "On the console" else "To the console"
+    }
     Row(verticalAlignment = Alignment.CenterVertically) {
+        FlowEnd(Icons.Default.Gamepad, input.name, if (input.tone == StatusTone.Good) null else input.words, accent = false, Modifier.weight(1f))
+        Icon(
+            Icons.Default.ChevronRight, null,
+            Modifier.padding(horizontal = LayoutTokens.Space1),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        FlowEnd(Icons.Default.Gamepad, outputName, outputLine, accent = true, Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun FlowEnd(icon: ImageVector, name: String, line: String?, accent: Boolean, modifier: Modifier) {
+    val colors = MaterialTheme.colorScheme
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         Box(
-            Modifier.size(40.dp).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f), CircleShape),
+            Modifier.size(44.dp).background(
+                if (accent) colors.primary.copy(alpha = 0.18f) else colors.surface.copy(alpha = 0.6f),
+                CircleShape,
+            ),
             contentAlignment = Alignment.Center,
-        ) { Icon(Icons.Default.Gamepad, null, tint = MaterialTheme.colorScheme.primary) }
+        ) { Icon(icon, null, tint = if (accent) colors.primary else colors.onSurfaceVariant) }
         Spacer(Modifier.width(LayoutTokens.Space3))
-        Column(Modifier.weight(1f)) {
-            Text(
-                view.name,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (view.tone != StatusTone.Good) StatusLine(view.tone, view.words)
-        }
-        Box {
-            TextButton(onClick = { if (choose || ui.sourceDevices.size > 1) open = true else viewModel.refreshSources() }) {
-                Icon(
-                    if (choose || ui.sourceDevices.size > 1) Icons.Default.SwapHoriz else Icons.Default.Refresh,
-                    null, Modifier.size(18.dp),
-                )
-                Spacer(Modifier.width(LayoutTokens.Space1))
-                Text(if (choose || ui.sourceDevices.size > 1) "Change" else "Refresh")
+        Column {
+            Text(name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            line?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-                ui.sourceDevices.forEach { source ->
-                    DropdownMenuItem(
-                        text = { Text(source.name) },
-                        leadingIcon = { RadioButton(selected = source.descriptor == ui.selectedSourceDescriptor, onClick = null) },
-                        onClick = {
-                            open = false
-                            viewModel.selectSource(source.descriptor)
-                        },
-                    )
-                }
+        }
+    }
+}
+
+/**
+ * Quick settings: which controller this device reads (and refresh), and which
+ * controller the console sees. The full forms stay on the Adapter page.
+ */
+@Composable
+private fun QuickSettings(ui: CompanionUiState, viewModel: CompanionViewModel) {
+    var open by remember { mutableStateOf(false) }
+    val personalities = ui.snapshot.personality.available.ifEmpty {
+        listOf(Personality.Pro2, Personality.GameCube, Personality.JoyConLeft, Personality.JoyConRight)
+    }
+    val canSwitch = ui.connection.connected && !ui.busy &&
+        ui.snapshot.capabilities.personality != CapabilityState.Unsupported
+    Box {
+        FilledTonalIconButton(
+            onClick = { open = true },
+            modifier = Modifier.size(44.dp).semantics { contentDescription = "Controller quick settings" },
+        ) { Icon(Icons.Default.Settings, null) }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(text = { Text("Controller", style = MaterialTheme.typography.labelLarge) }, onClick = {}, enabled = false)
+            ui.sourceDevices.forEach { source ->
                 DropdownMenuItem(
-                    text = { Text("Refresh") },
-                    leadingIcon = { Icon(Icons.Default.Refresh, null) },
+                    text = { Text(source.name) },
+                    leadingIcon = { RadioButton(selected = source.descriptor == ui.selectedSourceDescriptor, onClick = null) },
                     onClick = {
                         open = false
-                        viewModel.refreshSources()
+                        viewModel.selectSource(source.descriptor)
                     },
                 )
             }
+            DropdownMenuItem(
+                text = { Text("Look for controllers") },
+                leadingIcon = { Icon(Icons.Default.Refresh, null) },
+                onClick = {
+                    open = false
+                    viewModel.refreshSources()
+                },
+            )
+            HorizontalDivider()
+            DropdownMenuItem(text = { Text("The console sees", style = MaterialTheme.typography.labelLarge) }, onClick = {}, enabled = false)
+            personalities.forEach { personality ->
+                DropdownMenuItem(
+                    text = { Text(personality.title) },
+                    leadingIcon = { RadioButton(selected = ui.connection.connected && personality == ui.snapshot.personality.current, onClick = null) },
+                    enabled = canSwitch,
+                    onClick = {
+                        open = false
+                        if (personality != ui.snapshot.personality.current) viewModel.switchPersonality(personality)
+                    },
+                )
+            }
+        }
+    }
+}
+
+/** Home, Capture, C: always in place, so starting never rearranges the page; live only while playing. */
+@Composable
+private fun ConsoleTile(viewModel: CompanionViewModel, playing: Boolean, modifier: Modifier) {
+    Row(
+        modifier
+            .clip(RoundedCornerShape(LayoutTokens.CardRadius))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .padding(LayoutTokens.Space3),
+        horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2),
+    ) {
+        // Hold, not click: the console tells a tap from a hold (Capture screenshots
+        // on release but records on a long hold). Pressed through Controller Link.
+        ActionButton(Icons.Default.Home, "Home", Modifier.weight(1f).fillMaxHeight(), enabled = playing, stacked = true,
+            onHold = { viewModel.setConsoleButton(ControllerButton.Home, it) })
+        ActionButton(Icons.Default.PhotoCamera, "Capture", Modifier.weight(1f).fillMaxHeight(), enabled = playing, stacked = true,
+            onHold = { viewModel.setConsoleButton(ControllerButton.Capture, it) })
+        ActionButton(Icons.AutoMirrored.Filled.Chat, "C", Modifier.weight(1f).fillMaxHeight(), enabled = playing, stacked = true,
+            onHold = { viewModel.setConsoleButton(ControllerButton.C, it) })
+    }
+}
+
+/** Start / Stop, Touch Gamepad (in every state), and Wake or the adapter's next step. */
+@Composable
+private fun ActionRow(
+    ui: CompanionUiState,
+    viewModel: CompanionViewModel,
+    action: PlayAction.View,
+    onHero: () -> Unit,
+    hasAdapter: Boolean,
+    onOpenTouchGamepad: () -> Unit,
+    onConnectAdapter: () -> Unit,
+    modifier: Modifier,
+) {
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+        HeroButton(action, onHero, Modifier.weight(1f))
+        // Not gated on a physical input: the screen itself is a complete controller.
+        QuickAction(Icons.Default.TouchApp, "Touch Gamepad", enabled = hasAdapter, onClick = onOpenTouchGamepad)
+        if (ui.connection.connected) {
+            QuickAction(
+                Icons.Default.PowerSettingsNew, "Wake",
+                enabled = !ui.busy && ui.snapshot.capabilities.wake != CapabilityState.Unsupported,
+                onClick = viewModel::wake,
+            )
+        } else {
+            val connects = AdapterStatus.nextStepConnects(false, ui.connection.phase, hasAdapter)
+            QuickAction(
+                Icons.Default.Cable,
+                AdapterStatus.nextStep(false, ui.connection.phase, hasAdapter),
+                enabled = !AdapterStatus.inProgress(ui.connection.phase) && !ui.busy,
+                onClick = { if (connects) onConnectAdapter() else viewModel.navigate(AppSection.Adapter) },
+            )
         }
     }
 }
@@ -463,25 +538,6 @@ private fun AmiiboTileCard(ui: CompanionUiState, viewModel: CompanionViewModel, 
     }
 }
 
-/** A quiet, static pill: the console's player number, not news. */
-@Composable
-private fun PlayerBadge(label: String) {
-    Surface(
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
-        contentColor = MaterialTheme.colorScheme.onSurface,
-    ) {
-        Text(
-            label,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            softWrap = false,
-        )
-    }
-}
-
 @Composable
 private fun TileIcon(icon: ImageVector, live: Boolean) {
     val colors = MaterialTheme.colorScheme
@@ -518,30 +574,20 @@ private fun ActionLine(action: PlayAction.View, ui: CompanionUiState) {
     }
 }
 
-/** Console buttons only while streaming: they are pressed through Controller Link, so at any other time they would go nowhere. */
-@Composable
-private fun RowScope.ConsoleButtons(viewModel: CompanionViewModel) {
-    // Hold, not click: the console tells a tap from a hold (Capture screenshots
-    // on release but records on a long hold).
-    ActionButton(Icons.Default.Home, "Home", Modifier.weight(1f), onHold = { viewModel.setConsoleButton(ControllerButton.Home, it) })
-    ActionButton(Icons.Default.PhotoCamera, "Capture", Modifier.weight(1f), onHold = { viewModel.setConsoleButton(ControllerButton.Capture, it) })
-    ActionButton(Icons.AutoMirrored.Filled.Chat, "C", Modifier.weight(1f), onHold = { viewModel.setConsoleButton(ControllerButton.C, it) })
-}
-
 /**
  * Start / Stop: the same size as every other action, distinguished by colour
  * alone. Takes focus when Play opens under a gamepad, so A is always "play" on
  * the home screen.
  */
 @Composable
-private fun HeroButton(action: PlayAction.View, onClick: () -> Unit) {
+private fun HeroButton(action: PlayAction.View, onClick: () -> Unit, modifier: Modifier) {
     val focus = remember { FocusRequester() }
     val keys = keyNavigation()
     LaunchedEffect(keys) { if (keys) runCatching { focus.requestFocus() } }
     ActionButton(
         if (action.kind == PlayAction.Kind.Stop) Icons.Default.Stop else Icons.Default.PlayArrow,
         action.label,
-        Modifier.fillMaxWidth().focusRequester(focus),
+        modifier.focusRequester(focus),
         tone = if (action.kind == PlayAction.Kind.Stop) ActionTone.Danger else ActionTone.Primary,
         enabled = action.enabled,
         busy = action.kind == PlayAction.Kind.Busy,

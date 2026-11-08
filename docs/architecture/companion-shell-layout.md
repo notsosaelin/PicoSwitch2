@@ -166,22 +166,31 @@ should be like the homescreen", "game oriented in a clean aesthetic"; Android
 first). Words only where they carry news; no on/off labels a control already
 shows.
 
-- **Left column:** the **headset strip** on top (96 tall), the **controller
-  card** below taking the rest.
-  - Headset: one tap plugs the headset in (LIVE badge), one tap pulls it out.
-    The microphone comes with it whenever the device can record; the only
-    microphone control is **mute**, which never changes the accessory the
-    console sees (companion audio experiment record, ninth pass). The title
-    gives way before the LIVE badge does.
-  - Controller card: the controller this device reads, with a Change /
-    Refresh menu; a one-phrase state (Ready to play, Connecting…, On the
-    console, Not ready) with a quiet **Player N** pill beside it when the
-    console has given this controller a player number (its player LEDs, from
-    the input sources reply); one line under it only when something blocks
-    starting; then, at the bottom edge, one row of equal actions — Home,
-    Capture, C while streaming (held, not clicked), otherwise Touch Gamepad and
-    Wake (or the adapter's next step) — and **Start playing / Stop** under that
-    row, the same size.
+- **Left column, four rows** (owner, 2026-11-08: the controller card was
+  mostly empty space, and the console buttons *replaced* Touch Gamepad while
+  streaming, so there was no way into it once Controller Link started):
+  1. **Headset strip** (96 tall). One tap plugs the headset in (LIVE badge),
+     one tap pulls it out. The microphone comes with it whenever the device
+     can record; the only microphone control is **mute**, which never changes
+     the accessory the console sees (companion audio experiment record, ninth
+     pass). The title gives way before the LIVE badge does.
+  2. **Controller row** — input → output, briefly: the controller this device
+     reads (with a word only when it is not usable) → what the console sees
+     (the emulated controller's name, then its **Player N** from the input
+     sources reply, or the adapter's state when not connected). Above it the
+     one-phrase state (Ready to play, Connecting…, On the console, Not ready)
+     and one **quick-settings** button: a menu of which controller to read
+     (and "Look for controllers") and which controller the console sees (the
+     Adapter page's personality switch, gated the same way). Under it one
+     line only when something blocks starting. It takes the column's spare
+     height and centres its content.
+  3. **Console buttons** — Home, Capture, C as tiles (icon over label), held
+     not clicked. Always in place; disabled until Controller Link streams, so
+     starting never rearranges the page under a thumb. They share the spare
+     height with the controller row (1.4 : 1, at least 72 and at most 140
+     tall).
+  4. **Actions** — Start playing / Stop, **Touch Gamepad** (in every state),
+     and Wake (or the adapter's next step), equal widths, one action height.
 - **Right column: the Amiibo**, full height, so its artwork is the picture on
   the home screen: the figure the adapter holds as art and a name (never a
   UID), and one full-width action — Present / Eject when one is loaded,
@@ -190,7 +199,9 @@ shows.
   accent colour with a **GAME WANTS AN AMIIBO** badge and its action becomes
   the primary one.
 - Every action on Play is the one action button (52 tall, radius 14): no
-  small or squeezed buttons inside tiles.
+  small or squeezed buttons inside tiles. The console buttons are the one
+  exception, as tiles in their own row. A label too long for its share of a
+  row shrinks to fit; it never ends in an ellipsis (all three platforms).
 - The adapter's state is the navigation's dot; Play has no adapter card.
 - Gamepad: the D-pad moves between tiles and actions; the focused one lifts
   (scale and outline) only while a gamepad or keyboard is driving.
@@ -204,7 +215,7 @@ only from a place that does not explain it.
 
 | Page | Holds |
 |---|---|
-| Play | Start/Stop, the controller at a glance, console buttons while streaming, Wake console, Touch Gamepad, the headset, the adapter's Amiibo |
+| Play | Start/Stop, the controller at a glance (input → output, quick settings), console buttons, Wake console, Touch Gamepad, the headset, the adapter's Amiibo |
 | Keyboard & Mouse | Three tabs under one header and one toolbar (below) |
 | Amiibo | The library. Under a controller the focused card **is** the highlighted one (one outline, no second focus overlay), A opens its details and focus moves into them, and the carousel keeps the focused card centred; by touch, tap highlights and double tap opens (owner, 2026-11-08: focus "messed up" in every view) |
 | Customization | How the emulated controller looks: its colours. The clickable controller drawing replaces the colour rows when it exists. |

@@ -59,6 +59,12 @@ Software-verified, not yet hardware-validated, not yet in a release:
   ROG Xbox Ally X (1920×1080 window on the 1920×1080 screen); not yet confirmed
   by eye. It also sets its own UI scale there (gamescope publishes none, so it
   drew at 1x): one unit is an Odin 2 Mini dp, 1.7x on the Ally.
+- **Play in four rows on all three companions** (2026-11-08): headset;
+  controller as input → output with one quick-settings menu (controller and
+  emulated controller); Home / Capture / C as always-present tiles; Start /
+  Stop, Touch Gamepad, Wake. Touch Gamepad is reachable while streaming.
+  Confirmed by the owner on the Ally in Game Mode, including while streaming
+  (2026-11-08); Android and Windows reviewed while not streaming.
 - **Linux controller navigation in Game Mode** (2026-11-08): Avalonia never
   reports the window active under gamescope, so the shell dropped every press
   (confirmed from the app log). The window now counts as active there, and

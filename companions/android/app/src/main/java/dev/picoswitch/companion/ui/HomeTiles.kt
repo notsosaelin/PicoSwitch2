@@ -20,6 +20,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -168,6 +170,9 @@ internal fun ActionButton(
     busy: Boolean = false,
     onClick: (() -> Unit)? = null,
     onHold: ((Boolean) -> Unit)? = null,
+    // A console button on Play: icon over label, as tall as its row allows
+    // (at least the action height) instead of the fixed 52.
+    stacked: Boolean = false,
 ) {
     val colors = MaterialTheme.colorScheme
     val (container, content) = when (tone) {
@@ -188,13 +193,33 @@ internal fun ActionButton(
     )
     val shape = RoundedCornerShape(LayoutTokens.ActionRadius)
     val sized = modifier
-        .height(LayoutTokens.ActionHeight)
+        .then(if (stacked) Modifier.heightIn(min = LayoutTokens.ActionHeight) else Modifier.height(LayoutTokens.ActionHeight))
         .graphicsLayer {
             scaleX = scale
             scaleY = scale
         }
         .semantics { contentDescription = label }
-    val body: @Composable () -> Unit = {
+    val body: @Composable () -> Unit = if (stacked) {
+        {
+            Column(
+                Modifier.fillMaxSize().padding(LayoutTokens.Space2)
+                    .alpha(if (enabled) 1f else LayoutTokens.DisabledAlpha + 0.1f),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                androidx.compose.material3.Icon(icon, null, Modifier.size(28.dp))
+                Spacer(Modifier.height(LayoutTokens.Space1))
+                Text(
+                    label,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            }
+        }
+    } else {
+        {
         Row(
             Modifier.fillMaxSize().padding(horizontal = LayoutTokens.Space3)
                 .alpha(if (enabled) 1f else LayoutTokens.DisabledAlpha + 0.1f),
@@ -209,13 +234,21 @@ internal fun ActionButton(
                 androidx.compose.material3.Icon(icon, null, Modifier.size(22.dp))
             }
             Spacer(Modifier.width(LayoutTokens.Space2))
-            Text(
+            // A label too long for its share of the row shrinks to fit, never
+            // ends in an ellipsis ("Touch Ga…" in Play's three-action row),
+            // the same rule as the desktops' action buttons.
+            val style = MaterialTheme.typography.titleMedium
+            androidx.compose.foundation.text.BasicText(
                 label,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f, fill = false),
+                style = style.copy(fontWeight = FontWeight.SemiBold, color = androidx.compose.material3.LocalContentColor.current),
                 maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                autoSize = androidx.compose.foundation.text.TextAutoSize.StepBased(
+                    minFontSize = 9.sp,
+                    maxFontSize = style.fontSize,
+                ),
             )
+        }
         }
     }
     if (onHold != null) {

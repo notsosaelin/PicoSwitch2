@@ -32,6 +32,10 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Fixed
 
+- **Play, rearranged on every companion.** Four rows on the left: the headset; the controller as
+  input → output (which controller you hold → what the console sees, and your player number) with
+  one quick-settings button for both; Home, Capture and C as tiles, always in place; and Start /
+  Stop, Touch Gamepad and Wake. Touch Gamepad can now be opened while Controller Link is running.
 - **Linux: the controller drives the menus in Steam Game Mode.** The app ignored every press there,
   because it never believed its window was in front. Holding View and Menu together for half a
   second is now Back from the controller (show or hide the menu), including while playing.

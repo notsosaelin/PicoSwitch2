@@ -22,19 +22,26 @@ namespace PicoSwitch.Companion.Linux.App.Pages;
 /// laid out like a console home screen rather than a settings form. Android's
 /// PlayScreen is the first implementation; this follows it tile for tile.
 ///
-/// - Left column: the HEADSET strip on top (96 tall), the CONTROLLER card
-///   below taking the rest: which controller this computer reads (Change /
-///   Refresh), a one-phrase state with the console's Player N beside it, one
-///   line only when something blocks starting, and at the bottom edge one row
-///   of equal actions (Home, Capture, C held while streaming; otherwise Touch
-///   Gamepad and Wake or the adapter's next step) over Start / Stop.
+/// - Left column, four rows (owner, 2026-11-08: the controller card was mostly
+///   empty space, and the console buttons REPLACED Touch Gamepad while
+///   streaming, so there was no way into it once Controller Link started):
+///   1. the HEADSET strip;
+///   2. the CONTROLLER row: input → output at a glance (the controller this
+///      computer reads → what the console sees, with its Player N), the
+///      one-phrase state, and one quick-settings menu (which controller,
+///      which emulated controller); a line only when something blocks;
+///   3. the CONSOLE BUTTONS: Home, Capture, C, always in place, held while
+///      streaming and disabled otherwise, so nothing moves when play starts;
+///   4. the ACTIONS: Start / Stop (wider), Touch Gamepad, Wake or the
+///      adapter's next step. Touch Gamepad is there in every state.
 /// - Right column: the AMIIBO the adapter holds, full height, as art and a
 ///   name (<see cref="PlayAmiiboTile"/>); "GAME WANTS AN AMIIBO" while a game
 ///   has an NFC scan running.
 /// - Every action is the one action button (52 tall, radius 14).
 /// - The adapter's state is the navigation's dot; Play has no adapter card.
 /// - Side by side when the columns fit; narrower or shorter windows stack and
-///   scroll.
+///   scroll. The controller row takes the left column's spare height and
+///   centres its content, so a tall window never shows an empty card.
 ///
 /// Every word comes from a shared projection (<see cref="PlayHeadline"/>,
 /// <see cref="ControllerCardStatus"/>, <see cref="HeadsetStrip"/>,
@@ -61,25 +68,29 @@ internal sealed class PlayPage : CompanionPage
     private readonly CompanionAudioService companionAudio = AppServices.CompanionAudio;
 
     private readonly Grid hub = new() { ColumnDefinitions = new ColumnDefinitions("1.35*,*"), ColumnSpacing = 16 };
-    private readonly Grid left = new() { RowDefinitions = new RowDefinitions($"{HeadsetStripHeight},*"), RowSpacing = 16 };
+    private readonly Grid left = new() { RowDefinitions = new RowDefinitions($"{HeadsetStripHeight},1.4*,*,Auto"), RowSpacing = 16 };
     private readonly StackPanel stack = new() { Spacing = 16 };
     private readonly Border frame = new();
     private readonly ScrollViewer scroller = new() { HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
     private bool? hubShown;
 
-    // Controller card.
+    // Controller row: input -> output.
     private readonly Border heroCard;
     private readonly TextBlock controllerName = new() { FontSize = 16, FontWeight = FontWeight.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly TextBlock controllerState = new() { FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis };
-    private readonly Button sourceButton = new() { MinWidth = 0, Background = Brushes.Transparent, BorderThickness = new Thickness(0) };
-    private readonly TextBlock headline = new() { FontSize = 28, FontWeight = FontWeight.Bold, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
-    private readonly Border playerPill;
-    private readonly TextBlock playerText = new() { FontSize = 13, FontWeight = FontWeight.Bold };
+    private readonly TextBlock outputName = new() { FontSize = 16, FontWeight = FontWeight.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
+    private readonly TextBlock outputState = new() { FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis };
+    private readonly Button quickButton;
+    private readonly TextBlock headline = new() { FontSize = 24, FontWeight = FontWeight.Bold, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock blocker = new() { FontSize = 14, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly Notice sourceAdvice = new(dismissible: false);
     private readonly Notice playNotice = new();
     private readonly Grid consoleRow = EqualRow(3);
-    private readonly Grid quickRow = EqualRow(2);
+    private readonly Border consoleTile;
+    private readonly Grid actionRow = new() { ColumnDefinitions = new ColumnDefinitions("*,*,*"), ColumnSpacing = 8 };
+    private readonly List<Personality> personalities = [];
+    private ControllerModeSection? controllerMode;
+    private ControllerSourceView? sources;
     private readonly Button touchButton;
     private readonly Button nextButton;
     private readonly Button startStop;
@@ -113,64 +124,80 @@ internal sealed class PlayPage : CompanionPage
     public PlayPage(MainWindow shell)
         : base(shell)
     {
-        /* ---- controller card */
-        var controllerIcon = Circle(40, Ui.Icon(Icons.Gamepad, 20), Tokens.Card);
-        ((PathIcon)controllerIcon.Child!).Bind(PathIcon.ForegroundProperty, Tokens.AccentText);
+        /* ---- controller row: input -> output */
+        var inputIcon = Circle(44, Ui.Icon(Icons.Gamepad, 22), Tokens.Subtle);
+        var outputIcon = Circle(44, Ui.Icon(Icons.Gamepad, 22), Tokens.AccentSoft);
+        ((PathIcon)outputIcon.Child!).Bind(PathIcon.ForegroundProperty, Tokens.AccentText);
         controllerState.Bind(TextBlock.ForegroundProperty, Tokens.TextSecondary);
-        var who = new StackPanel { Spacing = 0, VerticalAlignment = VerticalAlignment.Center, Children = { controllerName, controllerState } };
-        AutomationProperties.SetName(sourceButton, "Change or refresh the controller");
-        var header = new DockPanel { LastChildFill = true };
-        DockPanel.SetDock(controllerIcon, Dock.Left);
-        DockPanel.SetDock(sourceButton, Dock.Right);
-        who.Margin = new Thickness(12, 0, 8, 0);
-        header.Children.AddRange([controllerIcon, sourceButton, who]);
+        outputState.Bind(TextBlock.ForegroundProperty, Tokens.TextSecondary);
+        var arrow = Ui.Icon(Icons.ChevronRight, 20);
+        arrow.VerticalAlignment = VerticalAlignment.Center;
+        arrow.Margin = new Thickness(4, 0);
+        arrow.Bind(PathIcon.ForegroundProperty, Tokens.TextSecondary);
+        var flow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,*") };
+        var input = End(inputIcon, controllerName, controllerState);
+        var output = End(outputIcon, outputName, outputState);
+        Grid.SetColumn(arrow, 1);
+        Grid.SetColumn(output, 2);
+        flow.Children.AddRange([input, arrow, output]);
 
-        playerPill = new Border
+        quickButton = new Button
         {
-            CornerRadius = new CornerRadius(12),
-            Padding = new Thickness(12, 4),
-            Margin = new Thickness(12, 0, 0, 0),
+            Width = 44,
+            Height = 44,
+            MinWidth = 0,
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(22),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
-            IsVisible = false,
-            Child = playerText,
-        }.Bind(Border.BackgroundProperty, Tokens.Card);
+            Content = Ui.Icon(Icons.Settings, 20),
+        };
+        quickButton.Classes.Add("lift");
+        AutomationProperties.SetName(quickButton, "Controller quick settings");
+        ToolTip.SetTip(quickButton, "Which controller, and what the console sees");
+        quickButton.Flyout = new MenuFlyout { Placement = PlacementMode.BottomEdgeAlignedRight };
+        quickButton.Click += (_, _) => BuildQuickMenu();
+
         var headlineRow = new DockPanel { LastChildFill = true };
-        DockPanel.SetDock(playerPill, Dock.Right);
-        headlineRow.Children.AddRange([playerPill, headline]);
-        // The pill sits beside the words, not at the far edge.
-        headlineRow.HorizontalAlignment = HorizontalAlignment.Left;
+        DockPanel.SetDock(quickButton, Dock.Right);
+        headlineRow.Children.AddRange([quickButton, headline]);
         blocker.Bind(TextBlock.ForegroundProperty, Tokens.TextSecondary);
 
-        // Hold, not click: the console tells a tap from a hold (Capture records
-        // on a long hold; Home opens the power menu). Pressed THROUGH Controller
-        // Link, so they exist only while it streams.
-        AddConsoleButton(0, "Home", Icons.Home, ControllerButton.Home);
-        AddConsoleButton(1, "Capture", Icons.Capture, ControllerButton.Capture);
-        AddConsoleButton(2, "C", Icons.Gamepad, ControllerButton.C);
-
-        touchButton = Ui.ActionButton("Touch Gamepad", Icons.Gamepad);
-        touchButton.Click += (_, _) => Shell.ShowTouchGamepad();
-        nextButton = Ui.ActionButton("Wake", Icons.Power);
-        nextButton.Click += async (_, _) => await OnNextAsync();
-        Grid.SetColumn(nextButton, 1);
-        quickRow.Children.AddRange([touchButton, nextButton]);
-
-        startStop = Ui.ActionButton("Start playing", Icons.Play, ActionTone.Primary);
-        startStop.Click += async (_, _) => await OnStartStopAsync();
-
-        var heroBody = new DockPanel { LastChildFill = false };
-        var bottom = new StackPanel { Spacing = 8, Children = { consoleRow, quickRow, startStop } };
-        DockPanel.SetDock(bottom, Dock.Bottom);
-        var top = new StackPanel { Spacing = 8, Children = { header, headlineRow, blocker, sourceAdvice, playNotice } };
-        DockPanel.SetDock(top, Dock.Top);
-        heroBody.Children.AddRange([bottom, top]);
+        var heroBody = new StackPanel
+        {
+            Spacing = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { headlineRow, flow, blocker, sourceAdvice, playNotice },
+        };
         heroCard = Tile(heroBody);
-        heroCard.Padding = new Thickness(20);
+        heroCard.Padding = new Thickness(20, 16);
         heroCard.Background = new LinearGradientBrush
         {
             StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative),
             EndPoint = new RelativePoint(1, 1, RelativeUnit.Relative),
         };
+
+        /* ---- console buttons: always in place, live only while streaming */
+        // Hold, not click: the console tells a tap from a hold (Capture records
+        // on a long hold; Home opens the power menu). Pressed THROUGH Controller
+        // Link, so they work only while it streams.
+        AddConsoleButton(0, "Home", Icons.Home, ControllerButton.Home);
+        AddConsoleButton(1, "Capture", Icons.Capture, ControllerButton.Capture);
+        AddConsoleButton(2, "C", Icons.Gamepad, ControllerButton.C);
+        consoleTile = Tile(consoleRow);
+        consoleTile.Padding = new Thickness(12);
+
+        /* ---- actions */
+        startStop = Ui.ActionButton("Start playing", Icons.Play, ActionTone.Primary);
+        startStop.Click += async (_, _) => await OnStartStopAsync();
+        touchButton = Ui.ActionButton("Touch Gamepad", Icons.Gamepad);
+        touchButton.Click += (_, _) => Shell.ShowTouchGamepad();
+        nextButton = Ui.ActionButton("Wake", Icons.Power);
+        nextButton.Click += async (_, _) => await OnNextAsync();
+        Grid.SetColumn(touchButton, 1);
+        Grid.SetColumn(nextButton, 2);
+        actionRow.Children.AddRange([startStop, touchButton, nextButton]);
 
         /* ---- headset */
         headsetIcon = Circle(56, Ui.Icon(Icons.Headphones, 28), Tokens.Subtle);
@@ -316,8 +343,15 @@ internal sealed class PlayPage : CompanionPage
         }
 
         hubShown = wantHub;
+
+        // The controller row never clips its words; the console tiles give way first.
+        left.RowDefinitions[1].MinHeight = 180;
+        left.RowDefinitions[2].MinHeight = 72;
+        left.RowDefinitions[2].MaxHeight = 140;
         Detach(headsetTile);
         Detach(heroCard);
+        Detach(consoleTile);
+        Detach(actionRow);
         Detach(amiiboTile);
         hub.Children.Clear();
         left.Children.Clear();
@@ -329,7 +363,9 @@ internal sealed class PlayPage : CompanionPage
             heroCard.MinHeight = 0;
             amiiboTile.Height = double.NaN;
             Grid.SetRow(heroCard, 1);
-            left.Children.AddRange([headsetTile, heroCard]);
+            Grid.SetRow(consoleTile, 2);
+            Grid.SetRow(actionRow, 3);
+            left.Children.AddRange([headsetTile, heroCard, consoleTile, actionRow]);
             Grid.SetColumn(amiiboTile, 1);
             hub.Children.AddRange([left, amiiboTile]);
             frame.Child = hub;
@@ -337,9 +373,9 @@ internal sealed class PlayPage : CompanionPage
         else
         {
             headsetTile.Height = StackedHeadsetHeight;
-            heroCard.MinHeight = 300;
+            heroCard.MinHeight = 0;
             amiiboTile.Height = StackedAmiiboHeight;
-            stack.Children.AddRange([heroCard, headsetTile, amiiboTile]);
+            stack.Children.AddRange([actionRow, heroCard, consoleTile, headsetTile, amiiboTile]);
             frame.Child = stack;
         }
     }
@@ -364,9 +400,14 @@ internal sealed class PlayPage : CompanionPage
         Ui.SetOptional(blocker, PlayHeadline.Blocker(link));
         ToolTip.SetTip(headline, $"{link.Headline}. {link.Explanation}");
 
-        var player = ConsoleCues.PlayerLabel(connected, adapters.Snapshot.Value.Input.Console);
-        playerPill.IsVisible = player is not null;
-        playerText.Text = player ?? string.Empty;
+        // The output end: what the console sees, and the player it gave us.
+        var snapshot = adapters.Snapshot.Value;
+        controllerMode = AdapterDashboard.Project(
+            snapshot, adapters.Relationship.Value, adapters.Connection.Value, null, streaming).ControllerMode;
+        outputName.Text = connected ? ControllerModeSection.Label(snapshot.Personality.Current) : "No adapter";
+        outputState.Text = !connected
+            ? AdapterStatus.Of(false, adapters.Relationship.Value.Phase).Words
+            : ConsoleCues.PlayerLabel(connected, snapshot.Input.Console) ?? (streaming ? "On the console" : "To the console");
 
         // One primary action at a time, the same size as every other: Start
         // while it can start, Stop while it is running.
@@ -375,8 +416,9 @@ internal sealed class PlayPage : CompanionPage
         Ui.SetActionTone(startStop, stop ? ActionTone.Danger : ActionTone.Primary);
         startStop.IsEnabled = stop || link.CanStart;
 
-        consoleRow.IsVisible = streaming;
-        quickRow.IsVisible = !streaming;
+        // Always in place, so starting never rearranges the page under a thumb.
+        consoleRow.IsEnabled = streaming;
+        ToolTip.SetTip(consoleTile, streaming ? null : "Home, Capture and C work while you play.");
         if (!streaming)
         {
             ReleaseHeld();
@@ -495,7 +537,22 @@ internal sealed class PlayPage : CompanionPage
 
     private void AddConsoleButton(int column, string label, string icon, ControllerButton button)
     {
+        // A console button is a tile, icon over label, sharing the column's
+        // spare height with the controller row (a 52-tall strip left the
+        // controller card mostly empty; owner, 2026-11-08).
         var action = Ui.ActionButton(label, icon);
+        action.Height = double.NaN;
+        action.MinHeight = Sizes.ActionHeight;
+        action.VerticalAlignment = VerticalAlignment.Stretch;
+        if (action.Content is Viewbox { Child: StackPanel face })
+        {
+            face.Orientation = Orientation.Vertical;
+            face.Spacing = 4;
+            face.Children[0].Width = 26;
+            face.Children[0].Height = 26;
+            ((Control)face.Children[1]).HorizontalAlignment = HorizontalAlignment.Center;
+        }
+
         AutomationProperties.SetName(action, $"Hold {label} on the console");
         Grid.SetColumn(action, column);
         var byPointer = false;
@@ -560,23 +617,25 @@ internal sealed class PlayPage : CompanionPage
             : $"{view.Headline}. {view.Detail}{motion}");
         ShowAdvice(view.Advice);
 
-        // A choice opens as a menu, so the header stays one line.
-        var choose = view.CanChoose && view.Rows.Count > 1 || (selected is null && view.Rows.Count > 0);
-        sourceButton.Content = new StackPanel
+        sources = view;
+    }
+
+    /// <summary>
+    /// Quick settings, built when opened so it is never stale: which controller
+    /// this computer reads (and Refresh), and which controller the console
+    /// sees. The full forms stay on the Adapter page.
+    /// </summary>
+    private void BuildQuickMenu()
+    {
+        if (quickButton.Flyout is not MenuFlyout menu)
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = 6,
-            Children =
-            {
-                Ui.Icon(choose ? Icons.ChevronDown : Icons.Refresh, 16),
-                new TextBlock { Text = choose ? "Change" : "Refresh", VerticalAlignment = VerticalAlignment.Center },
-            },
-        };
-        sourceButton.Flyout = null;
-        sourceButton.Click -= OnRefreshSources;
-        if (choose)
+            return;
+        }
+
+        menu.Items.Clear();
+        menu.Items.Add(new MenuItem { Header = "Controller", IsEnabled = false });
+        if (sources is { } view)
         {
-            var menu = new MenuFlyout { Placement = PlacementMode.BottomEdgeAlignedRight };
             foreach (var row in view.Rows)
             {
                 var item = new MenuItem
@@ -584,25 +643,72 @@ internal sealed class PlayPage : CompanionPage
                     Header = row.Label,
                     ToggleType = MenuItemToggleType.Radio,
                     IsChecked = row.Id == view.SelectedId,
+                    IsEnabled = view.CanChoose || row.Id == view.SelectedId,
                 };
                 var id = row.Id;
                 item.Click += async (_, _) => await AppServices.SelectControllerSourceAsync(id);
                 menu.Items.Add(item);
             }
-
-            var refresh = new MenuItem { Header = "Refresh" };
-            refresh.Click += async (_, _) => await AppServices.RefreshControllerSourcesAsync();
-            menu.Items.Add(refresh);
-            sourceButton.Flyout = menu;
         }
-        else
+
+        var refresh = new MenuItem { Header = "Look for controllers", Icon = Ui.Icon(Icons.Refresh, 16) };
+        refresh.Click += async (_, _) => await AppServices.RefreshControllerSourcesAsync();
+        menu.Items.Add(refresh);
+
+        menu.Items.Add(new Separator());
+        var mode = controllerMode;
+        menu.Items.Add(new MenuItem
         {
-            sourceButton.Click += OnRefreshSources;
+            Header = mode is { Availability.Enabled: false, Availability.DisabledReason: { } why } ? $"The console sees — {why}" : "The console sees",
+            IsEnabled = false,
+        });
+        personalities.Clear();
+        personalities.AddRange(mode?.Available ?? []);
+        foreach (var personality in personalities)
+        {
+            var item = new MenuItem
+            {
+                Header = ControllerModeSection.Label(personality),
+                ToggleType = MenuItemToggleType.Radio,
+                IsChecked = mode is not null && personality == mode.Current,
+                IsEnabled = mode?.Availability.Enabled == true,
+            };
+            var chosen = personality;
+            item.Click += async (_, _) => await OnSwitchPersonalityAsync(chosen);
+            menu.Items.Add(item);
         }
     }
 
-    private async void OnRefreshSources(object? sender, Avalonia.Interactivity.RoutedEventArgs e) =>
-        await AppServices.RefreshControllerSourcesAsync();
+    /// <summary>The Adapter page's switch, from Play. The console briefly loses the controller.</summary>
+    private async Task OnSwitchPersonalityAsync(Personality personality)
+    {
+        if (controllerMode is { } mode && personality == mode.Current)
+        {
+            return;
+        }
+
+        playNotice.Hide();
+        try
+        {
+            var outcome = await adapters.SetPersonalityAsync(personality);
+            if (!outcome.Unchanged && !outcome.Reenumerated)
+            {
+                playNotice.Show(
+                    null,
+                    $"The adapter switched to {ControllerModeSection.Label(outcome.Personality)}, " +
+                    "but the console has not seen the change yet. Unplug the adapter and plug it back in.",
+                    NoticeSeverity.Warning);
+            }
+        }
+        catch (Exception error)
+        {
+            Fail(error);
+        }
+        finally
+        {
+            RenderLink();
+        }
+    }
 
     /// <summary>
     /// Advice describes a BETTER setup, not a fault, so it goes away after
@@ -811,6 +917,16 @@ internal sealed class PlayPage : CompanionPage
         var message = ManagementErrorText.Summarize(error);
         AppServices.Diagnostics.Error("ui", message);
         playNotice.Show(null, message, NoticeSeverity.Error);
+    }
+
+    /// <summary>One end of the input → output row: an icon, a name, a quiet line.</summary>
+    private static Control End(Border icon, TextBlock name, TextBlock state)
+    {
+        var text = new StackPanel { Spacing = 0, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 4, 0), Children = { name, state } };
+        var end = new DockPanel { LastChildFill = true };
+        DockPanel.SetDock(icon, Dock.Left);
+        end.Children.AddRange([icon, text]);
+        return end;
     }
 
     private static Grid EqualRow(int columns)

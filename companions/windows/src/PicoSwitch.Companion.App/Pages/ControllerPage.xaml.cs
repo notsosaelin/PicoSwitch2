@@ -20,12 +20,16 @@ namespace PicoSwitch.Companion.App.Pages;
 /// PlayScreen is the first implementation and Linux's PlayPage the same page
 /// in Avalonia; this follows them tile for tile.
 ///
-/// - Left column: the HEADSET strip on top (96 tall), the CONTROLLER card
-///   below taking the rest: which controller this PC reads (Change /
-///   Refresh), a one-phrase state with the console's Player N beside it, one
-///   line only when something blocks starting, and at the bottom edge one row
-///   of equal actions (Home, Capture, C held while streaming; otherwise Touch
-///   Gamepad and Wake or the adapter's next step) over Start / Stop.
+/// - Left column, four rows (owner, 2026-11-08: the controller card was mostly
+///   empty space, and the console buttons REPLACED Touch Gamepad while
+///   streaming, so there was no way into it once Controller Link started):
+///   1. the HEADSET strip;
+///   2. the CONTROLLER row: input → output (the controller this PC reads →
+///      what the console sees, with its Player N), the one-phrase state, and
+///      one quick-settings menu (which controller, which emulated controller);
+///   3. the CONSOLE BUTTONS: Home, Capture, C as tiles, always in place, held
+///      while streaming and disabled otherwise;
+///   4. the ACTIONS: Start / Stop, Touch Gamepad, Wake or the next step.
 /// - Right column: the AMIIBO the adapter holds, full height, as art and a
 ///   name (<see cref="PlayAmiiboTile"/>); "GAME WANTS AN AMIIBO" while a game
 ///   has an NFC scan running.
@@ -60,15 +64,18 @@ public sealed partial class ControllerPage : Page, IShellPage
     private readonly Border heroCard = new();
     private readonly TextBlock controllerName = new() { FontSize = 16, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly TextBlock controllerState = new() { FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis };
-    private readonly Button sourceButton = new() { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0) };
-    private readonly TextBlock headline = new() { FontSize = 28, FontWeight = Microsoft.UI.Text.FontWeights.Bold, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
-    private readonly Border playerPill = new() { Margin = new Thickness(12, 0, 0, 0), Visibility = Visibility.Collapsed };
-    private readonly TextBlock playerText = new() { FontSize = 13, FontWeight = Microsoft.UI.Text.FontWeights.Bold };
+    private readonly TextBlock outputName = new() { FontSize = 16, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
+    private readonly TextBlock outputState = new() { FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis };
+    private readonly Button quickButton = new() { Width = 44, Height = 44, Padding = new Thickness(0), CornerRadius = new CornerRadius(22), VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock headline = new() { FontSize = 24, FontWeight = Microsoft.UI.Text.FontWeights.Bold, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBlock blocker = new() { FontSize = 14, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly InfoBar sourceAdvice = new() { IsClosable = false, Severity = InfoBarSeverity.Informational };
     private readonly InfoBar playNotice = new() { IsClosable = true };
     private readonly Grid consoleRow = EqualRow(3);
-    private readonly Grid quickRow = EqualRow(2);
+    private readonly Border consoleTile = new() { Padding = new Thickness(12) };
+    private readonly Grid actionRow = EqualRow(3);
+    private ControllerModeSection? controllerMode;
+    private ControllerSourceView? sources;
     private Button touchButton = null!;
     private Button nextButton = null!;
     private Button startStop = null!;
@@ -119,28 +126,41 @@ public sealed partial class ControllerPage : Page, IShellPage
 
     private void Build()
     {
-        /* ---- controller card */
-        var controllerIcon = new Border
+        /* ---- controller row: input -> output */
+        var inputIcon = new Border { Width = 44, Height = 44, CornerRadius = new CornerRadius(22), Style = Look("Circle"), Child = new FontIcon { Glyph = "\uE7FC", FontSize = 20 } };
+        var outputIcon = new Border
         {
-            Width = 40,
-            Height = 40,
-            CornerRadius = new CornerRadius(20),
+            Width = 44,
+            Height = 44,
+            CornerRadius = new CornerRadius(22),
             Style = Look("Circle"),
-            Child = new FontIcon { Glyph = "", FontSize = 20, Foreground = (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"] },
+            Child = new FontIcon { Glyph = "\uE7FC", FontSize = 20, Foreground = (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"] },
         };
         controllerState.Style = Look("Secondary");
-        var who = new StackPanel { Margin = new Thickness(12, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center, Children = { controllerName, controllerState } };
-        AutomationProperties.SetName(sourceButton, "Change or refresh the controller");
-        var header = new Grid { ColumnDefinitions = { new() { Width = GridLength.Auto }, new() { Width = new GridLength(1, GridUnitType.Star) }, new() { Width = GridLength.Auto } } };
-        Grid.SetColumn(who, 1);
-        Grid.SetColumn(sourceButton, 2);
-        header.Children.Add(controllerIcon);
-        header.Children.Add(who);
-        header.Children.Add(sourceButton);
+        outputState.Style = Look("Secondary");
+        var flow = new Grid
+        {
+            ColumnDefinitions = { new() { Width = new GridLength(1, GridUnitType.Star) }, new() { Width = GridLength.Auto }, new() { Width = new GridLength(1, GridUnitType.Star) } },
+        };
+        var arrow = new FontIcon { Glyph = "\uE76C", FontSize = 16, Margin = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
+        var output = End(outputIcon, outputName, outputState);
+        Grid.SetColumn(arrow, 1);
+        Grid.SetColumn(output, 2);
+        flow.Children.Add(End(inputIcon, controllerName, controllerState));
+        flow.Children.Add(arrow);
+        flow.Children.Add(output);
 
-        playerPill.Style = Look("Pill");
-        playerPill.Child = playerText;
-        var headlineRow = new StackPanel { Orientation = Orientation.Horizontal, Children = { headline, playerPill } };
+        quickButton.Content = new FontIcon { Glyph = "\uE713", FontSize = 18 };
+        AutomationProperties.SetName(quickButton, "Controller quick settings");
+        ToolTipService.SetToolTip(quickButton, "Which controller, and what the console sees");
+        quickButton.Flyout = new MenuFlyout { Placement = FlyoutPlacementMode.BottomEdgeAlignedRight };
+        quickButton.Flyout.Opening += (_, _) => BuildQuickMenu();
+        Lift.Apply(quickButton);
+
+        var headlineRow = new Grid { ColumnDefinitions = { new() { Width = new GridLength(1, GridUnitType.Star) }, new() { Width = GridLength.Auto } } };
+        Grid.SetColumn(quickButton, 1);
+        headlineRow.Children.Add(headline);
+        headlineRow.Children.Add(quickButton);
         blocker.Style = Look("Secondary");
 
         // Hold, not click: the console tells a tap from a hold (Capture records
@@ -154,19 +174,25 @@ public sealed partial class ControllerPage : Page, IShellPage
         touchButton.Click += (_, _) => (App.Window as MainWindow)?.ShowTouchGamepad();
         nextButton = Action("Wake", "", "Action");
         nextButton.Click += async (_, _) => await OnNextAsync();
-        Grid.SetColumn(nextButton, 1);
-        quickRow.Children.Add(touchButton);
-        quickRow.Children.Add(nextButton);
+        Grid.SetColumn(touchButton, 1);
+        Grid.SetColumn(nextButton, 2);
 
         startStop = Action("Start playing", "", "ActionAccent");
         startStop.Click += async (_, _) => await OnStartStopAsync();
 
-        var top = new StackPanel { Spacing = 8, Children = { header, headlineRow, blocker, sourceAdvice, playNotice } };
-        var bottom = new StackPanel { Spacing = 8, VerticalAlignment = VerticalAlignment.Bottom, Children = { consoleRow, quickRow, startStop } };
-        var heroBody = new Grid { RowDefinitions = { new() { Height = GridLength.Auto }, new() { Height = new GridLength(1, GridUnitType.Star) } } };
-        Grid.SetRow(bottom, 1);
-        heroBody.Children.Add(top);
-        heroBody.Children.Add(bottom);
+        actionRow.Children.Add(startStop);
+        actionRow.Children.Add(touchButton);
+        actionRow.Children.Add(nextButton);
+        consoleTile.Style = Look("PlayTile");
+        consoleTile.Padding = new Thickness(12);
+        consoleTile.Child = consoleRow;
+
+        var heroBody = new StackPanel
+        {
+            Spacing = 12,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { headlineRow, flow, blocker, sourceAdvice, playNotice },
+        };
         heroCard.Style = Look("PlayHero");
         heroCard.Child = heroBody;
 
@@ -234,7 +260,11 @@ public sealed partial class ControllerPage : Page, IShellPage
         hub.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.35, GridUnitType.Star) });
         hub.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         left.RowDefinitions.Add(new RowDefinition { Height = new GridLength(HeadsetStripHeight) });
-        left.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        // The controller row and the console tiles share the spare height; the
+        // controller row never clips its words.
+        left.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1.4, GridUnitType.Star), MinHeight = 180 });
+        left.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 72, MaxHeight = 140 });
+        left.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
     }
 
     private Button Action(string label, string glyph, string style)
@@ -278,6 +308,17 @@ public sealed partial class ControllerPage : Page, IShellPage
 
         Lift.Apply(button);
         return button;
+    }
+
+    /// <summary>One end of the input → output row: an icon, a name, a quiet line.</summary>
+    private static Grid End(Border icon, TextBlock name, TextBlock state)
+    {
+        var text = new StackPanel { Margin = new Thickness(12, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center, Children = { name, state } };
+        var end = new Grid { ColumnDefinitions = { new() { Width = GridLength.Auto }, new() { Width = new GridLength(1, GridUnitType.Star) } } };
+        Grid.SetColumn(text, 1);
+        end.Children.Add(icon);
+        end.Children.Add(text);
+        return end;
     }
 
     private static Grid EqualRow(int columns)
@@ -367,6 +408,8 @@ public sealed partial class ControllerPage : Page, IShellPage
         hubShown = wantHub;
         Detach(headsetTile);
         Detach(heroCard);
+        Detach(consoleTile);
+        Detach(actionRow);
         Detach(amiiboTile);
         PageFill.Child = null;
 
@@ -376,8 +419,12 @@ public sealed partial class ControllerPage : Page, IShellPage
             heroCard.MinHeight = 0;
             amiiboTile.Height = double.NaN;
             Grid.SetRow(heroCard, 1);
+            Grid.SetRow(consoleTile, 2);
+            Grid.SetRow(actionRow, 3);
             left.Children.Add(headsetTile);
             left.Children.Add(heroCard);
+            left.Children.Add(consoleTile);
+            left.Children.Add(actionRow);
             Grid.SetColumn(amiiboTile, 1);
             hub.Children.Add(left);
             hub.Children.Add(amiiboTile);
@@ -386,9 +433,11 @@ public sealed partial class ControllerPage : Page, IShellPage
         else
         {
             headsetTile.Height = StackedHeadsetHeight;
-            heroCard.MinHeight = 300;
+            heroCard.MinHeight = 0;
             amiiboTile.Height = StackedAmiiboHeight;
+            stack.Children.Add(actionRow);
             stack.Children.Add(heroCard);
+            stack.Children.Add(consoleTile);
             stack.Children.Add(headsetTile);
             stack.Children.Add(amiiboTile);
             PageFill.Child = stack;
@@ -423,9 +472,14 @@ public sealed partial class ControllerPage : Page, IShellPage
         blocker.Visibility = blocking.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         ToolTipService.SetToolTip(headline, $"{link.Headline}. {link.Explanation}");
 
-        var player = ConsoleCues.PlayerLabel(connected, adapters.Snapshot.Value.Input.Console);
-        playerPill.Visibility = player is null ? Visibility.Collapsed : Visibility.Visible;
-        playerText.Text = player ?? string.Empty;
+        // The output end: what the console sees, and the player it gave us.
+        var snapshot = adapters.Snapshot.Value;
+        controllerMode = AdapterDashboard.Project(
+            snapshot, adapters.Relationship.Value, adapters.Connection.Value, null, streaming).ControllerMode;
+        outputName.Text = connected ? ControllerModeSection.Label(snapshot.Personality.Current) : "No adapter";
+        outputState.Text = !connected
+            ? AdapterStatus.Of(false, adapters.Relationship.Value.Phase).Words
+            : ConsoleCues.PlayerLabel(connected, snapshot.Input.Console) ?? (streaming ? "On the console" : "To the console");
 
         // One primary action at a time, the same size as every other.
         var stop = link.CanStop;
@@ -433,8 +487,13 @@ public sealed partial class ControllerPage : Page, IShellPage
         SetAction(startStop, stop ? "Stop" : link.Busy ? "Connecting…" : "Start playing", stop ? "" : "");
         startStop.IsEnabled = stop || link.CanStart;
 
-        consoleRow.Visibility = streaming ? Visibility.Visible : Visibility.Collapsed;
-        quickRow.Visibility = streaming ? Visibility.Collapsed : Visibility.Visible;
+        // Always in place, so starting never rearranges the page under a thumb.
+        foreach (var console in consoleRow.Children.OfType<Control>())
+        {
+            console.IsEnabled = streaming;
+        }
+
+        ToolTipService.SetToolTip(consoleTile, streaming ? null : "Home, Capture and C work while you play.");
         if (!streaming)
         {
             ReleaseHeld();
@@ -548,7 +607,20 @@ public sealed partial class ControllerPage : Page, IShellPage
 
     private void AddConsoleButton(int column, string label, string glyph, ControllerButton button)
     {
+        // A console button is a tile, icon over label, sharing the column's
+        // spare height with the controller row (owner, 2026-11-08).
         var action = Action(label, glyph, "Action");
+        action.Height = double.NaN;
+        action.MinHeight = 52;
+        action.VerticalAlignment = VerticalAlignment.Stretch;
+        if (action.Content is Viewbox { Child: StackPanel face })
+        {
+            face.Orientation = Orientation.Vertical;
+            face.Spacing = 4;
+            ((FontIcon)face.Children[0]).FontSize = 26;
+            ((FrameworkElement)face.Children[1]).HorizontalAlignment = HorizontalAlignment.Center;
+        }
+
         AutomationProperties.SetName(action, $"Hold {label} on the console");
         Grid.SetColumn(action, column);
         var byPointer = false;
@@ -608,45 +680,95 @@ public sealed partial class ControllerPage : Page, IShellPage
             : $"{view.Headline}. {view.Detail}");
         ShowAdvice(view.Advice);
 
-        // A choice opens as a menu, so the header stays one line.
-        var choose = (view.CanChoose && view.Rows.Count > 1) || (selected is null && view.Rows.Count > 0);
-        sourceButton.Content = new StackPanel
+        sources = view;
+    }
+
+    /// <summary>
+    /// Quick settings, built as it opens so it is never stale: which controller
+    /// this PC reads (and Refresh), and which controller the console sees. The
+    /// full forms stay on the Adapter page.
+    /// </summary>
+    private void BuildQuickMenu()
+    {
+        if (quickButton.Flyout is not MenuFlyout menu)
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = 6,
-            Children =
-            {
-                new FontIcon { Glyph = choose ? "" : "", FontSize = 14 },
-                new TextBlock { Text = choose ? "Change" : "Refresh", VerticalAlignment = VerticalAlignment.Center },
-            },
-        };
-        sourceButton.Flyout = null;
-        sourceButton.Click -= OnRefreshSources;
-        if (choose)
+            return;
+        }
+
+        menu.Items.Clear();
+        menu.Items.Add(new MenuFlyoutItem { Text = "Controller", IsEnabled = false });
+        if (sources is { } view)
         {
-            var menu = new MenuFlyout { Placement = FlyoutPlacementMode.BottomEdgeAlignedRight };
             foreach (var row in view.Rows)
             {
-                var item = new RadioMenuFlyoutItem { Text = row.Label, GroupName = "source", IsChecked = row.Id == view.SelectedId };
+                var item = new RadioMenuFlyoutItem
+                {
+                    Text = row.Label,
+                    GroupName = "source",
+                    IsChecked = row.Id == view.SelectedId,
+                    IsEnabled = view.CanChoose || row.Id == view.SelectedId,
+                };
                 var id = row.Id;
                 item.Click += async (_, _) => await AppServices.SelectControllerSourceAsync(id);
                 menu.Items.Add(item);
             }
-
-            menu.Items.Add(new MenuFlyoutSeparator());
-            var refresh = new MenuFlyoutItem { Text = "Refresh", Icon = new FontIcon { Glyph = "" } };
-            refresh.Click += async (_, _) => await AppServices.RefreshControllerSourcesAsync();
-            menu.Items.Add(refresh);
-            sourceButton.Flyout = menu;
         }
-        else
+
+        var refresh = new MenuFlyoutItem { Text = "Look for controllers", Icon = new FontIcon { Glyph = "\uE72C" } };
+        refresh.Click += async (_, _) => await AppServices.RefreshControllerSourcesAsync();
+        menu.Items.Add(refresh);
+
+        menu.Items.Add(new MenuFlyoutSeparator());
+        var mode = controllerMode;
+        menu.Items.Add(new MenuFlyoutItem
         {
-            sourceButton.Click += OnRefreshSources;
+            Text = mode is { Availability.Enabled: false, Availability.DisabledReason: { } why } ? $"The console sees — {why}" : "The console sees",
+            IsEnabled = false,
+        });
+        foreach (var personality in mode?.Available ?? [])
+        {
+            var item = new RadioMenuFlyoutItem
+            {
+                Text = ControllerModeSection.Label(personality),
+                GroupName = "personality",
+                IsChecked = mode is not null && personality == mode.Current,
+                IsEnabled = mode?.Availability.Enabled == true,
+            };
+            var chosen = personality;
+            item.Click += async (_, _) => await OnSwitchPersonalityAsync(chosen);
+            menu.Items.Add(item);
         }
     }
 
-    private async void OnRefreshSources(object sender, RoutedEventArgs e) =>
-        await AppServices.RefreshControllerSourcesAsync();
+    /// <summary>The Adapter page's switch, from Play. The console briefly loses the controller.</summary>
+    private async Task OnSwitchPersonalityAsync(Personality personality)
+    {
+        if (controllerMode is { } mode && personality == mode.Current)
+        {
+            return;
+        }
+
+        playNotice.IsOpen = false;
+        try
+        {
+            var outcome = await adapters.SetPersonalityAsync(personality);
+            if (!outcome.Unchanged && !outcome.Reenumerated)
+            {
+                Notify(
+                    $"The adapter switched to {ControllerModeSection.Label(outcome.Personality)}, " +
+                    "but the console has not seen the change yet. Unplug the adapter and plug it back in.",
+                    InfoBarSeverity.Warning);
+            }
+        }
+        catch (Exception error)
+        {
+            Fail(error);
+        }
+        finally
+        {
+            RenderLink();
+        }
+    }
 
     /// <summary>
     /// Connection advice describes a BETTER setup, not a fault, so it goes away
