@@ -47,6 +47,62 @@ motion, rumble, battery, descriptor, or bridge behavior without evidence of a co
 
 ---
 
+# Open Decisions and Follow-ups from the 2026-11-10 Audit
+
+A whole-project and security audit ran on 2026-11-10. What could be fixed in
+software was fixed in that pass (see [`STATUS.md`](STATUS.md), "Since v2.6.0").
+These items remain. The first group needs a maintainer decision or access the
+audit did not have; the second is accepted engineering work.
+
+## Needs a maintainer decision
+
+- [ ] **Protect `main`.** It has no branch protection, and every push to `web/`
+      deploys to GitHub Pages: the page that holds users' amiibo keys and commands
+      their adapters. Require the CI checks, at least.
+- [ ] **Watchdog.** `hardware_watchdog` is linked and never armed, so a hang needs
+      a power cycle. Arming it interacts with flash writes that park a core, with
+      BOOTSEL sampling, and with the fault record in `ns2_core_fault` (a reboot
+      would erase what the record exists to show). Needs a design that keeps the
+      fault evidence, and hardware validation.
+- [ ] **`NS2_PRO=OFF`.** It builds again and CI compiles it. Either validate the
+      Switch 1 personality on hardware or delete the configuration.
+- [ ] **UART diagnostics in release builds.** `NS2_UART_DIAG=ON` ships an
+      unauthenticated console on GP0/GP1 with `bootsel` and the management
+      passthrough. Physical access is out of scope by policy; confirm that is
+      still the intent for release images.
+
+## Accepted follow-ups
+
+- [ ] **Firmware update from a companion.** Bootloader entry exists only as the
+      UART `bootsel` command. A management command behind the bonded session, and
+      a version check in the companions, would end unplug-and-hold updates.
+      `info` now reports the real product version, which this needs.
+- [ ] **Require Secure Connections on existing management bonds**, not only on new
+      ones. Blocked on knowing how BTstack marks a key derived from a Classic bond
+      (CTKD), which is how the Android companion may hold its LE key.
+- [ ] **Sanitizer run of the host suite** (AddressSanitizer, UBSan) on Linux, and
+      fuzz harnesses for the parsers that take untrusted input: `hid_parser.c`,
+      the HID report handlers, `handle_line`, `ns2_vendor_rx_feed`, the Controller
+      Link and microphone frame parsers. The runner has only ever run with MinGW.
+- [ ] **Compiler warnings for project firmware sources.** The host tests build
+      with `-Wall -Wextra -Werror`; the firmware target sets none.
+- [ ] **One command table** shared by `handle_line()` and the BLE allowlist, with a
+      transport mask per exact command form. Today the allowlist is a prefix list
+      plus a deny list.
+- [ ] **Verify the .NET runtime the Windows installer downloads** (Authenticode)
+      before running it.
+- [ ] **Encrypt the retail key at rest** on Android (Keystore) and in the web
+      portal (a non-extractable WebCrypto wrapping key).
+- [ ] **Move project code out of `btstack_host.c`** into `firmware/src/management/`
+      and `firmware/src/bluetooth/`, one subsystem per pass, behavior unchanged.
+- [ ] **Unused BTstack configuration**: `ENABLE_SCO_OVER_HCI`, `ENABLE_GOEP_L2CAP`,
+      `HAVE_BTSTACK_STDIN` and the AVDTP/AVRCP/BNEP/HFP/RFCOMM pools are inherited
+      and unused. Removing them is guarded by
+      `tests/tools/test_btstack_dependency_contract.py`; do it as its own pass.
+- [ ] **First run of `.github/workflows/release.yml`**, on the next tag.
+
+---
+
 # Current Development Priority
 
 ## Bluetooth Trust Lifecycle — Software Closed / Frozen
@@ -143,6 +199,54 @@ generic mapping framework. A config CRC or A/B record is a separate durability d
 
 These items are accepted directions but should be performed as separate coherent engineering passes.
 
+## Keyboard & Mouse Link — designed, awaiting go-ahead
+
+Play with the keyboard and mouse of the computer that runs a companion. The
+companion captures them on a dedicated, toggleable play surface (drawn keyboard
+and mouse that light up, like Touch Gamepad) and sends raw key and mouse state
+on the Controller Link data plane; the adapter feeds it into its existing KB/M
+layouts, profiles and mouse translation. Input reaches the Switch only while
+the surface is engaged, and while engaged it reaches nothing else on the PC.
+
+Design, wire contract, capture model, per-platform backends, failure modes,
+validation gates and open questions:
+[`docs/architecture/kbm-link-hld.md`](docs/architecture/kbm-link-hld.md).
+
+**Not started. Do not implement without the maintainer's explicit go-ahead.**
+Two preferences in the design are the maintainer's to settle first: the default
+release chord (Ctrl+Alt+Shift+Z proposed) and whether system shortcuts are
+captured by default.
+
+| Phase | Contents | Status |
+|---|---|---|
+| 0 | Wire constants, `kbm_link_goldens.csv`, `kbm_link_keymap.csv`, protocol fixture | Not Started |
+| 1 | Firmware: opcode `0x02`, companion peer in the KB/M role table, release and watchdog, status fields | Not Started |
+| 2 | Shared C# core: link state, capture controller, service, surface model | Not Started |
+| 3 | Windows backend and play surface; hardware gates H1 to H7 | Not Started |
+| 4 | Linux: capture spike (L0), then backend and surface | Not Started |
+| 5 | Web portal: Pointer Lock, Keyboard Lock, Web Bluetooth carrier | Not Started |
+| 6 | Android: pointer capture over the management GATT session | Not Started |
+
+The armed (not engaged) state of the play surface is the "KB/M tester" row of
+the companion redesign table below; build it once, there.
+
+## Web portal parity
+
+The portal follows the companion shell since 2026-11-11
+([`web/README.md`](web/README.md)). Software-validated only.
+
+| Item | Status |
+|---|---|
+| Shell, six pages, Adapter and Keyboard & Mouse tabs | Implementation Complete; hardware validation pending |
+| Controller Link from a browser gamepad (buttons, sticks, triggers, rumble) | Implementation Complete; never run against an adapter (STATUS.md gate 16) |
+| Drawn keyboard, binding editor, mouse tuning, profile selection | Implementation Complete; hardware validation pending |
+| Remote controller pairing, paired devices, Forget | Implementation Complete; hardware validation pending |
+| Saved-profile editor (create, rename, staged save through `kbm draft`) | Not Started |
+| Amiibo library as a grid, matching the companions | Not Started (the carousel is kept) |
+| Customization drawing | Not Started on any platform |
+| Keyboard & Mouse Link surface | Blocked on the go-ahead above (phase 5) |
+| Split `web/index.html` (5,600 lines) into modules with a build step | Open decision: it would end "no build step", which is why the page has been one file |
+
 ## Companion UI redesign (all platforms)
 
 Accepted 2026-11-06. The layout contract is
@@ -223,9 +327,10 @@ Do not begin this work as part of unrelated firmware or Android tasks.
 
 ## Windows
 
-A Windows companion is now an accepted and started platform direction. The design is
-`WINDOWS_PASS.md`; the implementation lives under `companions/windows/` and its current state is
-`companions/windows/docs/README.md`.
+A Windows companion is now an accepted and started platform direction. The implementation lives
+under `companions/windows/` and its current state is `companions/windows/docs/README.md`. (The
+design brief, `WINDOWS_PASS.md`, was a local task file and was never committed; source comments
+that cite its section numbers refer to it.)
 
 Settled by the design pass and the first implementation pass:
 
@@ -459,14 +564,8 @@ Requirements:
 
 ## `NS2_PRO=OFF` build
 
-Repair the currently known non-NS2 build failure involving
-`g_usb_reenumerate_request_pending` being referenced outside the appropriate guard.
-
-Requirements:
-
-- [ ] Restore clean `NS2_PRO=OFF` build.
-- [ ] Add or preserve build validation so the configuration does not silently regress again.
-- [ ] Keep the fix narrowly scoped.
+Repaired 2026-11-10: the personality and re-enumeration commands are guarded, and CI compiles
+the configuration. Whether to keep it is listed under the audit decisions above.
 
 ---
 

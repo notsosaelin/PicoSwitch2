@@ -17,6 +17,11 @@ EXPECTED_SKILLS = {
     "picoswitch2-motion-lab",
     "picoswitch2-firmware-tap",
     "picoswitch2-audio-regression",
+    "picoswitch2-nfc-lab",
+    "picoswitch2-validate",
+    "picoswitch2-management-command",
+    "picoswitch2-hardware-session",
+    "picoswitch2-release",
 }
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 

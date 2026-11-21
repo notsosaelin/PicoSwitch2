@@ -1,0 +1,4 @@
+interface:
+  display_name: "PicoSwitch2 Management Command"
+  short_description: "Change a management command end to end"
+  default_prompt: "Use $picoswitch2-management-command to add or change a management command across firmware, companions and fixtures."

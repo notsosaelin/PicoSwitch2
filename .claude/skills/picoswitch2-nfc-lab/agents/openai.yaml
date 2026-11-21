@@ -1,0 +1,4 @@
+interface:
+  display_name: "PicoSwitch2 NFC Lab"
+  short_description: "Investigate NFC and Virtual Amiibo offline first"
+  default_prompt: "Use $picoswitch2-nfc-lab to investigate this NFC or Virtual Amiibo behavior with the offline lab before hardware."

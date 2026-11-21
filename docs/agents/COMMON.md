@@ -3,7 +3,8 @@
 Read this before a focused investigation. It is deliberately short. Protocol detail lives in
 `docs/`; this file exists so a subagent prompt can be three lines instead of three pages.
 
-Specialist briefs: [MOTION.md](MOTION.md) · [RUMBLE.md](RUMBLE.md) · [ANDROID.md](ANDROID.md)
+Specialist briefs: [MOTION.md](MOTION.md) · [RUMBLE.md](RUMBLE.md) · [ANDROID.md](ANDROID.md) ·
+[VALIDATION.md](VALIDATION.md) (what to run per subsystem)
 
 ## What this project is
 

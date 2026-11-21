@@ -1,0 +1,4 @@
+interface:
+  display_name: "PicoSwitch2 Release"
+  short_description: "Prepare and check a release"
+  default_prompt: "Use $picoswitch2-release to check the tree is releasable and stage the release for maintainer approval."

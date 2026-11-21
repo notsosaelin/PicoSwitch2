@@ -7,8 +7,8 @@ description: Design, capture, analyze, and preserve evidence-first PicoSwitch2 c
 
 ## Establish the evidence boundary
 
-Read `AGENTS.md`, `STATUS.md`, `PLAN.md`, `docs/README.md`,
-`docs/LLM/current-context.md`, and the domain protocol reference. Run
+Read `AGENTS.md`, `STATUS.md`, `PLAN.md`, `docs/README.md`, and the domain
+protocol reference. Run
 `git status --short` and preserve unrelated worktree changes.
 
 Treat direct console/UART captures and hardware results as primary evidence.

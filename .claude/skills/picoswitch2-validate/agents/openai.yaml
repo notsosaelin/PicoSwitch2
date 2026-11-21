@@ -1,0 +1,4 @@
+interface:
+  display_name: "PicoSwitch2 Validate"
+  short_description: "Run the right validation for a change"
+  default_prompt: "Use $picoswitch2-validate to choose, run and report the validation this change needs."

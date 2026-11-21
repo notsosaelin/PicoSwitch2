@@ -16,7 +16,9 @@ handoff files are not authorities.
 | How the firmware is organised | [`../firmware/README.md`](../firmware/README.md), [`architecture/overview.md`](architecture/overview.md) |
 | How to run the tests | [`../tests/README.md`](../tests/README.md) |
 | Contributing | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) |
-| A fresh coding-agent session | [`../AGENTS.md`](../AGENTS.md), then [`LLM/current-context.md`](LLM/current-context.md) and [`agents/`](agents/) |
+| A fresh coding-agent session | [`../AGENTS.md`](../AGENTS.md), then [`../STATUS.md`](../STATUS.md) and the brief in [`agents/`](agents/) for the subsystem |
+| How work is done here | [`engineering-principles.md`](engineering-principles.md) |
+| What to run after a change | [`agents/VALIDATION.md`](agents/VALIDATION.md) |
 
 ## Architecture and design
 
@@ -27,7 +29,7 @@ Why the system is shaped the way it is.
 - [USB Serial and BLE management carriers](architecture/config-transports.md)
 - [Bridge contract](bridge/PROTOCOL.md) and [implementing a platform backend](bridge/PLATFORM_BACKEND.md)
 - [Native Android companion](android-companion.md), and the [Windows companion](../companions/windows/docs/README.md)
-- [Composable amiibo library](architecture/amiibo-composable-library-hld.md), [KB/M profile system](architecture/kbm-profile-system-hld.md), [companion library interaction](architecture/companion-library-interaction.md)
+- [Composable amiibo library](architecture/amiibo-composable-library-hld.md), [KB/M profile system](architecture/kbm-profile-system-hld.md), [Keyboard & Mouse Link (design, not implemented)](architecture/kbm-link-hld.md), [companion library interaction](architecture/companion-library-interaction.md)
 - [Nintendo Switch App features in the companion (research record, shelved)](architecture/nintendo-switch-app-design.md)
 - [Single-ACL multiplane companion BLE research](architecture/companion-multiplane-ble-architecture-research-2026-09-04.md)
 - [What we discovered versus inherited](provenance.md)

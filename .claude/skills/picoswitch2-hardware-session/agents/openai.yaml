@@ -1,0 +1,4 @@
+interface:
+  display_name: "PicoSwitch2 Hardware Session"
+  short_description: "Query and flash an attached adapter safely"
+  default_prompt: "Use $picoswitch2-hardware-session to discover the adapter, read its state and flash a development build."

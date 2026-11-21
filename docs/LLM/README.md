@@ -1,13 +1,13 @@
-# LLM Continuation Notes
+# Agent process notes
 
-This directory contains concise, current handoffs for fresh agent sessions. It does not replace
-protocol documentation, captures, source, `STATUS.md`, or `PLAN.md`.
+Retrospectives about how agent-driven investigations went, kept to improve
+tooling and skills. Nothing here describes current project state.
 
-Start with [`current-context.md`](current-context.md). If it disagrees with reproducible evidence or
-current source, update it rather than carrying the inconsistency into another session.
+The session handoff is [`STATUS.md`](../../STATUS.md), section "Resume here".
+There is no separate continuation file: the one that lived here went four
+months without being reconciled and is archived at
+[`../archive/llm-current-context-through-2026-11-08.archived.md`](../archive/llm-current-context-through-2026-11-08.archived.md).
 
-Process retrospectives intended to improve future agent tooling:
-
-- [`amiibo-v3-investigation-retrospective.md`](amiibo-v3-investigation-retrospective.md) — what
-  made the figure-v3 investigation expensive, the missed opportunities, and a prioritized NFC lab
-  plus skill proposal.
+- [`amiibo-v3-investigation-retrospective.md`](amiibo-v3-investigation-retrospective.md):
+  what made the figure-v3 investigation expensive, the missed opportunities, and
+  the NFC lab and skill that came out of it.

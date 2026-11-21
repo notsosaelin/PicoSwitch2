@@ -7,7 +7,7 @@ observed in that experiment, not for the current implementation; see
 
 Preserve records, including negative results. Edit one only to fix provenance,
 a dead link, or an explicit factual error. New records follow the template in
-[CLAUDE.md](../../CLAUDE.md#experiment-documentation).
+[the engineering principles](../engineering-principles.md#experiment-documentation).
 
 **Start with [`refuted-hypotheses.md`](refuted-hypotheses.md)**: the theories
 that were disproven, why they were attractive, and the evidence against them.

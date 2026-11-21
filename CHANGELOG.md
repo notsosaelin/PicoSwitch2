@@ -3,6 +3,70 @@
 Release notes describe user-visible behavior. Detailed implementation history remains in
 `docs/archive/` and the experiment records.
 
+## Unreleased
+
+Audit and hardening pass, 2026-11-10, and the web portal rework of 2026-11-11.
+Built and software-tested; nothing here has run on hardware.
+
+### Security
+
+- A new BLE management bond must use LE Secure Connections; a legacy pairing
+  offer is declined. Existing bonds and controller pairing are unchanged.
+- `amiibo reader ...` and `caudio lock ...` are no longer reachable over BLE.
+- Web portal: adapter text is escaped before display, the page declares a
+  Content-Security-Policy, catalog images load over https only, and imported
+  ZIP archives are size-bounded.
+- Companions fetch amiibo artwork over https only.
+- A vendor command shorter than the fields its handler reads now reads zeros,
+  not the previous command's bytes (all three personalities).
+- An over-long USB CDC command line is refused instead of executed truncated.
+- CI actions are pinned to commit SHAs; the Arm toolchain, Pico SDK and Gradle
+  distribution are verified against recorded digests.
+
+### Changed
+
+- Firmware `info` reports the real product version (it said `2.5` in 2.6.0),
+  taken from the new root `VERSION` file.
+- `printf` is compiled out of project firmware sources, which never had an
+  output: about 45 KB less flash per board.
+- `NS2_PRO=OFF` builds again.
+- `btstate` reports `cble.legacy_declined`.
+- The length-`0x28` motion research fixtures moved from `contracts/` to
+  `tests/fixtures/motion40/`.
+
+### Web portal
+
+- Rebuilt on the companion layout: Play, Keyboard, Amiibo, Customize, Adapter
+  and Settings pages.
+- Controller Link from a controller attached to the computer, over Bluetooth:
+  buttons, sticks, triggers and rumble, with Home, Capture and C on screen.
+  Not yet run against an adapter.
+- Keyboard and mouse: the drawn keyboard with each key's binding, a binding
+  editor, mouse buttons and tuning, and choosing which stored profile runs now
+  and at power-up.
+- Adapter: switch the emulated controller, pair a controller, list and forget
+  paired devices, wake the console.
+
+### Firmware
+
+- Pico W builds carry short diagnostic history by default, which frees about
+  85 KB of RAM (heap 22 KB to 107 KB). `build.ps1 pico_w -DiagProfile lab`
+  restores the full sizes for a soak or a capture session. Pico 2 W is
+  unchanged.
+
+### Project
+
+- Genuine amiibo dumps are no longer in the repository; the tests that read
+  them skip when they are absent.
+- Keyboard & Mouse Link (playing with the computer's own keyboard and mouse) is
+  designed in `docs/architecture/kbm-link-hld.md`; not implemented.
+- `AGENTS.md` is a short entry point and `CLAUDE.md` imports it; the engineering
+  principles and per-subsystem validation rules moved to
+  `docs/engineering-principles.md` and `docs/agents/VALIDATION.md`.
+- New skills: validate, management-command, hardware-session, release.
+- New CI: management command parity, an `NS2_PRO=OFF` compile check, a
+  tag-triggered draft-release workflow, Dependabot.
+
 ## 2.6.0 — 2026-11-08
 
 > **Update firmware and companions together.** The bridge contract is still 4, but the Linux
