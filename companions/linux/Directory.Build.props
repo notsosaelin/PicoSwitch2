@@ -13,8 +13,8 @@
     <PicoSwitchSharedSource>$(MSBuildThisFileDirectory)../windows/src/</PicoSwitchSharedSource>
 
     <!-- Pinned with Avalonia: Avalonia.FreeDesktop 11.3.22 depends on exactly this. -->
-    <PicoSwitchTmdsDBusProtocolVersion>0.21.3</PicoSwitchTmdsDBusProtocolVersion>
-    <PicoSwitchAvaloniaVersion>11.3.22</PicoSwitchAvaloniaVersion>
+    <PicoSwitchTmdsDBusProtocolVersion>0.95.2</PicoSwitchTmdsDBusProtocolVersion>
+    <PicoSwitchAvaloniaVersion>12.1.6</PicoSwitchAvaloniaVersion>
     <!-- SDL3 bindings plus the native libSDL3.so for linux-x64, in one package. -->
     <PicoSwitchSdl3Version>2026.1002.1</PicoSwitchSdl3Version>
   </PropertyGroup>

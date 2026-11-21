@@ -31,7 +31,7 @@
     <PicoSwitchPortableTargetFramework>net9.0</PicoSwitchPortableTargetFramework>
 
     <!-- Pinned deliberately; WINDOWS_PASS.md §32 R13 (WinUI 3 servicing churn). -->
-    <PicoSwitchWindowsAppSdkVersion>1.7.250606001</PicoSwitchWindowsAppSdkVersion>
+    <PicoSwitchWindowsAppSdkVersion>2.7.0</PicoSwitchWindowsAppSdkVersion>
   </PropertyGroup>
 
 </Project>
