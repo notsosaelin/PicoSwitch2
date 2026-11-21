@@ -7,7 +7,7 @@
 // Also validates the full 64-byte SRAM response trailer (CRC-16/MCRF4XX).
 // Run: node tests/tools/test_ns2_v3_compat_view.mjs [<dump-directory>]
 // Or set PICOSWITCH2_V3_DUMP_DIR.
-import {readFileSync, readdirSync} from "node:fs";
+import {readFileSync, readdirSync, existsSync } from "node:fs";
 import {join} from "node:path";
 import {fileURLToPath} from "node:url";
 
@@ -48,8 +48,18 @@ if (dir) {
       if (f.endsWith(".bin")) files.push(join(dir, sub, f));
 } else {
   const fixtures = fileURLToPath(new URL("../fixtures/amiibo/", import.meta.url));
-  for (const f of readdirSync(fixtures))
-    if (f.startsWith("v3-") && f.endsWith(".bin")) files.push(join(fixtures, f));
+  if (existsSync(fixtures))
+    for (const f of readdirSync(fixtures))
+      if (f.startsWith("v3-") && f.endsWith(".bin")) files.push(join(fixtures, f));
+}
+
+// The dumps left the repository on 2026-11-11 and tests/fixtures/amiibo/ is
+// git-ignored. With none to read there is nothing to check, and saying so is
+// better than reporting a pass over zero files.
+if (files.length === 0) {
+  console.log("v3_compat_view: SKIPPED, no v3 dumps in tests/fixtures/amiibo/ " +
+              "(restore local dumps there, or pass a directory)");
+  process.exit(0);
 }
 
 let checked = 0;

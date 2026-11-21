@@ -62,6 +62,11 @@ companions/windows/PicoSwitch2-Companion-*.zip
 amiibo-*-test.bin
 # Optional AmiiboAPI download for tests/tools/test_amiibo_games.mjs (~1.2 MB).
 tests/fixtures/amiibo-showgames.json
+# Genuine amiibo dumps and the archive built from them. Removed from the
+# repository 2026-11-11: a tag image is a copy of a physical figure and a set-up
+# one carries its owner's names. Tests that read them skip when they are absent.
+/tests/fixtures/amiibo/
+/contracts/amiibo/library-archive-v3.zip
 
 # ---------------------------------------------------------------------------
 # Local working notes: task prompts and session scratch. Durable guidance
