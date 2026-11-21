@@ -1,0 +1,30 @@
+# Proposes dependency updates as pull requests; nothing merges by itself.
+# Actions are pinned to commit SHAs in the workflows, and Dependabot keeps the
+# SHA and its trailing version comment in step.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ['*']
+
+  - package-ecosystem: gradle
+    directory: /companions/android
+    schedule:
+      interval: monthly
+    groups:
+      android:
+        patterns: ['*']
+
+  - package-ecosystem: nuget
+    directories:
+      - /companions/windows
+      - /companions/linux
+    schedule:
+      interval: monthly
+    groups:
+      dotnet:
+        patterns: ['*']

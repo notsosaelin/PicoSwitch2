@@ -1,10 +1,17 @@
 name: CI
 
+# Every action is pinned to a commit SHA (the tag is the trailing comment), and
+# every tool this workflow downloads is checked against a recorded digest. A
+# tag can be moved; a SHA cannot. Dependabot (.github/dependabot.yml) proposes
+# the updates.
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # release.yml calls this workflow for a tag, so a release is built by the
+  # same jobs that gate main.
+  workflow_call:
 
 permissions:
   contents: read
@@ -29,9 +36,13 @@ jobs:
     env:
       # Pinned to match firmware/CMakeLists.txt (sdkVersion, toolchainVersion).
       PICO_SDK_VERSION: 2.3.0
+      # The commit that tag 2.3.0 names. Checked after the clone: a tag can move.
+      PICO_SDK_COMMIT: 98a542c1a62fb549ffb5d66a3e5892b06276b670
       ARM_TOOLCHAIN: 15.2.rel1
+      # From Arm's published .sha256asc for this exact archive.
+      ARM_TOOLCHAIN_SHA256: 597893282ac8c6ab1a4073977f2362990184599643b4c5ee34870a8215783a16
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
 
@@ -40,21 +51,24 @@ jobs:
 
       - name: Cache Pico SDK and Arm toolchain
         id: cache-sdk
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/pico-sdk
             ~/arm-toolchain
-          key: pico-sdk-${{ env.PICO_SDK_VERSION }}-arm-${{ env.ARM_TOOLCHAIN }}
+          key: pico-sdk-${{ env.PICO_SDK_COMMIT }}-arm-${{ env.ARM_TOOLCHAIN_SHA256 }}
 
       - name: Fetch Pico SDK and Arm toolchain
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 --branch "$PICO_SDK_VERSION" --recurse-submodules --shallow-submodules \
             https://github.com/raspberrypi/pico-sdk.git ~/pico-sdk
+          test "$(git -C ~/pico-sdk rev-parse HEAD)" = "$PICO_SDK_COMMIT"
           mkdir -p ~/arm-toolchain
-          curl -fsSL "https://developer.arm.com/-/media/Files/downloads/gnu/${ARM_TOOLCHAIN}/binrel/arm-gnu-toolchain-${ARM_TOOLCHAIN}-x86_64-arm-none-eabi.tar.xz" \
-            | tar -xJ --strip-components=1 -C ~/arm-toolchain
+          archive="$RUNNER_TEMP/arm-toolchain.tar.xz"
+          curl -fsSL -o "$archive" "https://developer.arm.com/-/media/Files/downloads/gnu/${ARM_TOOLCHAIN}/binrel/arm-gnu-toolchain-${ARM_TOOLCHAIN}-x86_64-arm-none-eabi.tar.xz"
+          echo "${ARM_TOOLCHAIN_SHA256}  ${archive}" | sha256sum -c -
+          tar -xJ --strip-components=1 -C ~/arm-toolchain -f "$archive"
 
       - name: Configure
         run: |
@@ -75,43 +89,51 @@ jobs:
           python3 tools/verify_install_reset_marker.py \
             firmware/build/${{ matrix.board }}/PicoSwitchWGA-${{ matrix.board }}.bin --flash-size "$size"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: PicoSwitchWGA-${{ matrix.board }}
           path: firmware/build/${{ matrix.board }}/PicoSwitchWGA-${{ matrix.board }}.uf2
           if-no-files-found: error
 
       # The clean-install image: identical except that its first boot erases
-      # settings, amiibo and pairings (firmware/build.ps1 -Wipe).
+      # settings, amiibo and pairings (firmware/build.ps1 -Wipe). It differs by
+      # one compile definition, so the SAME build directory is reconfigured and
+      # only the affected objects rebuild; the update UF2 was uploaded above.
       - name: Build clean-install variant
         run: |
-          cmake -S firmware -B firmware/build/${{ matrix.board }}_wipe -G Ninja \
-            -DPICO_SDK_PATH="$HOME/pico-sdk" \
-            -DPICO_TOOLCHAIN_PATH="$HOME/arm-toolchain" \
-            -DPICO_BOARD=${{ matrix.board }} \
-            -DNS2_PRO_FIRMWARE_VERSION=2.1.4 -DNS2_PRO_BLUETOOTH_VERSION=12.0.0 -DNS2_PRO_DSP_VERSION=0.2.3 \
-            -DNS2_UART_DIAG=ON -DNS2_MGMT_DEFAULT_ON=ON -DNS2_INSTALL_RESET=ON \
-            ${{ matrix.flags }}
-          cmake --build firmware/build/${{ matrix.board }}_wipe
-          cp firmware/build/${{ matrix.board }}_wipe/PicoSwitchWGA-${{ matrix.board }}.uf2 \
-            firmware/build/${{ matrix.board }}_wipe/PicoSwitchWGA-${{ matrix.board }}-wipe.uf2
+          cmake -S firmware -B firmware/build/${{ matrix.board }} -DNS2_INSTALL_RESET=ON
+          cmake --build firmware/build/${{ matrix.board }}
+          mkdir -p firmware/build/wipe
+          cp firmware/build/${{ matrix.board }}/PicoSwitchWGA-${{ matrix.board }}.uf2 \
+            firmware/build/wipe/PicoSwitchWGA-${{ matrix.board }}-wipe.uf2
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: PicoSwitchWGA-${{ matrix.board }}-wipe
-          path: firmware/build/${{ matrix.board }}_wipe/PicoSwitchWGA-${{ matrix.board }}-wipe.uf2
+          path: firmware/build/wipe/PicoSwitchWGA-${{ matrix.board }}-wipe.uf2
           if-no-files-found: error
+
+      # The Switch 1 configuration. It went unbuilt and broke unnoticed; this
+      # is a compile check only, and nothing here says it works on hardware.
+      - name: Build NS2_PRO=OFF (compile check)
+        if: matrix.board == 'pico_w'
+        run: |
+          cmake -S firmware -B firmware/build/ns2pro_off -G Ninja \
+            -DPICO_SDK_PATH="$HOME/pico-sdk" \
+            -DPICO_TOOLCHAIN_PATH="$HOME/arm-toolchain" \
+            -DPICO_BOARD=pico_w -DNS2_PRO=OFF
+          cmake --build firmware/build/ns2pro_off
 
   host-tests:
     name: Host and tool tests
     # The host suite has only ever run with MinGW gcc; the Windows image ships it.
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
       - name: Host C tests
@@ -120,17 +142,23 @@ jobs:
       - name: Tool tests
         shell: pwsh
         run: python tests/run_tool_tests.py
+      # A verb added to the dispatcher but not the BLE allowlist compiles and
+      # passes every other test while the companion reports the feature
+      # missing. That shipped once (AGENTS.md); this is the only guard.
+      - name: Management command parity
+        shell: pwsh
+        run: python tools/check_management_command_parity.py
 
   android:
     name: Android companion
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: '21'
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
       - name: Unit tests
         working-directory: companions/android
         run: ./gradlew --console=plain :bridge-core:test :management-core:test :app:testDebugUnitTest
@@ -139,7 +167,7 @@ jobs:
       - name: Build APK
         working-directory: companions/android
         run: ./gradlew --console=plain :app:assembleDebug
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: PicoSwitch2-Companion-android
           path: companions/android/app/build/outputs/apk/debug/*.apk
@@ -149,11 +177,11 @@ jobs:
     name: Windows companion
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: '9.0.x'
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
       - name: Build, test and check descriptor parity
@@ -167,7 +195,7 @@ jobs:
         run: |
           ./build.ps1 -Zip -Configuration Release -Platform x64
           ./build.ps1 -Zip -Configuration Release -Platform arm64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: PicoSwitch2-Companion-windows
           path: companions/windows/artifacts/*-portable.zip
@@ -177,11 +205,11 @@ jobs:
     name: Linux companion
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Tags, so build-linux.sh's `git describe` names a real version.
           fetch-depth: 0
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: '9.0.x'
       # The portable shared layers run on Linux here and on Windows in the job
@@ -197,7 +225,7 @@ jobs:
       # why it is not an AppImage (Steam Game Mode cannot mount one).
       - name: Build executables (x64, arm64)
         run: bash companions/linux/packaging/build-linux.sh --arch all --skip-tests
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: PicoSwitch2-Companion-linux
           path: companions/linux/artifacts/PicoSwitch2Companion-*
@@ -207,5 +235,5 @@ jobs:
     name: Documentation links
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: python3 tools/check_doc_links.py --list

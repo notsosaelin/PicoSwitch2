@@ -1,0 +1,70 @@
+name: Release
+
+# Builds a release from the tag, in CI, and stages it as a DRAFT.
+#
+# Before this existed every release artifact was assembled on a development
+# machine, so nothing tied a published file to a source revision except the
+# maintainer's say-so. Pushing a tag `vX.Y.Z` now runs the same jobs that gate
+# main (ci.yml), checks that the tag matches the VERSION file, writes one
+# SHA256SUMS over every artifact, records build provenance, and attaches the
+# lot to a draft release.
+#
+# It never publishes. The maintainer reviews the draft, adds what CI cannot
+# build (the signed Android APK and the signed Windows installer need keys that
+# are deliberately not in this repository or its secrets), and publishes.
+#
+# NOT YET RUN: written 2026-11-10 and validated only as YAML. Treat the first
+# tag pushed after that date as its test.
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Tag matches VERSION
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: test "v$(tr -d '[:space:]' < VERSION)" = "$GITHUB_REF_NAME"
+
+  build:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  draft:
+    name: Draft release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write        # create the draft release
+      id-token: write        # sign the provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+      # The CI Android artifact is debug-signed. It is useful for testing and
+      # must not be mistaken for the release APK, so it stays out of the draft.
+      - name: Drop the debug APK
+        run: find dist -name '*.apk' -delete
+      - name: Checksums
+        working-directory: dist
+        run: |
+          find . -type f ! -name SHA256SUMS -printf '%P\n' | sort | xargs -d '\n' sha256sum > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-checksums: dist/SHA256SUMS
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
+            --title "PicoSwitch2 ${GITHUB_REF_NAME#v}" \
+            --notes "Built by CI from ${GITHUB_SHA}. Verify downloads against SHA256SUMS. The signed Android APK and Windows installer are added by the maintainer." \
+            $(find dist -type f)
