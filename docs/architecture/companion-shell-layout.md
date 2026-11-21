@@ -10,6 +10,7 @@ platform at once.
 | Linux | In Progress: shell with placeable slide-out navigation, always full screen (filling the panel in Game Mode), size scale, Play home screen, controller navigation, page placement, Adapter and Keyboard & Mouse tabs, short-window layout, Touch Gamepad built (reviewed in the screenshot harness, including 832×468, and keyboard / controller navigation driven there with `--keys` / `--pad`; Game Mode fill measured on a ROG Xbox Ally X, 2026-11-08); Customization drawing, testers, link health and tuning not started |
 | Windows | In Progress: shell with placeable slide-out navigation, always full screen, size scale, Play home screen, controller navigation, page placement, Adapter tabs and Keyboard & Mouse tabs, short-window layout built (Play, the navigation and Amiibo keyboard focus looked at on a 2560×1600 screen, 2026-11-08; controller navigation not yet run with a real pad); Customization drawing, testers, link health and tuning not started |
 | Android | In Progress: shell with placeable navigation, always full screen, size scale, Play home screen, page placement, Customization, Adapter and Keyboard & Mouse tabs, drawn keyboard, short-window layout built (Navigation and Play reviewed on an AYN Odin 2 Mini at 833×468 dp against a live adapter, 2026-11-08); Customization drawing, testers, link health and tuning not started |
+| Web portal | In Progress (2026-11-11): the same pages in the same order, built in `web/index.html`; see "Web portal" below for what a browser changes. Rendered against fixtures with `tools/portal_preview.py`; not yet run against an adapter |
 
 ## Navigation — agreed 2026-11-08
 
@@ -316,6 +317,23 @@ Avalonia, dp on Android).
   types"), never a bare "All".
 - Explicit sizes outside the scale remain only where the size is the content:
   the drawn keyboard's keys, colour swatches, the navigation.
+
+## Web portal
+
+The portal is a browser tab, not an app, and four rules above do not carry over.
+They are listed so the difference is a decision and not drift.
+
+| Rule | In the portal | Why |
+| --- | --- | --- |
+| Always full screen | The page lives in the tab | A page cannot take the screen without a user gesture, and taking it would hide the browser's own controls |
+| Navigation is a slide-out | Always visible: icons and one word at the left on a wide window, a bar at the bottom below 720 wide | There is no Back key to call it up, and a tab has the room |
+| Controller navigation | None. Mouse, touch and keyboard focus only | The Gamepad API is read only while Controller Link streams; using it for menus as well would need the ownership rules above rebuilt in the page |
+| Touch Gamepad replaces the shell | Not built | See `web/README.md` |
+
+Everything else holds: the page list and its order, what each page holds,
+Play's rows (the headset strip is absent), the Keyboard & Mouse header switch
+and three tabs, the Adapter header over tabs, the size scale (36 control
+height, 52 action height, 1240 wide pages), and "no layout rule names a device".
 
 ## Rules that do not change
 

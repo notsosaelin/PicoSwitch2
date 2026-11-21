@@ -3,7 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PicoSwitch2</title>
+<!-- This page holds the user's amiibo library and keys and can command an
+     adapter. The policy below limits what injected content could reach: network
+     requests go only to the two AmiiboAPI mirrors, nothing can be framed,
+     embedded or posted, and no script loads from another origin. The page's own
+     script and styles are inline, so 'unsafe-inline' stays; escaping untrusted
+     text (escapeHtml) is the primary defence, this is the second. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src https: data: blob:; connect-src https://amiiboapi.org https://www.amiiboapi.com; base-uri 'none'; form-action 'none'">
+<title>PicoSwitch2 Portal</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -67,8 +74,6 @@
   .amiibo-carousel-fallback { display: grid; place-items: center; width: 94px; height: 110px;
                               border-radius: 50%; background: #273244; color: #a9b7ca;
                               font-size: 10px; text-align: center; padding: 5px; }
-  #ui.offline > #appearancePanel, #ui.offline > .devtools,
-  #ui.offline > section:not(#amiiboPanel) { display: none; }
   .amiibo-carousel-caption { text-align: center; min-height: 18px; margin-bottom: 2px;
                              font-size: 12px; }
   .amiibo-detail { display: block; padding: 16px; margin-top: 0; background: #11151b;
@@ -254,120 +259,366 @@
   .cap-experiment { border: 1px solid #4a3418; background: #241b0e; border-radius: 8px;
                      padding: 8px 10px; margin: 4px 0 10px; }
   .cap-experiment .pill { margin-left: 6px; }
+
+  /* ---- Shell: the companion layout (docs/architecture/companion-shell-layout.md) ---- */
+  body { display: flex; min-height: 100vh; }
+  #nav { position: sticky; top: 0; flex: 0 0 80px; height: 100vh; display: flex;
+         flex-direction: column; align-items: stretch; gap: 4px; padding: 10px 6px;
+         background: #10141a; border-right: 1px solid #2b313b; z-index: 6; }
+  .nav-dot { width: 12px; height: 12px; margin: 6px auto 12px; border-radius: 50%;
+             background: #7f1d1d; box-shadow: 0 0 0 3px rgba(127,29,29,.25); }
+  .nav-dot.ok { background: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,.22); }
+  .nav-dot.busy { background: #f59e0b; box-shadow: 0 0 0 3px rgba(245,158,11,.22); }
+  .nav-item { display: grid; justify-items: center; gap: 3px; min-height: 52px;
+              padding: 7px 2px; border: 0; border-radius: 12px; background: transparent;
+              color: #8f9bab; font-size: 11px; line-height: 1.1; }
+  .nav-item svg { width: 22px; height: 22px; fill: currentColor; }
+  .nav-item:hover { background: #1b2230; color: #dfe7f1; }
+  .nav-item[aria-current="page"] { background: #22304a; color: #fff; }
+  .nav-item:focus-visible, .action:focus-visible, .kb-key:focus-visible,
+  .console-btn:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+  .nav-spacer { flex: 1; }
+  #content { flex: 1 1 auto; min-width: 0; }
+  main { max-width: 1240px; }
+  .page { display: none; }
+  .page.current { display: block; animation: page-in .16s ease-out; }
+  @keyframes page-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .page.current { animation: none; } }
+  #ui.offline .needs-adapter { display: none !important; }
+  #ui:not(.offline) .offline-note { display: none; }
+  .offline-note { padding: 24px 4px; }
+  .grow { flex: 1 1 auto; }
+  .spaced { margin-top: 18px; }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; white-space: pre-wrap;
+          color: #9aa6b2; margin: 0 0 10px; }
+  .notice { margin: 10px 0 0; padding: 8px 12px; border-left: 3px solid #f59e0b;
+            border-radius: 0 8px 8px 0; background: #241b0e; color: #fde68a; font-size: 13px; }
+  .notice.good { border-left-color: #22c55e; background: #0f2418; color: #bbf7d0; }
+  h3 { margin: 0 0 6px; font-size: 15px; }
+  select, input[type=text], input[type=search] { font: inherit; }
+  select { min-height: 36px; padding: 0 10px; border: 1px solid #3a4150; border-radius: 7px;
+           background: #151a21; color: #e6e8ea; }
+  select[size] { min-height: 0; padding: 4px; width: 100%; }
+  .card-select { width: 280px; max-width: 100%; }
+  button { min-height: 36px; }
+  .action { min-height: 52px; padding: 0 18px; border-radius: 14px; font-weight: 600; }
+
+  /* Tabs and toolbars */
+  .toolbar, .kbm-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .toolbar { margin-top: 12px; }
+  .tabs { display: inline-flex; padding: 3px; gap: 2px; border-radius: 10px; background: #11151b;
+          border: 1px solid #2b313b; }
+  .tabs button { min-height: 30px; padding: 4px 14px; border: 0; background: transparent;
+                 color: #9aa6b2; border-radius: 7px; }
+  .tabs button[aria-selected="true"] { background: #2a3140; color: #fff; }
+
+  /* Settings rows */
+  .setting { display: flex; align-items: center; justify-content: space-between; gap: 16px;
+             padding: 12px 0; border-top: 1px solid #262d38; }
+  .setting:first-of-type { border-top: 0; }
+  .setting > div:first-child { display: grid; gap: 2px; min-width: 0; }
+  .setting .muted { font-size: 12px; }
+  .setting-control { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+                     justify-content: end; flex: 0 0 auto; max-width: 60%; }
+  .switch { display: inline-flex; align-items: center; gap: 10px; font-weight: 600; cursor: pointer; }
+  .switch input { appearance: none; width: 42px; height: 24px; margin: 0; border-radius: 999px;
+                  background: #3a4150; position: relative; cursor: pointer; transition: background .15s; }
+  .switch input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px;
+                         border-radius: 50%; background: #e6e8ea; transition: transform .15s; }
+  .switch input:checked { background: #2563eb; }
+  .switch input:checked::after { transform: translateX(18px); }
+
+  /* Rows: sources, peers, profiles */
+  .rows { display: grid; gap: 6px; }
+  .row { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 10px;
+         border: 1px solid #2b313b; border-radius: 9px; background: #11151b; }
+  .row.current { border-color: #2563eb; box-shadow: inset 3px 0 0 #2563eb; }
+  .row .row-main { display: grid; min-width: 0; flex: 1 1 auto; }
+  .row .row-main b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .row-main span { color: #7c8694; font-size: 12px; }
+  .row button { min-height: 30px; padding: 3px 10px; font-size: 12px; white-space: nowrap;
+                flex: 0 0 auto; }
+
+  /* Play */
+  .play-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(240px, 1fr); gap: 18px; }
+  .play-left { display: grid; gap: 0; align-content: start; }
+  .play-card { margin-bottom: 18px; }
+  .play-state-row { display: flex; align-items: center; gap: 12px; }
+  .play-state { font-size: 22px; font-weight: 680; letter-spacing: -.01em; }
+  .play-flow { display: grid; grid-template-columns: 1fr auto 1fr; gap: 14px; align-items: center;
+               margin-top: 12px; }
+  .play-end { display: grid; gap: 2px; min-width: 0; padding: 12px; border-radius: 10px;
+              background: #11151b; border: 1px solid #2b313b; }
+  .play-end b { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .play-arrow { font-size: 22px; color: #60708a; }
+  .console-buttons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .console-btn { min-height: 72px; border-radius: 14px; font-weight: 600; touch-action: none;
+                 user-select: none; }
+  .console-btn.held { background: #2563eb; border-color: #2563eb; }
+  .play-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  .play-actions .stop { background: #7f1d1d; border-color: #7f1d1d; }
+  .play-stats { margin: 10px 0 0; font-size: 12px; min-height: 18px; }
+  .play-amiibo { display: grid; align-content: center; justify-items: center; gap: 10px;
+                 text-align: center; min-height: 320px; }
+  .play-amiibo.wanted { border-color: #22c55e; box-shadow: 0 0 0 2px rgba(34,197,94,.3); }
+  .play-amiibo-art { width: 160px; height: 160px; border-radius: 50%; display: grid;
+                     place-items: center; background: radial-gradient(circle at 50% 35%, #2a3550, #151a21);
+                     color: #6b7a90; font-size: 54px; overflow: hidden; }
+  .play-amiibo-art img { width: 100%; height: 100%; object-fit: contain; }
+  .play-amiibo .action { width: 100%; }
+  .play-note { margin: 0; font-size: 12px; }
+
+  /* Drawn keyboard. One key unit is --u; 22.5 units span main + nav + numpad
+     with half-unit gaps, so the picture always fits the width it is given. */
+  .kb-wrap { container-type: inline-size; overflow-x: auto; }
+  .kb { --u: max(22px, calc(100cqw / 23)); position: relative; height: calc(var(--u) * 6.25);
+        width: calc(var(--u) * 23); margin: 0 auto; }
+  .kb-key { position: absolute; left: calc(var(--u) * var(--c)); top: calc(var(--u) * var(--r));
+            width: calc(var(--u) * var(--w) - 3px); height: calc(var(--u) * var(--h) - 3px);
+            min-height: 0; padding: 1px 2px; display: grid; align-content: center; justify-items: center;
+            gap: 0; border-radius: 6px; background: #202734; border: 1px solid #3a4150;
+            font-size: clamp(8px, calc(var(--u) * .3), 13px); line-height: 1.05; overflow: hidden; }
+  .kb-key .cap { color: #cfd8e3; white-space: nowrap; }
+  .kb-key .dst { color: #7dd3fc; font-size: .82em; font-weight: 600; white-space: nowrap; }
+  .kb-key.unbound { background: #171c24; }
+  .kb-key.unbound .cap { color: #6f7b8c; }
+  .kb-key.custom { border-color: #f59e0b; }
+  .kb-key.switch .dst { color: #c4b5fd; }
+  .kb-other { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .kb-other .kb-key { position: static; width: auto; height: auto; min-width: 84px; min-height: 48px;
+                      padding: 6px 10px; font-size: 13px; }
+  .mouse-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 24px; }
+  .mouse-grid.profiles { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
+  .tuning { display: grid; gap: 10px; }
+  .tuning label { display: grid; grid-template-columns: 150px 1fr 56px; gap: 10px; align-items: center;
+                  font-size: 13px; color: #c3ccd8; }
+  .tuning output { font-family: ui-monospace, Consolas, monospace; font-size: 12px; text-align: right; }
+  .chips { display: flex; gap: 20px; font-size: 13px; }
+  .tuning .chips label { display: inline-flex; align-items: center; gap: 6px; }
+  dialog { border: 1px solid #3a4150; border-radius: 12px; background: #1b1f26; color: #e6e8ea;
+           padding: 18px; width: min(420px, 92vw); }
+  dialog::backdrop { background: rgba(0,0,0,.55); }
+  dialog .actions-bar { margin-top: 12px; }
+
+  @media (max-width: 900px) {
+    .play-grid, .mouse-grid, .mouse-grid.profiles { grid-template-columns: 1fr; }
+    .play-amiibo { min-height: 0; }
+    .setting { flex-direction: column; align-items: stretch; }
+    .setting-control { max-width: none; justify-content: start; }
+  }
+  @media (max-width: 720px) {
+    body { flex-direction: column-reverse; }
+    #nav { position: sticky; bottom: 0; top: auto; flex: 0 0 auto; width: 100%; height: 64px;
+           flex-direction: row; align-items: center; padding: 4px 8px; border-right: 0;
+           border-top: 1px solid #2b313b; }
+    .nav-dot { margin: 0 8px 0 4px; }
+    .nav-item { flex: 1 1 0; min-width: 0; }
+    .nav-spacer { display: none; }
+    .tuning label { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
+<nav id="nav" aria-label="Pages">
+  <span id="navDot" class="nav-dot" role="img" aria-label="Not connected" title="Not connected"></span>
+  <button class="nav-item" data-page="play">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg><span>Play</span></button>
+  <button class="nav-item" data-page="kbm">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18v12H3zM6 9h2v2H6zm3 0h2v2H9zm3 0h2v2h-2zm3 0h2v2h-2zM7 14h10v2H7z" fill-rule="evenodd"/></svg><span>Keyboard</span></button>
+  <button class="nav-item" data-page="amiibo">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="4"/><path d="M5 21v-3a7 7 0 0 1 14 0v3z"/></svg><span>Amiibo</span></button>
+  <button class="nav-item" data-page="custom">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l6 8a6 6 0 1 1-12 0z"/></svg><span>Customize</span></button>
+  <button class="nav-item" data-page="adapter">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2h10v6h2v6a4 4 0 0 1-4 4h-1v4h-4v-4H9a4 4 0 0 1-4-4V8h2zm2 2v4h6V4z"/></svg><span>Adapter</span></button>
+  <span class="nav-spacer"></span>
+  <button class="nav-item" data-page="settings">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10v2H4zm12 0h4v2h-4zM4 11h4v2H4zm6 0h10v2H10zM4 16h12v2H4zm14 0h2v2h-2z"/></svg><span>Settings</span></button>
+</nav>
+
+<div id="content">
 <header>
   <h1>PicoSwitch2</h1>
   <span id="status" class="pill bad">Disconnected</span>
+  <span id="adapterLabel" class="header-message"></span>
   <button id="connectUsbBtn" class="primary">Connect USB</button>
   <button id="connectBleBtn">Connect Bluetooth</button>
+  <button id="disconnectBtn" class="hidden">Disconnect</button>
   <span id="unsupported" class="pill bad hidden">Use Chrome or Edge for USB/Bluetooth access</span>
 </header>
 
 <main>
   <div id="ui" class="offline">
-    <section id="appearancePanel">
-      <h2>Controller Color &amp; Lightbar</h2>
-      <div class="appearance-grid">
-        <div class="appearance-color">
-          <h3>Pro Controller 2 body / Sony lightbar</h3>
-          <p class="muted">Shared by the advertised Pro2 body and a connected DualShock or DualSense lightbar.</p>
-          <div class="sliders">
-            <label>R <input type="range" min="0" max="255" value="0" class="r" id="ledR"><span id="ledRv">0</span></label>
-            <label>G <input type="range" min="0" max="255" value="0" class="g" id="ledG"><span id="ledGv">0</span></label>
-            <label>B <input type="range" min="0" max="255" value="0" class="b" id="ledB"><span id="ledBv">0</span></label>
-          </div>
-          <div class="swatch" id="ledSwatch"></div>
+
+    <!-- ================================ Play ================================ -->
+    <div class="page" id="page-play">
+      <div class="play-grid">
+        <div class="play-left">
+          <section class="play-card">
+            <div class="play-state-row">
+              <div id="playState" class="play-state">Not connected</div>
+              <span id="playPlayer" class="pill hidden"></span>
+            </div>
+            <div class="play-flow">
+              <div class="play-end">
+                <span class="muted">This computer reads</span>
+                <b id="playInput">No controller</b>
+                <select id="playPadSelect" class="hidden" aria-label="Controller to read"></select>
+              </div>
+              <div class="play-arrow" aria-hidden="true">&rarr;</div>
+              <div class="play-end">
+                <span class="muted">The console sees</span>
+                <b id="playOutput">&mdash;</b>
+                <span id="playOutputDetail" class="muted"></span>
+              </div>
+            </div>
+            <p id="playBlocker" class="notice hidden" role="status"></p>
+            <p id="playNotice" class="notice hidden" role="status"></p>
+          </section>
+
+          <section class="play-card needs-adapter">
+            <div class="console-buttons" aria-label="Console buttons, held for as long as you press">
+              <button class="console-btn" data-button="Home" disabled>Home</button>
+              <button class="console-btn" data-button="Capture" disabled>Capture</button>
+              <button class="console-btn" data-button="C" disabled>C</button>
+            </div>
+            <div class="play-actions">
+              <button id="playStartBtn" class="action primary" disabled>Start playing</button>
+              <button id="playWakeBtn" class="action" disabled>Wake console</button>
+            </div>
+            <p id="playLinkStats" class="muted play-stats"></p>
+          </section>
+
+          <section class="play-card needs-adapter">
+            <h2>Who is driving the console</h2>
+            <div id="playSources" class="rows"></div>
+            <p class="muted">A controller paired to the adapter comes before this computer unless you pick one here.</p>
+          </section>
         </div>
 
-        <div class="appearance-color">
-          <h3>Joy-Con 2 Left accent</h3>
-          <p class="muted">Left Joy-Con highlight and Sony lightbar color in the matching personality.</p>
-          <div class="sliders">
-            <label>R <input type="range" min="0" max="255" value="155" class="r" id="jclR"><span id="jclRv">155</span></label>
-            <label>G <input type="range" min="0" max="255" value="225" class="g" id="jclG"><span id="jclGv">225</span></label>
-            <label>B <input type="range" min="0" max="255" value="230" class="b" id="jclB"><span id="jclBv">230</span></label>
+        <section class="play-card play-amiibo" id="playAmiiboTile">
+          <span id="playAmiiboWanted" class="pill ok hidden">GAME WANTS AN AMIIBO</span>
+          <div id="playAmiiboArt" class="play-amiibo-art" aria-hidden="true"></div>
+          <b id="playAmiiboName">No amiibo loaded</b>
+          <span id="playAmiiboDetail" class="muted"></span>
+          <button id="playAmiiboBtn" class="action">Library</button>
+        </section>
+      </div>
+      <p class="muted play-note">In the browser, Controller Link carries buttons, sticks, triggers and rumble
+        over Bluetooth. Motion, the Touch Gamepad and the headset need a companion app.</p>
+    </div>
+
+    <!-- =========================== Keyboard & Mouse ========================= -->
+    <div class="page" id="page-kbm">
+      <p class="offline-note muted">Connect an adapter to see and change its keyboard and mouse mapping.</p>
+      <div class="needs-adapter">
+        <section>
+          <div class="kbm-header">
+            <label class="switch">
+              <input type="checkbox" id="kbmEnabled">
+              <span>Keyboard &amp; mouse</span>
+            </label>
+            <span id="kbmKeyboardState" class="pill">Keyboard</span>
+            <span id="kbmMouseState" class="pill">Mouse</span>
+            <span id="kbmProfileState" class="pill">&mdash;</span>
+            <span class="grow"></span>
+            <button id="kbmRefreshBtn">Refresh</button>
           </div>
-          <div class="swatch" id="jclSwatch"></div>
-        </div>
-
-        <div class="appearance-color">
-          <h3>Joy-Con 2 Right accent</h3>
-          <p class="muted">Right Joy-Con highlight and Sony lightbar color in the matching personality.</p>
-          <div class="sliders">
-            <label>R <input type="range" min="0" max="255" value="255" class="r" id="jcrR"><span id="jcrRv">255</span></label>
-            <label>G <input type="range" min="0" max="255" value="140" class="g" id="jcrG"><span id="jcrGv">140</span></label>
-            <label>B <input type="range" min="0" max="255" value="95" class="b" id="jcrB"><span id="jcrBv">95</span></label>
+          <p class="muted" id="kbmDetail">&mdash;</p>
+          <div class="toolbar">
+            <div class="tabs" role="tablist" data-tabs="kbm">
+              <button role="tab" data-tab="mapping" aria-selected="true">Mapping</button>
+              <button role="tab" data-tab="mouse">Mouse</button>
+              <button role="tab" data-tab="profiles">Profiles</button>
+            </div>
+            <span class="grow"></span>
+            <label class="muted">Layout
+              <select id="kbmLayoutSel">
+                <option value="kb">Keyboard</option>
+                <option value="kbm">Keyboard + mouse</option>
+              </select>
+            </label>
+            <button id="kbmSaveBtn" class="primary">Save to adapter</button>
           </div>
-          <div class="swatch" id="jcrSwatch"></div>
-        </div>
-      </div>
-      <div class="actions-bar" style="margin-top:12px">
-        <button id="saveBtn" class="primary">Save to device</button>
-        <button id="applyIdentityBtn" disabled>Apply to console</button>
-        <button id="reloadBtn">Reload</button>
-      </div>
-    </section>
+          <p id="kbmNotice" class="notice hidden" role="status"></p>
+        </section>
 
-    <section id="kbmPanel">
-      <h2>Input source</h2>
-      <p class="muted">The adapter normally works this out for itself: pair a keyboard and it becomes a
-        keyboard, add a mouse and the two become one controller. Use the selector only to force a
-        particular behavior. <b>Controller</b> is the normal mode.
-        <b>Keyboard</b> makes one Bluetooth keyboard the whole controller. <b>Keyboard + Mouse</b>
-        makes a keyboard and a mouse together one controller &mdash; mouse movement uses the
-        Joy-Con&nbsp;2 pointer where the selected personality has one, and the right stick otherwise.
-        Only the selected mode's devices can drive the console; open a pairing window
-        (double-tap BOOTSEL) to add each one. Mapping defaults and the full remapping editor are
-        documented in <code>docs/bluetooth/keyboard-mouse-input.md</code>.</p>
-      <div class="actions-bar">
-        <label>Mode
-          <select id="kbmMode">
-            <option value="auto">Automatic (recommended)</option>
-            <option value="controller">Controller</option>
-            <option value="keyboard">Keyboard</option>
-            <option value="kbmouse">Keyboard + Mouse</option>
-          </select>
-        </label>
-        <button id="kbmRefreshBtn">Refresh</button>
-        <button id="kbmResetBtn">Restore default mappings</button>
-      </div>
-      <div class="actions-bar" style="margin-top:8px">
-        <span id="kbmKeyboardState" class="pill bad">Keyboard: disconnected</span>
-        <span id="kbmMouseState" class="pill bad">Mouse: disconnected</span>
-        <span id="kbmProfileState" class="pill">profile &mdash;</span>
-      </div>
-      <p class="muted" id="kbmDetail" style="font-size:11px">&mdash;</p>
-    </section>
+        <section class="tabpanel" data-panel="kbm:mapping">
+          <div class="kb-wrap"><div id="kbmKeyboard" class="kb"></div></div>
+          <div class="toolbar">
+            <label class="muted"><input type="checkbox" id="kbmMoreKeys"> More keys (ISO, Japanese)</label>
+            <span class="grow"></span>
+            <button id="kbmResetLayoutBtn">Reset mapping</button>
+          </div>
+          <div id="kbmOtherKeys" class="kb-other hidden"></div>
+          <p class="muted">Click a key to choose the Switch control it sends. A change takes effect on the
+            console at once; <b>Save to adapter</b> keeps it after a power cycle.</p>
+        </section>
 
-    <section id="mgmtPanel">
-      <h2>In-band management <span class="pill">beta</span></h2>
-      <p class="muted">Manage the adapter over Bluetooth <b>while a controller is driving the console</b>
-        &mdash; no Config-mode re-enumeration, so the console is never dropped. Default off. Enable it
-        here from any transport (USB or the current BLE link), then you can <b>Connect Bluetooth</b> in
-        normal Pro Controller 2 mode.</p>
-      <div class="actions-bar">
-        <span id="mgmtState" class="pill bad">unknown</span>
-        <button id="mgmtOnBtn" class="primary">Enable</button>
-        <button id="mgmtOffBtn">Disable</button>
-        <button id="mgmtStatusBtn">Refresh</button>
+        <section class="tabpanel hidden" data-panel="kbm:mouse">
+          <div class="mouse-grid">
+            <div>
+              <h2>Mouse buttons</h2>
+              <div id="kbmMouseButtons" class="kb-other"></div>
+              <p class="muted" id="kbmMouseButtonsNote"></p>
+            </div>
+            <div>
+              <h2>Mouse to right stick</h2>
+              <div class="tuning">
+                <label>Sensitivity X <input type="range" id="kbmSensX"><output id="kbmSensXv"></output></label>
+                <label>Sensitivity Y <input type="range" id="kbmSensY"><output id="kbmSensYv"></output></label>
+                <label>Hold time (ms) <input type="range" id="kbmRecenter"><output id="kbmRecenterv"></output></label>
+                <label>Anti-deadzone (%) <input type="range" id="kbmAdz"><output id="kbmAdzv"></output></label>
+                <div class="chips">
+                  <label><input type="checkbox" id="kbmInvX"> Invert X</label>
+                  <label><input type="checkbox" id="kbmInvY"> Invert Y</label>
+                </div>
+              </div>
+              <p class="muted">Used when the emulated controller has no pointer of its own. On a Joy-Con 2
+                the mouse drives the console's own pointer and these settings do nothing.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="tabpanel hidden" data-panel="kbm:profiles">
+          <div class="mouse-grid profiles">
+            <div>
+              <h2>Profiles on the adapter</h2>
+              <div id="kbmProfiles" class="rows"></div>
+              <p class="muted">Creating, naming and editing saved profiles needs a companion app. Here you
+                can choose which one runs now and which one the adapter starts with.</p>
+            </div>
+            <div>
+              <h2>Profile switch keys</h2>
+              <div id="kbmSwitches" class="rows"></div>
+              <h2 class="spaced">Reset</h2>
+              <button id="kbmResetBtn">Reset everything</button>
+              <details class="spaced">
+                <summary class="muted">Counters</summary>
+                <pre id="kbmCounters" class="mono">&mdash;</pre>
+              </details>
+            </div>
+          </div>
+        </section>
       </div>
-      <p class="muted" style="font-size:11px">Security: authenticated bonding (the pairing-window gate)
-        is not yet enforced in this beta &mdash; enable only in a trusted environment. Reverts to
-        <b>off</b> on adapter reboot, so a power cycle is always a clean escape hatch.</p>
-    </section>
 
-    <section class="q hidden" id="audioDiag">
-      <div id="audioVerdict">&mdash;</div>
-      <div id="audioMeta"></div>
-      <button id="audioResetBtn" type="button">Reset counters</button>
-    </section>
-    <section class="q hidden" id="firmwareDiag">
-      <div id="firmwareDiagSummary">Waiting for trace</div>
-      <pre id="firmwareDiagReads">&mdash;</pre>
-    </section>
+      <dialog id="kbmPicker">
+        <form method="dialog">
+          <h3 id="kbmPickerTitle">Key</h3>
+          <p class="muted" id="kbmPickerNow"></p>
+          <select id="kbmPickerDst" size="12"></select>
+          <div class="actions-bar">
+            <button id="kbmPickerApply" class="primary" value="apply">Apply</button>
+            <button id="kbmPickerDefault" value="default">Use default</button>
+            <button id="kbmPickerNone" value="none">Unassign</button>
+            <button value="cancel">Cancel</button>
+          </div>
+        </form>
+      </dialog>
+    </div>
 
+    <!-- ================================ Amiibo ============================== -->
+    <div class="page" id="page-amiibo">
     <section id="amiiboPanel">
       <div class="amiibo-manager">
         <div class="amiibo-manager-header">
@@ -496,6 +747,176 @@
         </details>
       </div>
     </section>
+    </div>
+
+    <!-- ============================ Customization =========================== -->
+    <div class="page" id="page-custom">
+      <p class="offline-note muted">Connect an adapter to change how the emulated controller looks.</p>
+      <div class="needs-adapter">
+    <section id="appearancePanel">
+      <h2>Controller Color &amp; Lightbar</h2>
+      <div class="appearance-grid">
+        <div class="appearance-color">
+          <h3>Pro Controller 2 body / Sony lightbar</h3>
+          <p class="muted">Shared by the advertised Pro2 body and a connected DualShock or DualSense lightbar.</p>
+          <div class="sliders">
+            <label>R <input type="range" min="0" max="255" value="0" class="r" id="ledR"><span id="ledRv">0</span></label>
+            <label>G <input type="range" min="0" max="255" value="0" class="g" id="ledG"><span id="ledGv">0</span></label>
+            <label>B <input type="range" min="0" max="255" value="0" class="b" id="ledB"><span id="ledBv">0</span></label>
+          </div>
+          <div class="swatch" id="ledSwatch"></div>
+        </div>
+
+        <div class="appearance-color">
+          <h3>Joy-Con 2 Left accent</h3>
+          <p class="muted">Left Joy-Con highlight and Sony lightbar color in the matching personality.</p>
+          <div class="sliders">
+            <label>R <input type="range" min="0" max="255" value="155" class="r" id="jclR"><span id="jclRv">155</span></label>
+            <label>G <input type="range" min="0" max="255" value="225" class="g" id="jclG"><span id="jclGv">225</span></label>
+            <label>B <input type="range" min="0" max="255" value="230" class="b" id="jclB"><span id="jclBv">230</span></label>
+          </div>
+          <div class="swatch" id="jclSwatch"></div>
+        </div>
+
+        <div class="appearance-color">
+          <h3>Joy-Con 2 Right accent</h3>
+          <p class="muted">Right Joy-Con highlight and Sony lightbar color in the matching personality.</p>
+          <div class="sliders">
+            <label>R <input type="range" min="0" max="255" value="255" class="r" id="jcrR"><span id="jcrRv">255</span></label>
+            <label>G <input type="range" min="0" max="255" value="140" class="g" id="jcrG"><span id="jcrGv">140</span></label>
+            <label>B <input type="range" min="0" max="255" value="95" class="b" id="jcrB"><span id="jcrBv">95</span></label>
+          </div>
+          <div class="swatch" id="jcrSwatch"></div>
+        </div>
+      </div>
+      <div class="actions-bar" style="margin-top:12px">
+        <button id="saveBtn" class="primary">Save to device</button>
+        <button id="applyIdentityBtn" disabled>Apply to console</button>
+        <button id="reloadBtn">Reload</button>
+      </div>
+    </section>
+      </div>
+    </div>
+
+    <!-- ================================ Adapter ============================= -->
+    <div class="page" id="page-adapter">
+      <section>
+        <div class="kbm-header">
+          <div>
+            <div class="bigname" id="adName">No adapter connected</div>
+            <div class="muted" id="adVersion">Connect over USB (configuration mode) or Bluetooth.</div>
+          </div>
+          <span class="grow"></span>
+          <div class="tabs needs-adapter" role="tablist" data-tabs="adapter">
+            <button role="tab" data-tab="console" aria-selected="true">Console</button>
+            <button role="tab" data-tab="controllers">Controllers</button>
+          </div>
+        </div>
+        <p id="adNotice" class="notice hidden" role="status"></p>
+      </section>
+
+      <div class="needs-adapter">
+        <div class="tabpanel" data-panel="adapter:console">
+          <section>
+            <h2>The controller the console sees</h2>
+            <div class="setting">
+              <div><b>Emulated controller</b>
+                <span class="muted">Changing it reconnects the adapter to the console as a different controller.</span></div>
+              <div class="setting-control">
+                <select id="adPersonality" class="card-select"></select>
+                <button id="adPersonalityApply" disabled>Switch</button>
+              </div>
+            </div>
+            <div class="setting">
+              <div><b>Controller in use</b>
+                <span class="muted" id="adDevice">&mdash;</span></div>
+              <div class="setting-control"><button id="adRefreshBtn">Refresh</button></div>
+            </div>
+            <div class="setting">
+              <div><b>Wake the console</b>
+                <span class="muted" id="adWakeState">Sends the wake signal a paired controller would send.</span></div>
+              <div class="setting-control"><button id="adWakeBtn">Wake</button></div>
+            </div>
+          </section>
+          <section id="mgmtPanel">
+            <h2>Management over Bluetooth</h2>
+            <div class="setting">
+              <div><b>Bluetooth management</b>
+                <span class="muted">Lets this page and the companion apps reach the adapter while a controller is
+                  driving the console. On by default; a new device still needs the adapter's pairing gesture.
+                  Turning it off lasts until the adapter restarts.</span></div>
+              <div class="setting-control">
+                <span id="mgmtState" class="pill bad">unknown</span>
+                <button id="mgmtOnBtn">Turn on</button>
+                <button id="mgmtOffBtn">Turn off</button>
+                <button id="mgmtStatusBtn" class="hidden">Refresh</button>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div class="tabpanel hidden" data-panel="adapter:controllers">
+          <section>
+            <h2>Pair a controller</h2>
+            <div class="setting">
+              <div><b id="pairState">Not pairing</b>
+                <span class="muted" id="pairDetail">Opens the same pairing window as a double-tap of the adapter's button.
+                  Put the controller in its pairing mode first.</span></div>
+              <div class="setting-control">
+                <button id="pairStartBtn" class="primary">Pair a controller</button>
+                <button id="pairCancelBtn" disabled>Stop</button>
+              </div>
+            </div>
+          </section>
+          <section>
+            <h2>Controllers and devices</h2>
+            <div id="peersList" class="rows"></div>
+            <p class="muted" id="peersNote"></p>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================================ Settings ============================ -->
+    <div class="page" id="page-settings">
+      <section>
+        <h2>This page</h2>
+        <div class="setting">
+          <div><b>Face buttons</b>
+            <span class="muted">How A/B/X/Y on the controller this computer reads reach the console.</span></div>
+          <div class="setting-control">
+            <select id="setFaceLayout" class="card-select">
+              <option value="position">By position (bottom is B)</option>
+              <option value="label">By Xbox letter (A is A)</option>
+            </select>
+          </div>
+        </div>
+        <div class="setting">
+          <div><b>Rumble</b>
+            <span class="muted">Play the console's rumble on the controller this computer reads.</span></div>
+          <div class="setting-control"><label class="switch"><input type="checkbox" id="setRumble" checked><span></span></label></div>
+        </div>
+        <div class="setting">
+          <div><b>Browser support</b>
+            <span class="muted" id="setSupport">&mdash;</span></div>
+        </div>
+      </section>
+
+      <section class="needs-adapter">
+        <h2>Controller Link diagnostics</h2>
+        <pre id="clinkDiag" class="mono">&mdash;</pre>
+        <button id="clinkDiagBtn">Read counters</button>
+      </section>
+
+      <section class="q hidden" id="audioDiag">
+        <div id="audioVerdict">&mdash;</div>
+        <div id="audioMeta"></div>
+        <button id="audioResetBtn" type="button">Reset counters</button>
+      </section>
+      <section class="q hidden" id="firmwareDiag">
+        <div id="firmwareDiagSummary">Waiting for trace</div>
+        <pre id="firmwareDiagReads">&mdash;</pre>
+      </section>
 
     <details class="devtools" id="devTools">
       <summary>Developer diagnostics and protocol capture</summary>
@@ -614,13 +1035,31 @@
       <div id="log"></div>
     </section>
     </details>
+    </div>
   </div>
-
 </main>
+</div>
 
 <script>
 "use strict";
 const $ = s => document.querySelector(s);
+// Text from the adapter, a file or the network is DATA. Anything interpolated
+// into an innerHTML string goes through this first: a device that answers the
+// management protocol decides those bytes, and this page holds the user's
+// amiibo keys and library in the same origin.
+// Numeric character references, and the quote characters written as escapes:
+// tests/tools/test_portal_symbols.mjs strips string literals with a simple
+// scanner, and a bare quote inside a regex or string confuses it.
+const escapeHtml = value => String(value).replace(/[&<>\x22\x27]/g,
+  c => `&#${c.charCodeAt(0)};`);
+// Only https images are loaded from catalog metadata; any other scheme falls
+// back to the text tile.
+const safeImageUrl = value => {
+  try {
+    const url = new URL(String(value || ""));
+    return url.protocol === "https:" ? url.href : "";
+  } catch { return ""; }
+};
 const log = m => {
   const el = $("#log");
   if (el && !$("#ui").classList.contains("offline")) { el.textContent += m + "\n"; el.scrollTop = el.scrollHeight; }
@@ -684,6 +1123,7 @@ function setConnected(on, label = "") {
   $("#ui").classList.toggle("offline", !on);
   renderAmiiboLibrary();
   amiiboSetBusy(false);
+  shellRenderConnection();
 }
 function renderAudioStat(d) {
   if (!d || d.core1MaxGapUs === undefined) return;
@@ -1524,7 +1964,7 @@ function createAmiiboCarouselItem(entry) {
     selectAmiiboLibraryEntry(entry.key, true);
   };
 
-  const imageUrl = metadata?.imgwebp || metadata?.image || "";
+  const imageUrl = safeImageUrl(metadata?.imgwebp || metadata?.image);
   const fallback = document.createElement("span");
   fallback.className = "amiibo-carousel-fallback";
   fallback.textContent = entry.typeName;
@@ -1656,26 +2096,56 @@ function amiiboZipStore(files) {
   return amiiboConcatBytes([...locals, centralBytes, eocd]);
 }
 
+// Limits for an imported library archive, matching the Android and Windows
+// companions' order of magnitude. A manifest plus one small .bin per amiibo
+// never approaches them; an archive that does is refused instead of inflated.
+const AMIIBO_ZIP_MAX_ENTRIES = 4096;
+const AMIIBO_ZIP_MAX_ENTRY_BYTES = 4 * 1024 * 1024;
+const AMIIBO_ZIP_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
+async function amiiboInflateBounded(data, limit) {
+  const reader = new Blob([data]).stream()
+    .pipeThrough(new DecompressionStream("deflate-raw")).getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const {done, value} = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > limit) {
+      await reader.cancel();
+      throw new Error("zip entry is too large");
+    }
+    chunks.push(value);
+  }
+  return amiiboConcatBytes(chunks);
+}
 async function amiiboZipEntries(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const dec = new TextDecoder();
   const entries = [];
   let p = 0;
-  while (p + 4 <= bytes.length && dv.getUint32(p, true) === 0x04034b50) {
+  let totalBytes = 0;
+  while (p + 30 <= bytes.length && dv.getUint32(p, true) === 0x04034b50) {
+    if (entries.length >= AMIIBO_ZIP_MAX_ENTRIES)
+      throw new Error("zip has too many entries");
     const method = dv.getUint16(p + 8, true);
     const csize = dv.getUint32(p + 18, true);
     const namelen = dv.getUint16(p + 26, true);
     const extralen = dv.getUint16(p + 28, true);
     const name = dec.decode(bytes.subarray(p + 30, p + 30 + namelen));
     const start = p + 30 + namelen + extralen;
+    if (start + csize > bytes.length) throw new Error("zip entry is truncated");
     let data = bytes.subarray(start, start + csize);
     if (method === 8) {
-      const stream = new Blob([data]).stream()
-        .pipeThrough(new DecompressionStream("deflate-raw"));
-      data = new Uint8Array(await new Response(stream).arrayBuffer());
+      data = await amiiboInflateBounded(data, AMIIBO_ZIP_MAX_ENTRY_BYTES);
     } else if (method !== 0) {
       throw new Error(`unsupported zip compression method ${method}`);
+    } else if (data.length > AMIIBO_ZIP_MAX_ENTRY_BYTES) {
+      throw new Error("zip entry is too large");
     }
+    totalBytes += data.length;
+    if (totalBytes > AMIIBO_ZIP_MAX_TOTAL_BYTES)
+      throw new Error("zip archive is too large");
     entries.push({name, bytes: data});
     p = start + csize;
   }
@@ -3394,7 +3864,7 @@ function capRenderStats() {
   $("#capKMarker").textContent = capCounts.marker;
   const tagList = (m) => {
     const entries = [...m.entries()].sort((a, b) => b[1] - a[1]);
-    return entries.length ? entries.map(([k, v]) => `<span class="cap-tag">${k}: ${v}</span>`).join("")
+    return entries.length ? entries.map(([k, v]) => `<span class="cap-tag">${escapeHtml(k)}: ${escapeHtml(v)}</span>`).join("")
                           : `<span class="cap-tag">&mdash;</span>`;
   };
   $("#capHandles").innerHTML = tagList(capHandleCounts);
@@ -3404,9 +3874,15 @@ function capRenderStats() {
 // 16-29 (hex-char offsets 32..60) — a viewing aid only, per the explicit constraint that this
 // must not be labeled as decoded motion.
 function capHexMarkup(hex, kind) {
-  if (kind !== "input" || hex.length < 60) return hex;
+  hex = String(hex ?? "");
+  if (kind !== "input" || hex.length < 60) return escapeHtml(hex);
   const pre = hex.slice(0, 32), hi = hex.slice(32, 60), post = hex.slice(60);
-  return `${pre}<span class="cap-hex-hi" title="bytes 16-29 — view aid only, not decoded">${hi}</span>${post}`;
+  return `${escapeHtml(pre)}<span class="cap-hex-hi" title="bytes 16-29 — view aid only, not decoded">${escapeHtml(hi)}</span>${escapeHtml(post)}`;
+}
+// A record kind becomes part of a class name, so it is held to the characters a
+// real adapter emits rather than escaped.
+function capKindClass(kind) {
+  return /^[a-z_]{1,24}$/.test(String(kind)) ? String(kind) : "unknown";
 }
 function capMatchesFilter(e) {
   if (capFilterKind !== "all" && e.kind !== capFilterKind) return false;
@@ -3422,10 +3898,10 @@ function capRenderLive() {
   const box = $("#capLive");
   const rows = capLiveView.filter(capMatchesFilter);
   box.innerHTML = rows.map(e =>
-    `<div class="cap-row"><span class="meta">${e.us}us</span> ` +
-    `<span class="k-${e.kind}">${e.kind}</span> ` +
-    `<span class="meta">${e.handle} len=${e.len}${e.len !== e.orig_len ? "/" + e.orig_len : ""}</span><br>` +
-    (e.kind === "marker" ? `<b>"${hexToText(e.bytes)}"</b>` : capHexMarkup(e.bytes, e.kind)) + `</div>`
+    `<div class="cap-row"><span class="meta">${escapeHtml(e.us)}us</span> ` +
+    `<span class="k-${capKindClass(e.kind)}">${escapeHtml(e.kind)}</span> ` +
+    `<span class="meta">${escapeHtml(e.handle)} len=${escapeHtml(e.len)}${e.len !== e.orig_len ? "/" + escapeHtml(e.orig_len) : ""}</span><br>` +
+    (e.kind === "marker" ? `<b>"${escapeHtml(hexToText(String(e.bytes ?? "")))}"</b>` : capHexMarkup(e.bytes, e.kind)) + `</div>`
   ).join("") || `<div class="muted" style="padding:8px">no records match the current filter</div>`;
 }
 
@@ -3558,6 +4034,10 @@ function finishTransportDisconnect(message) {
   amiiboStatus = null;
   port = null; reader = null; writer = null;
   bleRx = null; bleTx = null; bleDevice = null;
+  bleClIn = null; bleClOut = null;
+  linkQuiet();
+  pairing.running = false;
+  playSourcesReply = null;
   readBuf = "";
   while (pending.length) {
     const p = pending.shift();
@@ -3589,6 +4069,7 @@ async function pollLoop() {
     // Settings and Amiibo management are intentionally low-rate. Config BLE
     // must never become a competing real-time stream.
     if (tick % 5 === 0) await refreshAmiiboStatus();
+    await shellPoll(tick);
     // Expensive research diagnostics remain available, but production users
     // no longer see or continuously poll them.
     if (transportKind === "serial" && $("#devTools").open) {
@@ -3638,90 +4119,1297 @@ async function applyIdentityChanges() {
     : "!! USB identity refresh was not accepted");
 }
 
-// In-band management gate (mgmt on/off/status). Works over whichever transport
-// is connected; enabling it lets the adapter accept a BLE management link in a
-// normal controller personality (docs/bluetooth/in-band-management-plan.md).
-async function mgmtRefresh(quiet) {
-  const el = $("#mgmtState");
-  const r = await sendCmd("mgmt status", quiet);
-  if (r && typeof r.enabled === "boolean") {
-    el.textContent = r.enabled ? "enabled" : "disabled";
-    el.className = "pill " + (r.enabled ? "ok" : "bad");
-  } else {
-    el.textContent = "unknown";
-    el.className = "pill bad";
+// ===========================================================================
+// Companion-parity shell: pages, Play (Controller Link), Keyboard & Mouse,
+// Adapter, Settings. Layout follows docs/architecture/companion-shell-layout.md.
+//
+// Everything here builds DOM with createElement/textContent. Text from the
+// adapter never reaches innerHTML (tests/tools/test_portal_untrusted_text.mjs).
+// ===========================================================================
+
+function el(tag, props, children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props || {})) {
+    if (value === undefined || value === null) continue;
+    if (key === "class") node.className = value;
+    else if (key === "text") node.textContent = String(value);
+    else if (key === "dataset") Object.assign(node.dataset, value);
+    else if (key === "style") for (const [k, v] of Object.entries(value)) node.style.setProperty(k, String(v));
+    else if (key.startsWith("on")) node[key] = value;
+    else if (value === true) node.setAttribute(key, "");
+    else if (value !== false) node.setAttribute(key, String(value));
+  }
+  for (const child of children || []) if (child) node.append(child);
+  return node;
+}
+function setNotice(id, message, good) {
+  const node = $(id);
+  node.textContent = message || "";
+  node.classList.toggle("hidden", !message);
+  node.classList.toggle("good", !!good);
+}
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const storeGet = (key, fallback) => {
+  try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
+};
+const storeSet = (key, value) => { try { localStorage.setItem(key, value); } catch { /* private mode */ } };
+
+// ---- controller-link-codec ----
+// The wire half of Controller Link, kept free of the DOM so
+// tests/tools/test_portal_controller_link.mjs can run it against
+// contracts/bridge_report_goldens.csv -- the same goldens the Kotlin and C#
+// encoders are pinned to. Layout: docs/bridge/PROTOCOL.md and
+// firmware/src/management/ns2_companion_link.h.
+const CL_BRIDGE_CONTRACT = 4;      // contracts/android_controller_hid.h
+const CL_VERSION = 1;              // NS2_COMPANION_LINK_VERSION
+const CL_OP_STATE = 0x01;
+const CL_OP_OUTPUT = 0x81;
+const CL_PAYLOAD_BYTES = 26;
+const CL_FRAME_BYTES = 30;
+const CL_ANALOG_EPSILON = 2;
+const CL_BUTTON = {
+  A: 0, B: 1, X: 2, Y: 3, L1: 4, R1: 5, L2: 6, R2: 7, Select: 8, Start: 9,
+  LeftStick: 10, RightStick: 11, Home: 12, Capture: 13, C: 14, GL: 15, GR: 16,
+};
+const clClamp8 = value => Math.max(0, Math.min(255, Math.trunc(value)));
+// 0 = north, clockwise; 8 = released. Opposite directions cancel.
+function clHat(up, right, down, left) {
+  const v = (down ? 1 : 0) - (up ? 1 : 0);
+  const h = (right ? 1 : 0) - (left ? 1 : 0);
+  if (h === 0 && v === -1) return 0;
+  if (h === 1 && v === -1) return 1;
+  if (h === 1 && v === 0) return 2;
+  if (h === 1 && v === 1) return 3;
+  if (h === 0 && v === 1) return 4;
+  if (h === -1 && v === 1) return 5;
+  if (h === -1 && v === 0) return 6;
+  if (h === -1 && v === -1) return 7;
+  return 8;
+}
+function clNeutralState() {
+  return { lx: 128, ly: 128, rx: 128, ry: 128, lt: 0, rt: 0, buttons: 0,
+           up: false, right: false, down: false, left: false };
+}
+// Normalized state -> the 26-byte canonical payload (report id excluded).
+// Motion and battery are never valid from a browser, so those bytes stay zero.
+function clEncodeReport(state) {
+  const out = new Uint8Array(CL_PAYLOAD_BYTES);
+  out[0] = clClamp8(state.lx); out[1] = clClamp8(state.ly);
+  out[2] = clClamp8(state.rx); out[3] = clClamp8(state.ry);
+  out[4] = clClamp8(state.lt); out[5] = clClamp8(state.rt);
+  const bits = state.buttons >>> 0;
+  out[6] = bits & 0xFF;
+  out[7] = (bits >>> 8) & 0xFF;
+  out[8] = (bits >>> 16) & 0x01;   // GR; the other seven bits are padding
+  out[9] = clHat(state.up, state.right, state.down, state.left);
+  return out;
+}
+function clFrame(payload, sequence) {
+  const frame = new Uint8Array(CL_FRAME_BYTES);
+  frame[0] = CL_VERSION;
+  frame[1] = CL_OP_STATE;
+  frame[2] = sequence & 0xFF;
+  frame[3] = (sequence >>> 8) & 0xFF;
+  frame.set(payload, 4);
+  return frame;
+}
+// [version][opcode][report id][rumble L][rumble R][player][flags]; null when
+// the bytes cannot be a feedback frame, so a stray notification is ignored.
+function clDecodeOutput(bytes) {
+  if (!bytes || bytes.length < 3) return null;
+  if (bytes[0] !== CL_VERSION || bytes[1] !== CL_OP_OUTPUT) return null;
+  const body = bytes.subarray(3);
+  if (body.length > 4) return null;
+  return {
+    reportId: bytes[2],
+    left: body[0] || 0,
+    right: body[1] || 0,
+    player: body[2] || 0,
+    motionWanted: !!((body[3] || 0) & 1),
+  };
+}
+// Gamepad API axes are -1..1 with down and right positive, which is the wire's
+// orientation already. Same scaling as AxisRange in the C# bridge core.
+const clStick = value => clClamp8(Math.round(128 + Math.max(-1, Math.min(1, value || 0)) * 127));
+const clTrigger = value => clClamp8(Math.round(Math.max(0, Math.min(1, value || 0)) * 255));
+// The browser's "standard" mapping is positional: buttons[0] is the BOTTOM face
+// button whatever is printed on it. The console's bottom button is B, so the
+// default keeps position. "label" sends Xbox letters as Nintendo letters.
+function clStateFromGamepad(pad, faceLayout, virtualBits) {
+  const pressed = index => !!(pad.buttons[index] && pad.buttons[index].pressed);
+  const value = index => (pad.buttons[index] ? pad.buttons[index].value : 0);
+  const byPosition = faceLayout !== "label";
+  let bits = virtualBits >>> 0;
+  const set = (name, on) => { if (on) bits |= (1 << CL_BUTTON[name]); };
+  set(byPosition ? "B" : "A", pressed(0));
+  set(byPosition ? "A" : "B", pressed(1));
+  set(byPosition ? "Y" : "X", pressed(2));
+  set(byPosition ? "X" : "Y", pressed(3));
+  set("L1", pressed(4)); set("R1", pressed(5));
+  set("Select", pressed(8)); set("Start", pressed(9));
+  set("LeftStick", pressed(10)); set("RightStick", pressed(11));
+  set("Home", pressed(16)); set("Capture", pressed(17));
+  return {
+    lx: clStick(pad.axes[0]), ly: clStick(pad.axes[1]),
+    rx: clStick(pad.axes[2]), ry: clStick(pad.axes[3]),
+    lt: clTrigger(value(6)), rt: clTrigger(value(7)),
+    buttons: bits >>> 0,
+    up: pressed(12), down: pressed(13), left: pressed(14), right: pressed(15),
+  };
+}
+function clDigitalChanged(a, b) {
+  return a.buttons !== b.buttons || a.up !== b.up || a.right !== b.right ||
+         a.down !== b.down || a.left !== b.left;
+}
+function clAnalogChanged(a, b) {
+  for (const key of ["lx", "ly", "rx", "ry", "lt", "rt"])
+    if (Math.abs(a[key] - b[key]) >= CL_ANALOG_EPSILON) return true;
+  return false;
+}
+// What to do with a freshly sampled state, given the last one SENT.
+//   a discrete change goes out after 2 ms (a press must never wait behind a stick)
+//   an analog-only change goes out at most every 8 ms
+//   unchanged state is resent every 100 ms, inside the adapter's 300 ms watchdog
+function clShouldSend(state, lastSent, sinceMs) {
+  if (!lastSent) return true;
+  if (clDigitalChanged(state, lastSent)) return sinceMs >= 2;
+  if (clAnalogChanged(state, lastSent)) return sinceMs >= 8;
+  return sinceMs >= 100;
+}
+// ---- end controller-link-codec ----
+
+// ---- management-pages ----
+// Cursor-paged reads (`peers list`, `kbm map`, `kbm profiles`). Every page
+// carries `next`: an integer cursor, or null on the last page. A changed total,
+// a cursor that does not advance, or a short final count is a FAILURE, never a
+// shorter list (docs/management/PROTOCOL.md).
+//
+// `firstCursor` is what the first request carries. `peers list` starts with no
+// cursor and the `kbm` walks start at an explicit 0, which is what the
+// companions send and what contracts/management/protocol-v1.json records.
+async function readPaged(send, command, listField, firstCursor = null) {
+  const rows = [];
+  let cursor = firstCursor;
+  let total = null;
+  let first = null;
+  for (let page = 0; page < 40; page++) {
+    const reply = await send(cursor === null ? command : `${command} ${cursor}`);
+    if (!reply || reply.error || !Array.isArray(reply[listField]))
+      return { ok: false, rows, error: (reply && reply.error) || "no reply" };
+    if (first === null) first = reply;
+    if (total === null) total = reply.total;
+    else if (reply.total !== total) return { ok: false, rows, error: "total changed between pages" };
+    rows.push(...reply[listField]);
+    if (reply.next === null || reply.next === undefined) {
+      if (typeof total === "number" && rows.length !== total)
+        return { ok: false, rows, error: "page count does not match total" };
+      return { ok: true, rows, first };
+    }
+    if (!Number.isInteger(reply.next) || (cursor !== null && reply.next <= cursor) ||
+        reply[listField].length === 0)
+      return { ok: false, rows, error: "cursor did not advance" };
+    cursor = reply.next;
+  }
+  return { ok: false, rows, error: "too many pages" };
+}
+// A peer's label: what the adapter concluded, then what the device claims, then
+// its USB identity, then a short address suffix. Never the bare address alone.
+function peerLabel(peer) {
+  if (peer.class) return String(peer.class);
+  if (peer.name) return String(peer.name);
+  if (peer.vid && peer.pid)
+    return `Device ${Number(peer.vid).toString(16).padStart(4, "0").toUpperCase()}:` +
+           `${Number(peer.pid).toString(16).padStart(4, "0").toUpperCase()}`;
+  return `Device …${String(peer.addr || "").slice(-4)}`;
+}
+const PEER_ROLE_LABELS = {
+  management: "This computer or a companion app",
+  controller_link: "Companion Controller Link",
+  controller: "Controller",
+};
+const peerRoleLabel = role => PEER_ROLE_LABELS[role] || "Not identified";
+// ---- end management-pages ----
+
+// ---------------------------------------------------------------------------
+// Shell
+// ---------------------------------------------------------------------------
+const PAGE_NAMES = ["play", "kbm", "amiibo", "custom", "adapter", "settings"];
+let currentPage = "play";
+let adapterInfo = null;
+let adapterPersonality = null;
+
+function showPage(name) {
+  if (!PAGE_NAMES.includes(name)) name = "play";
+  currentPage = name;
+  for (const page of PAGE_NAMES) {
+    $("#page-" + page).classList.toggle("current", page === name);
+    const item = document.querySelector(`.nav-item[data-page="${page}"]`);
+    if (page === name) item.setAttribute("aria-current", "page");
+    else item.removeAttribute("aria-current");
+  }
+  storeSet("PicoSwitch2PortalPage", name);
+  pageShown(name);
+}
+function pageShown(name) {
+  if (name === "amiibo") {
+    const entries = carouselAmiiboEntries();
+    if (entries.length) updateAmiiboCarouselSelection(entries, false);
+  }
+  if (!transportKind) return;
+  if (name === "play") playRefresh(true);
+  else if (name === "kbm") kbmLoadAll();
+  else if (name === "adapter") adapterRefresh();
+}
+function initTabs() {
+  for (const list of document.querySelectorAll(".tabs[data-tabs]")) {
+    const group = list.dataset.tabs;
+    for (const tab of list.querySelectorAll("button[data-tab]")) {
+      tab.onclick = () => {
+        for (const other of list.querySelectorAll("button[data-tab]"))
+          other.setAttribute("aria-selected", other === tab ? "true" : "false");
+        for (const panel of document.querySelectorAll(`[data-panel^="${group}:"]`))
+          panel.classList.toggle("hidden", panel.dataset.panel !== `${group}:${tab.dataset.tab}`);
+        if (group === "adapter" && tab.dataset.tab === "controllers" && transportKind) peersRefresh();
+      };
+    }
   }
 }
-$("#mgmtOnBtn").onclick = async () => { await sendCmd("mgmt on"); await mgmtRefresh(); };
-$("#mgmtOffBtn").onclick = async () => { await sendCmd("mgmt off"); await mgmtRefresh(); };
-$("#mgmtStatusBtn").onclick = () => mgmtRefresh();
-
-// Bluetooth Keyboard / Keyboard + Mouse input source. Deliberately minimal:
-// mode selection plus role/status visibility, which is what makes the feature
-// usable and testable. The graphical remapping editor belongs to UX_PASS and
-// builds on the same `kbm map` / `kbm bind` commands this panel already reaches.
-const KBM_MODE_LABELS = {
-  auto: "Automatic",
-  controller: "Controller",
-  keyboard: "Keyboard",
-  kbmouse: "Keyboard + Mouse",
-};
-
-function kbmRenderRole(el, label, connected, relevant) {
-  el.textContent = `${label}: ${relevant ? (connected ? "connected" : "disconnected") : "not used"}`;
-  el.className = "pill " + (!relevant ? "" : connected ? "ok" : "bad");
+function shellRenderConnection() {
+  const on = !!transportKind;
+  const dot = $("#navDot");
+  dot.classList.toggle("ok", on);
+  const text = on ? `Connected over ${transportKind === "bluetooth" ? "Bluetooth" : "USB"}` : "Not connected";
+  dot.title = text;
+  dot.setAttribute("aria-label", text);
+  $("#disconnectBtn").classList.toggle("hidden", !on);
+  $("#connectUsbBtn").classList.toggle("hidden", on);
+  $("#connectBleBtn").classList.toggle("hidden", on);
+  if (!on) {
+    adapterInfo = null;
+    adapterPersonality = null;
+    $("#adapterLabel").textContent = "";
+    $("#adName").textContent = "No adapter connected";
+    $("#adVersion").textContent = "Connect over USB (configuration mode) or Bluetooth.";
+  }
+  playRender();
+}
+async function disconnectTransport() {
+  try {
+    if (link.active) await linkStop();
+    if (transportKind === "bluetooth" && bleDevice && bleDevice.gatt.connected) {
+      bleDevice.gatt.disconnect();
+    } else if (transportKind === "serial") {
+      // Cancelling the read ends readLoop, whose own cleanup reports the
+      // disconnect and clears the globals; the port is closed from the copies.
+      const closingPort = port, closingReader = reader, closingWriter = writer;
+      try { await closingReader.cancel(); } catch { /* already closed */ }
+      try { closingReader.releaseLock(); } catch { /* released */ }
+      try { closingWriter.releaseLock(); } catch { /* released */ }
+      try { await closingPort.close(); } catch { /* already closed */ }
+    }
+  } catch (error) {
+    log("! disconnect failed: " + error.message);
+  }
+}
+// Called once per connection, after `info`.
+async function shellAdapterConnected(info) {
+  adapterInfo = info && info.id === "picoswitch" ? info : null;
+  shellRenderConnection();
+  await adapterRefresh();
+  await kbmRefresh(true);
+  await playRefresh(true);
+  pageShown(currentPage);
+}
+// Low-rate polling, called from pollLoop. `tick` advances every 250 ms on
+// Bluetooth and every 100 ms on USB; nothing here may become a stream.
+async function shellPoll(tick) {
+  const slow = transportKind === "bluetooth" ? 8 : 20;      // about 2 s
+  if (currentPage === "play" && tick % slow === 1) await playRefresh(false);
+  if (pairing.running && tick % (slow / 2) === 2) await pairingPoll();
+  if (tick % 5 === 0) playRenderAmiibo();
 }
 
-async function kbmRefresh(quiet) {
-  const r = await sendCmd("kbm status", quiet);
-  const detail = $("#kbmDetail");
-  if (!r || !r.mode) {
-    $("#kbmProfileState").textContent = "profile —";
-    kbmRenderRole($("#kbmKeyboardState"), "Keyboard", false, false);
-    kbmRenderRole($("#kbmMouseState"), "Mouse", false, false);
-    detail.textContent = "—";
+// ---------------------------------------------------------------------------
+// Controller Link data plane (Bluetooth only)
+// ---------------------------------------------------------------------------
+const CONFIG_BLE_CL_IN_UUID = "2f9e54c1-0b7a-4d62-9c18-3e74a52166d0";
+const CONFIG_BLE_CL_OUT_UUID = "6b33e18a-c45d-470e-b291-7f0c88ae3914";
+let bleClIn = null, bleClOut = null;
+const link = {
+  active: false, starting: false, paused: false, timer: 0, sequence: 0,
+  lastSent: null, lastSendMs: 0, virtual: 0, player: 0,
+  rumbleLeft: 0, rumbleRight: 0, rumbleAt: 0,
+  pendingFrame: null, inFlight: false,
+  published: 0, coalesced: 0, written: 0, failed: 0, outputs: 0,
+  writeMsTotal: 0, writeMsMax: 0, startedMs: 0,
+};
+async function clinkAttach(service) {
+  bleClIn = null; bleClOut = null;
+  try {
+    bleClIn = await service.getCharacteristic(CONFIG_BLE_CL_IN_UUID);
+    bleClOut = await service.getCharacteristic(CONFIG_BLE_CL_OUT_UUID);
+    await bleClOut.startNotifications();
+    bleClOut.addEventListener("characteristicvaluechanged", event => {
+      const view = event.target.value;
+      linkOutput(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+    });
+  } catch (error) {
+    // Older firmware simply does not declare these characteristics.
+    bleClIn = null; bleClOut = null;
+    log("-- Controller Link data plane not available: " + error.message + " --");
+  }
+}
+// Latest-state mailbox with ONE write in flight. A frame that arrives while a
+// write is outstanding replaces the pending one: an older controller state has
+// no value once a newer one exists, and Web Bluetooth rejects overlapping GATT
+// operations outright. Shares writeChain with management so the two never
+// overlap either.
+function clPublish(frame) {
+  if (link.pendingFrame) link.coalesced++;
+  link.pendingFrame = frame;
+  link.published++;
+  clPump();
+}
+function clPump() {
+  if (link.inFlight || !link.pendingFrame || !bleClIn) return;
+  const frame = link.pendingFrame;
+  link.pendingFrame = null;
+  link.inFlight = true;
+  const started = performance.now();
+  writeChain = writeChain.catch(() => {}).then(() => bleClIn.writeValueWithoutResponse(frame))
+    .then(() => {
+      const took = performance.now() - started;
+      link.written++;
+      link.writeMsTotal += took;
+      if (took > link.writeMsMax) link.writeMsMax = took;
+    }, () => { link.failed++; })
+    .then(() => { link.inFlight = false; clPump(); });
+}
+function linkSend(state, now) {
+  link.sequence = (link.sequence + 1) & 0xFFFF;
+  clPublish(clFrame(clEncodeReport(state), link.sequence));
+  link.lastSent = state;
+  link.lastSendMs = now;
+}
+function playCurrentPad() {
+  const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
+  if (!pads.length) return null;
+  const wanted = Number($("#playPadSelect").value);
+  return pads.find(pad => pad.index === wanted) || pads[0];
+}
+function linkTick() {
+  if (!link.active) return;
+  const now = performance.now();
+  const pad = link.paused ? null : playCurrentPad();
+  // A page that is not in front must not hold anything on the console.
+  const state = pad && pad.mapping === "standard"
+    ? clStateFromGamepad(pad, $("#setFaceLayout").value, link.virtual)
+    : Object.assign(clNeutralState(), { buttons: link.paused ? 0 : link.virtual });
+  if (clShouldSend(state, link.lastSent, now - link.lastSendMs)) linkSend(state, now);
+  linkRumble(pad, now);
+}
+function linkOutput(bytes) {
+  const output = clDecodeOutput(bytes);
+  if (!output) return;
+  link.outputs++;
+  link.rumbleLeft = output.left;
+  link.rumbleRight = output.right;
+  link.rumbleAt = 0;                      // apply on the next tick
+  if (output.player !== link.player) {
+    link.player = output.player;
+    playRender();
+  }
+}
+// The console holds an amplitude until it changes it; a browser effect has a
+// duration. So a non-zero amplitude is re-triggered while it stands.
+function linkRumble(pad, now) {
+  if (!pad || !pad.vibrationActuator || !$("#setRumble").checked) return;
+  const on = (link.rumbleLeft | link.rumbleRight) !== 0 && !link.paused;
+  if (!on) {
+    if (link.rumbleAt !== -1) {
+      link.rumbleAt = -1;
+      try { pad.vibrationActuator.reset?.(); } catch { /* not supported */ }
+    }
     return;
   }
-  // The selector shows the OVERRIDE; the detail line shows what is in effect.
-  $("#kbmMode").value = r.override || r.mode;
-  const usesKeyboard = r.mode !== "controller";
-  const usesMouse = r.mode === "kbmouse";
-  kbmRenderRole($("#kbmKeyboardState"), "Keyboard", r.keyboard, usesKeyboard);
-  kbmRenderRole($("#kbmMouseState"), "Mouse", r.mouse, usesMouse);
-  $("#kbmProfileState").textContent = usesKeyboard
-    ? `profile ${r.profile}` : "profile —";
-  const parts = [(r.override && r.override !== "auto")
-    ? `mode ${KBM_MODE_LABELS[r.mode] || r.mode} (forced)`
-    : `mode ${KBM_MODE_LABELS[r.mode] || r.mode} (detected)`];
-  if (usesMouse) {
-    parts.push(r.nativeMouse
-      ? "mouse movement → Joy-Con 2 pointer"
-      : "mouse movement → right stick");
+  if (link.rumbleAt > 0 && now - link.rumbleAt < 120) return;
+  link.rumbleAt = now;
+  try {
+    pad.vibrationActuator.playEffect("dual-rumble", {
+      duration: 250,
+      strongMagnitude: link.rumbleLeft / 255,
+      weakMagnitude: link.rumbleRight / 255,
+    }).catch(() => {});
+  } catch { /* actuator type not supported */ }
+}
+function linkBlocker() {
+  if (!transportKind) return "Connect the adapter over Bluetooth to play from this computer.";
+  if (transportKind !== "bluetooth")
+    return "Controller Link runs over Bluetooth. USB configuration mode is for settings only.";
+  if (!bleClIn) return "This adapter's firmware has no Controller Link. Update the adapter.";
+  if (adapterInfo && adapterInfo.bridge_contract !== undefined &&
+      adapterInfo.bridge_contract !== CL_BRIDGE_CONTRACT)
+    return `The adapter speaks bridge contract ${adapterInfo.bridge_contract} and this page speaks ` +
+           `${CL_BRIDGE_CONTRACT}. Use the page and firmware from the same release.`;
+  if (!("getGamepads" in navigator)) return "This browser has no Gamepad support.";
+  const pad = playCurrentPad();
+  if (!pad) return "Press a button on the controller connected to this computer.";
+  if (pad.mapping !== "standard")
+    return "The browser does not recognise this controller's layout, so its buttons cannot be trusted.";
+  return "";
+}
+async function linkStart() {
+  if (link.active || link.starting) return;
+  if (linkBlocker()) { playRender(); return; }
+  setNotice("#playNotice", "");
+  link.starting = true;
+  playRender();
+  const reply = await sendCmd("clink start");
+  const status = reply && reply.clink;
+  link.starting = false;
+  if (!status || !status.active) {
+    setNotice("#playNotice", status && status.mtu_ok === false
+      ? `The Bluetooth link carries ${status.att_mtu}-byte packets and Controller Link needs ` +
+        `${status.min_att_mtu}. Reconnect, or use a different Bluetooth adapter on this computer.`
+      : "The adapter refused Controller Link. Its Bluetooth link must be paired and encrypted.");
+    playRender();
+    return;
   }
-  if (usesKeyboard) {
-    parts.push(`keyboard reports ${r.keyboardReports}`);
-    if (usesMouse) parts.push(`mouse reports ${r.mouseReports}`);
-    if (r.rejectedDuplicate) parts.push(`rejected duplicates ${r.rejectedDuplicate}`);
-    if (r.rollover) parts.push(`rollover reports ${r.rollover}`);
+  Object.assign(link, {
+    active: true, paused: document.hidden || !document.hasFocus(), sequence: 0, lastSent: null,
+    lastSendMs: 0, player: 0, rumbleLeft: 0, rumbleRight: 0, rumbleAt: 0, pendingFrame: null,
+    published: 0, coalesced: 0, written: 0, failed: 0, outputs: 0, writeMsTotal: 0,
+    writeMsMax: 0, startedMs: performance.now(),
+  });
+  link.timer = setInterval(linkTick, 4);
+  playRender();
+  playRefresh(true);
+}
+async function linkStop() {
+  if (!link.active) return;
+  clearInterval(link.timer);
+  link.active = false;
+  link.virtual = 0;
+  // Neutral BEFORE the session ends, while the link can still carry it.
+  linkSend(clNeutralState(), performance.now());
+  await sendCmd("clink stop");
+  linkQuiet();
+  playRender();
+  playRefresh(true);
+}
+function linkQuiet() {
+  clearInterval(link.timer);
+  link.active = false; link.starting = false; link.virtual = 0; link.player = 0;
+  link.rumbleLeft = 0; link.rumbleRight = 0; link.pendingFrame = null; link.inFlight = false;
+  const pad = playCurrentPad();
+  try { pad?.vibrationActuator?.reset?.(); } catch { /* not supported */ }
+  for (const button of document.querySelectorAll(".console-btn")) button.classList.remove("held");
+}
+function linkSetPaused(paused) {
+  if (link.paused === paused) return;
+  link.paused = paused;
+  if (paused) {
+    link.virtual = 0;
+    // At once, not on the next tick: a hidden tab's timers run about once a
+    // second, and the console must not hold a button for that long.
+    if (link.active) linkSend(clNeutralState(), performance.now());
   }
-  detail.textContent = parts.join(" · ");
+  playRender();
 }
 
-$("#kbmMode").onchange = async () => {
-  const mode = $("#kbmMode").value;
-  const r = await sendCmd("kbm mode " + mode);
-  if (!r || !r.ok) log("! input mode change was not accepted");
-  else log(`== input mode: ${KBM_MODE_LABELS[mode] || mode} (save to keep it across reboot) ==`);
-  await kbmRefresh();
+// ---------------------------------------------------------------------------
+// Play
+// ---------------------------------------------------------------------------
+const PERSONALITY_NAMES = {
+  pro2: "Pro Controller 2", gc: "GameCube Controller", jcl: "Joy-Con 2 (L)",
+  jcr: "Joy-Con 2 (R)", config: "Configuration mode",
 };
-$("#kbmRefreshBtn").onclick = () => kbmRefresh();
-$("#kbmResetBtn").onclick = async () => {
-  const r = await sendCmd("kbm reset all");
-  log(r && r.ok
-    ? "== keyboard and keyboard+mouse mappings restored to defaults (save to keep) =="
-    : "! mapping reset was not accepted");
-  await kbmRefresh();
+const personalityName = id => PERSONALITY_NAMES[id] || (id ? String(id) : "—");
+let playSourcesReply = null;
+let playRefreshing = false;
+
+function playRenderPads() {
+  const select = $("#playPadSelect");
+  const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
+  const keep = select.value;
+  select.replaceChildren(...pads.map(pad =>
+    el("option", { value: pad.index, text: pad.id.replace(/\s*\(.*\)\s*$/, "") || `Controller ${pad.index + 1}` })));
+  if ([...select.options].some(option => option.value === keep)) select.value = keep;
+  select.classList.toggle("hidden", pads.length < 2);
+  const pad = playCurrentPad();
+  $("#playInput").textContent = pad
+    ? (pad.id.replace(/\s*\(.*\)\s*$/, "") || "Controller")
+    : "No controller";
+}
+function playRender() {
+  playRenderPads();
+  const on = !!transportKind;
+  const consoleInfo = playSourcesReply && playSourcesReply.console;
+  const player = link.player || (consoleInfo && consoleInfo.player) || 0;
+  let state = "Not connected";
+  if (on) {
+    if (link.starting) state = "Connecting…";
+    else if (link.active) state = link.paused ? "Paused · this page is not in front" : "On the console";
+    else state = linkBlocker() ? "Not ready" : "Ready to play";
+  }
+  $("#playState").textContent = state;
+  const playerPill = $("#playPlayer");
+  playerPill.textContent = player ? `Player ${player}` : "";
+  playerPill.classList.toggle("hidden", !player);
+  $("#playOutput").textContent = on ? personalityName(adapterPersonality) : "—";
+  const start = $("#playStartBtn");
+  start.disabled = !on || link.starting;
+  start.textContent = link.active ? "Stop" : "Start playing";
+  start.classList.toggle("stop", link.active);
+  start.classList.toggle("primary", !link.active);
+  $("#playWakeBtn").disabled = !on;
+  for (const button of document.querySelectorAll(".console-btn")) button.disabled = !link.active;
+  setNotice("#playBlocker", link.active || link.starting ? "" : linkBlocker());
+  const stats = $("#playLinkStats");
+  if (link.active) {
+    const seconds = Math.max(1, (performance.now() - link.startedMs) / 1000);
+    const average = link.written ? link.writeMsTotal / link.written : 0;
+    stats.textContent = `${Math.round(link.written / seconds)} frames/s · write ${average.toFixed(1)} ms ` +
+      `(max ${link.writeMsMax.toFixed(0)}) · ${link.coalesced} merged · ${link.failed} failed`;
+  } else stats.textContent = "";
+}
+function playRenderSources() {
+  const box = $("#playSources");
+  const reply = playSourcesReply;
+  if (!reply || !Array.isArray(reply.sources) || !reply.sources.length) {
+    box.replaceChildren(el("div", { class: "muted", text: "No controller is connected to the adapter." }));
+    return;
+  }
+  box.replaceChildren(...reply.sources.map(source => {
+    const active = source.id === reply.active;
+    return el("div", { class: "row" + (active ? " current" : "") }, [
+      el("div", { class: "row-main" }, [
+        el("b", { text: source.name || `Source ${source.id}` }),
+        el("span", { text: active ? (reply.explicit ? "Driving the console (chosen)" : "Driving the console")
+                                  : "Connected" }),
+      ]),
+      active ? null : el("button", { text: "Use", onclick: () => playSelectSource(source.id) }),
+    ]);
+  }));
+  if (reply.more)
+    box.append(el("div", { class: "muted", text: "More sources exist than fit in one reply." }));
+}
+async function playSelectSource(id) {
+  const reply = await sendCmd(`input active ${id}`);
+  setNotice("#playNotice", !reply || reply.error ? "The adapter did not accept that choice." : "");
+  await playRefresh(true);
+}
+async function playRefresh(full) {
+  if (!transportKind || playRefreshing) return;
+  playRefreshing = true;
+  try {
+    const sources = await sendCmd("input sources", true);
+    if (sources && Array.isArray(sources.sources)) playSourcesReply = sources;
+    if (full) {
+      const personality = await sendCmd("personality", true);
+      if (personality && personality.current) {
+        adapterPersonality = personality.current;
+        adapterRenderPersonality(personality);
+      }
+    }
+  } finally { playRefreshing = false; }
+  playRender();
+  playRenderSources();
+  playRenderAmiibo();
+}
+function playRenderAmiibo() {
+  const tile = $("#playAmiiboTile");
+  const on = !!transportKind;
+  const wanted = !!(on && playSourcesReply && playSourcesReply.console &&
+                    playSourcesReply.console.amiibo_wanted);
+  tile.classList.toggle("wanted", wanted);
+  $("#playAmiiboWanted").classList.toggle("hidden", !wanted);
+  const art = $("#playAmiiboArt");
+  const button = $("#playAmiiboBtn");
+  const loaded = on && amiiboAdapterHasTag();
+  if (!loaded) {
+    $("#playAmiiboName").textContent = on ? "No amiibo loaded" : "Amiibo library";
+    $("#playAmiiboDetail").textContent = on ? "" : `${amiiboLibrary.length} in this browser`;
+    art.replaceChildren(document.createTextNode("◎"));
+    button.textContent = "Library";
+    button.classList.toggle("primary", wanted);
+    return;
+  }
+  const entry = amiiboLibraryEntryForAdapter();
+  $("#playAmiiboName").textContent = entry ? amiiboDisplayName(entry) : "Amiibo on the adapter";
+  const presented = amiiboStatus.presented !== false;
+  $("#playAmiiboDetail").textContent = presented ? "On the reader" : "Ejected";
+  const meta = entry ? catalogMetadataForEntry(entry) : null;
+  const imageUrl = safeImageUrl(meta?.imgwebp || meta?.image);
+  if (imageUrl) {
+    if (art.dataset.url !== imageUrl) {
+      art.dataset.url = imageUrl;
+      art.replaceChildren(el("img", { src: imageUrl, alt: "" }));
+    }
+  } else {
+    delete art.dataset.url;
+    art.replaceChildren(document.createTextNode("◎"));
+  }
+  button.textContent = presented ? "Eject" : "Present";
+  button.classList.toggle("primary", wanted && !presented);
+}
+async function playAmiiboAction() {
+  if (!transportKind || !amiiboAdapterHasTag()) { showPage("amiibo"); return; }
+  const presented = amiiboStatus.presented !== false;
+  await sendCmd(presented ? "amiibo eject" : "amiibo present");
+  await refreshAmiiboStatus();
+  playRenderAmiibo();
+}
+async function wakeConsole(noticeId) {
+  const queued = await sendCmd("wake");
+  if (!queued || queued.error) {
+    setNotice(noticeId, queued && queued.error === "unknown command"
+      ? "This adapter build cannot wake the console."
+      : "The adapter did not accept the wake request.");
+    return;
+  }
+  const words = {
+    advertised: "Wake signal sent.", console_awake: "The console is already awake.",
+    no_identity: "The adapter has not been paired to a console yet, so it cannot wake one.",
+    radio_busy: "The adapter's radio is busy. Try again in a moment.",
+  };
+  for (let attempt = 0; attempt < 12; attempt++) {
+    await sleep(400);
+    const status = await sendCmd("wake status", true);
+    if (status && status.result && status.result !== "pending") {
+      setNotice(noticeId, words[status.result] || `Wake result: ${status.result}`,
+                status.result === "advertised" || status.result === "console_awake");
+      return;
+    }
+  }
+  setNotice(noticeId, "No answer yet. The console may still be waking.");
+}
+
+// ---------------------------------------------------------------------------
+// Adapter
+// ---------------------------------------------------------------------------
+function adapterRenderPersonality(reply) {
+  const select = $("#adPersonality");
+  const available = Array.isArray(reply.available) ? reply.available : [];
+  const options = available.map(id => el("option", { value: id, text: personalityName(id) }));
+  if (!available.includes(reply.current))
+    options.unshift(el("option", { value: reply.current, text: personalityName(reply.current) }));
+  select.replaceChildren(...options);
+  select.value = reply.current;
+  $("#adPersonalityApply").disabled = true;
+}
+async function adapterRefresh() {
+  if (!transportKind) return;
+  const transportName = transportKind === "bluetooth" ? "Bluetooth" : "USB";
+  if (adapterInfo) {
+    $("#adName").textContent = adapterInfo.product || "PicoSwitch2 adapter";
+    $("#adVersion").textContent =
+      `Firmware ${adapterInfo.version || "?"} · build ${adapterInfo.build || "?"} · ` +
+      `bridge contract ${adapterInfo.bridge_contract ?? "?"} · ${transportName}`;
+    $("#adapterLabel").textContent = `Firmware ${adapterInfo.version || "?"}`;
+  } else {
+    $("#adName").textContent = "Unrecognised device";
+    $("#adVersion").textContent = `It answered over ${transportName} but not as a PicoSwitch2 adapter.`;
+  }
+  const personality = await sendCmd("personality", true);
+  if (personality && personality.current) {
+    adapterPersonality = personality.current;
+    adapterRenderPersonality(personality);
+  }
+  const device = await sendCmd("device", true);
+  if (device && !device.error) {
+    const battery = Number(device.batteryValid)
+      ? ` · battery ${device.battery}%${Number(device.charging) ? " (charging)" : ""}` : "";
+    $("#adDevice").textContent = device.name ? `${device.name}${battery}` : "No controller is connected to the adapter.";
+  } else $("#adDevice").textContent = "—";
+  await mgmtRefresh(true);
+  await pairingPoll();
+  playRender();
+}
+async function adapterSwitchPersonality() {
+  const target = $("#adPersonality").value;
+  if (!target || target === adapterPersonality) return;
+  if (link.active) await linkStop();
+  const reply = await sendCmd(`personality ${target}`);
+  if (reply && reply.ok) {
+    setNotice("#adNotice", reply.unchanged
+      ? "That is already the emulated controller."
+      : `Switching to ${personalityName(target)}. The console will see a new controller in a moment` +
+        (transportKind === "serial" ? ", and this USB connection will close." : "."), true);
+    if (!reply.unchanged) adapterPersonality = target;
+  } else setNotice("#adNotice", (reply && reply.error) || "The adapter did not accept the switch.");
+  $("#adPersonalityApply").disabled = true;
+  playRender();
+}
+// Management over Bluetooth (mgmt on/off/status). RAM-only on the adapter: a
+// restart always returns to on.
+async function mgmtRefresh(quiet) {
+  const pill = $("#mgmtState");
+  const reply = await sendCmd("mgmt status", quiet);
+  const known = reply && typeof reply.enabled === "boolean";
+  pill.textContent = known ? (reply.enabled ? "on" : "off") : "unknown";
+  pill.className = "pill " + (known && reply.enabled ? "ok" : "bad");
+  $("#mgmtOnBtn").disabled = known && reply.enabled;
+  $("#mgmtOffBtn").disabled = known && !reply.enabled;
+}
+async function mgmtSet(on) {
+  if (!on && transportKind === "bluetooth" &&
+      !confirm("Turning Bluetooth management off ends this Bluetooth connection. " +
+               "It comes back when the adapter restarts. Turn it off?"))
+    return;
+  await sendCmd(on ? "mgmt on" : "mgmt off");
+  if (transportKind) await mgmtRefresh();
+}
+
+// Remote controller pairing: the SAME window the adapter's button opens. The
+// firmware owns the deadline; this page only reports it.
+const pairing = { running: false, op: null };
+const PAIRING_STATE_WORDS = {
+  idle: "Not pairing", discovering: "Looking for a controller…", connecting: "Connecting…",
+  paired: "Controller paired", timed_out: "No controller found", cancelled: "Pairing stopped",
+  blocked: "Pairing is not available right now",
 };
+const PAIRING_REASON_WORDS = {
+  no_controller: "Nothing answered. Check the controller is in pairing mode.",
+  management_disabled: "Bluetooth management is off on the adapter.",
+  busy: "A pairing window is already open.",
+  locked_out: "The adapter is not accepting pairing at the moment.",
+};
+function pairingRender(status) {
+  const state = status && status.state ? String(status.state) : "idle";
+  const live = state === "discovering" || state === "connecting";
+  pairing.running = live;
+  $("#pairState").textContent = PAIRING_STATE_WORDS[state] || "Pairing state unknown";
+  let detail = "Opens the same pairing window as a double-tap of the adapter's button. " +
+               "Put the controller in its pairing mode first.";
+  if (live) {
+    const seconds = Math.ceil((Number(status.remaining_ms) || 0) / 1000);
+    detail = `${seconds} s left` +
+      (Number(status.candidates) ? ` · ${status.candidates} controller${status.candidates === 1 ? "" : "s"} seen` : "");
+  } else if (status && status.reason && status.reason !== "none") {
+    detail = PAIRING_REASON_WORDS[status.reason] || detail;
+  }
+  $("#pairDetail").textContent = detail;
+  $("#pairStartBtn").disabled = live;
+  $("#pairCancelBtn").disabled = !live;
+}
+async function pairingPoll() {
+  const status = await sendCmd("pairing status", true);
+  if (!status || status.error) return;
+  // `op` is a generation. This page shows the adapter's pairing window whoever
+  // opened it (its own button included), so a newer operation is simply adopted.
+  pairing.op = status.op;
+  const wasRunning = pairing.running;
+  pairingRender(status);
+  if (wasRunning && !pairing.running) peersRefresh();
+}
+async function pairingStart() {
+  const status = await sendCmd("pairing start");
+  if (!status || status.error) {
+    setNotice("#adNotice", (status && status.error) || "The adapter did not answer.");
+    return;
+  }
+  pairing.op = status.op;
+  pairingRender(status);
+}
+async function pairingCancel() {
+  const status = await sendCmd("pairing cancel");
+  if (status && !status.error) pairingRender(status);
+}
+async function peersRefresh() {
+  const box = $("#peersList");
+  const result = await readPaged(command => sendCmd(command, true), "peers list", "peers");
+  if (!result.ok) {
+    box.replaceChildren();
+    $("#peersNote").textContent = result.error === "unknown command"
+      ? "This adapter build does not list paired devices."
+      : `The list could not be read completely (${result.error}).`;
+    return;
+  }
+  $("#peersNote").textContent = result.rows.length ? "" : "Nothing is paired with the adapter.";
+  box.replaceChildren(...result.rows.map(peer => {
+    const facts = [peerRoleLabel(peer.role), peer.conn ? "connected" : (peer.bonded ? "paired" : "seen")];
+    const management = peer.role === "management" || peer.role === "controller_link";
+    return el("div", { class: "row" + (peer.conn ? " current" : "") }, [
+      el("div", { class: "row-main" }, [
+        el("b", { text: peerLabel(peer) }),
+        el("span", { text: facts.join(" · ") }),
+      ]),
+      management ? null : el("button", { text: "Forget", onclick: () => peerForget(peer) }),
+    ]);
+  }));
+}
+async function peerForget(peer) {
+  if (!/^p_[0-9A-F]{8}$/.test(String(peer.id))) return;
+  if (!confirm(`Forget ${peerLabel(peer)}? It will have to be paired again.`)) return;
+  const reply = await sendCmd(`peers forget ${peer.id}`);
+  // `bonded`, re-read by the adapter after the delete, is the authority.
+  if (reply && reply.ok && reply.bonded === false) setNotice("#adNotice", `${peerLabel(peer)} forgotten.`, true);
+  else if (reply && reply.result === "management_peer")
+    setNotice("#adNotice", "That is the device managing the adapter and cannot be forgotten here.");
+  else setNotice("#adNotice", "The adapter could not confirm the pairing was removed.");
+  await peersRefresh();
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard & Mouse
+// ---------------------------------------------------------------------------
+// Generated from companions/windows/.../Presentation/KeyboardLayout.cs, the
+// layout every companion draws. [usage, label, column, row, width, height] in
+// key units. tests/tools/test_portal_keyboard_parity.mjs holds the two equal.
+const KBM_KEYBOARD = {
+  Main: { columns: 15, rows: 6.25, keys: [
+    [41,'Esc',0,0,1,1],[58,'F1',2,0,1,1],[59,'F2',3,0,1,1],[60,'F3',4,0,1,1],
+    [61,'F4',5,0,1,1],[62,'F5',6.5,0,1,1],[63,'F6',7.5,0,1,1],[64,'F7',8.5,0,1,1],
+    [65,'F8',9.5,0,1,1],[66,'F9',11,0,1,1],[67,'F10',12,0,1,1],[68,'F11',13,0,1,1],
+    [69,'F12',14,0,1,1],[53,'`',0,1.25,1,1],[30,'1',1,1.25,1,1],[31,'2',2,1.25,1,1],
+    [32,'3',3,1.25,1,1],[33,'4',4,1.25,1,1],[34,'5',5,1.25,1,1],[35,'6',6,1.25,1,1],
+    [36,'7',7,1.25,1,1],[37,'8',8,1.25,1,1],[38,'9',9,1.25,1,1],[39,'0',10,1.25,1,1],
+    [45,'-',11,1.25,1,1],[46,'=',12,1.25,1,1],[42,'Backspace',13,1.25,2,1],[43,'Tab',0,2.25,1.5,1],
+    [20,'Q',1.5,2.25,1,1],[26,'W',2.5,2.25,1,1],[8,'E',3.5,2.25,1,1],[21,'R',4.5,2.25,1,1],
+    [23,'T',5.5,2.25,1,1],[28,'Y',6.5,2.25,1,1],[24,'U',7.5,2.25,1,1],[12,'I',8.5,2.25,1,1],
+    [18,'O',9.5,2.25,1,1],[19,'P',10.5,2.25,1,1],[47,'[',11.5,2.25,1,1],[48,']',12.5,2.25,1,1],
+    [49,'\\',13.5,2.25,1.5,1],[57,'Caps',0,3.25,1.75,1],[4,'A',1.75,3.25,1,1],[22,'S',2.75,3.25,1,1],
+    [7,'D',3.75,3.25,1,1],[9,'F',4.75,3.25,1,1],[10,'G',5.75,3.25,1,1],[11,'H',6.75,3.25,1,1],
+    [13,'J',7.75,3.25,1,1],[14,'K',8.75,3.25,1,1],[15,'L',9.75,3.25,1,1],[51,';',10.75,3.25,1,1],
+    [52,'\'',11.75,3.25,1,1],[40,'Enter',12.75,3.25,2.25,1],[225,'Shift',0,4.25,2.25,1],[29,'Z',2.25,4.25,1,1],
+    [27,'X',3.25,4.25,1,1],[6,'C',4.25,4.25,1,1],[25,'V',5.25,4.25,1,1],[5,'B',6.25,4.25,1,1],
+    [17,'N',7.25,4.25,1,1],[16,'M',8.25,4.25,1,1],[54,',',9.25,4.25,1,1],[55,'.',10.25,4.25,1,1],
+    [56,'/',11.25,4.25,1,1],[229,'Shift',12.25,4.25,2.75,1],[224,'Ctrl',0,5.25,1.25,1],[227,'Win',1.25,5.25,1.25,1],
+    [226,'Alt',2.5,5.25,1.25,1],[44,'Space',3.75,5.25,6.25,1],[230,'Alt',10,5.25,1.25,1],[231,'Win',11.25,5.25,1.25,1],
+    [101,'Menu',12.5,5.25,1.25,1],[228,'Ctrl',13.75,5.25,1.25,1],
+  ] },
+  Navigation: { columns: 3, rows: 6.25, keys: [
+    [70,'PrtSc',0,0,1,1],[71,'ScrLk',1,0,1,1],[72,'Pause',2,0,1,1],[73,'Ins',0,1.25,1,1],
+    [74,'Home',1,1.25,1,1],[75,'PgUp',2,1.25,1,1],[76,'Del',0,2.25,1,1],[77,'End',1,2.25,1,1],
+    [78,'PgDn',2,2.25,1,1],[82,'Up',1,4.25,1,1],[80,'Left',0,5.25,1,1],[81,'Down',1,5.25,1,1],
+    [79,'Right',2,5.25,1,1],
+  ] },
+  Numpad: { columns: 4, rows: 6.25, keys: [
+    [83,'Num',0,1.25,1,1],[84,'/',1,1.25,1,1],[85,'*',2,1.25,1,1],[86,'-',3,1.25,1,1],
+    [95,'7',0,2.25,1,1],[96,'8',1,2.25,1,1],[97,'9',2,2.25,1,1],[87,'+',3,2.25,1,2],
+    [92,'4',0,3.25,1,1],[93,'5',1,3.25,1,1],[94,'6',2,3.25,1,1],[89,'1',0,4.25,1,1],
+    [90,'2',1,4.25,1,1],[91,'3',2,4.25,1,1],[88,'Enter',3,4.25,1,2],[98,'0',0,5.25,2,1],
+    [99,'.',2,5.25,1,1],
+  ] },
+  Other: { columns: 10.5, rows: 1, keys: [
+    [100,'ISO \\',0,0,1.5,1],[50,'ISO #',1.5,0,1.5,1],[135,'Ro',3,0,1.5,1],[137,'Yen',4.5,0,1.5,1],
+    [136,'Kana',6,0,1.5,1],[138,'Henkan',7.5,0,1.5,1],[139,'Muhenkan',9,0,1.5,1],
+  ] },
+  Mouse: { columns: 10, rows: 1, keys: [
+    [1,'Left',0,0,2,1],[2,'Right',2,0,2,1],[3,'Middle',4,0,2,1],[4,'Back',6,0,2,1],
+    [5,'Forward',8,0,2,1],
+  ] },
+};
+const KBM_DESTINATIONS = [
+  ["none", "Not mapped", "—"],
+  ["a", "A", "A"], ["b", "B", "B"], ["x", "X", "X"], ["y", "Y", "Y"],
+  ["l", "L", "L"], ["r", "R", "R"], ["zl", "ZL", "ZL"], ["zr", "ZR", "ZR"],
+  ["gl", "GL", "GL"], ["gr", "GR", "GR"],
+  ["l3", "Left stick click", "L3"], ["r3", "Right stick click", "R3"],
+  ["dup", "D-pad up", "D↑"], ["ddown", "D-pad down", "D↓"],
+  ["dleft", "D-pad left", "D←"], ["dright", "D-pad right", "D→"],
+  ["minus", "Minus", "−"], ["plus", "Plus", "+"],
+  ["home", "Home", "Home"], ["capture", "Capture", "Capt"], ["c", "C", "C"],
+  ["lstick_up", "Left stick up", "LS↑"], ["lstick_down", "Left stick down", "LS↓"],
+  ["lstick_left", "Left stick left", "LS←"], ["lstick_right", "Left stick right", "LS→"],
+  ["rstick_up", "Right stick up", "RS↑"], ["rstick_down", "Right stick down", "RS↓"],
+  ["rstick_left", "Right stick left", "RS←"], ["rstick_right", "Right stick right", "RS→"],
+];
+const kbmDstName = wire => (KBM_DESTINATIONS.find(row => row[0] === wire) || [wire, String(wire)])[1];
+const kbmDstShort = wire => (KBM_DESTINATIONS.find(row => row[0] === wire) || [wire, "", String(wire)])[2];
+const kbmKeySource = usage => "key:" + Number(usage).toString(16).toUpperCase().padStart(2, "0");
+const KBM_LAYOUT_NAMES = { kb: "Keyboard", kbm: "Keyboard + mouse" };
+const KBM_POSITION_WORDS = ["Default", "Profile 1", "Profile 2", "Profile 3"];
+const kbm = {
+  status: null, layout: "kb", layoutChosen: false, bindings: new Map(), mapOk: false,
+  mouse: null, profiles: [], active: [], switches: [], loading: false, pickerSource: "",
+};
+function kbmSourceLabel(source) {
+  const text = String(source);
+  if (text.startsWith("mouse:")) {
+    const cap = KBM_KEYBOARD.Mouse.keys.find(key => key[0] === Number(text.slice(6)));
+    return cap ? `Mouse ${cap[1]}` : `Mouse button ${text.slice(6)}`;
+  }
+  const usage = parseInt(text.slice(4), 16);
+  for (const cluster of ["Main", "Navigation", "Numpad", "Other"]) {
+    const cap = KBM_KEYBOARD[cluster].keys.find(key => key[0] === usage);
+    if (cap) return cluster === "Numpad" ? `Numpad ${cap[1]}` : cap[1];
+  }
+  return `Key 0x${text.slice(4)}`;
+}
+function kbmRenderRole(node, label, connected, relevant) {
+  node.textContent = `${label}: ${relevant ? (connected ? "connected" : "not connected") : "not used"}`;
+  node.className = "pill " + (!relevant ? "" : connected ? "ok" : "bad");
+}
+// Product state only. Counters are a separate command since the reply stopped
+// fitting one Bluetooth slot (docs/architecture/kbm-profile-system-hld.md).
+async function kbmRefresh(quiet) {
+  const status = await sendCmd("kbm status", quiet);
+  const detail = $("#kbmDetail");
+  if (!status || !status.mode) {
+    kbm.status = null;
+    $("#kbmProfileState").textContent = "—";
+    kbmRenderRole($("#kbmKeyboardState"), "Keyboard", false, false);
+    kbmRenderRole($("#kbmMouseState"), "Mouse", false, false);
+    detail.textContent = "The adapter did not report its keyboard and mouse state.";
+    return null;
+  }
+  kbm.status = status;
+  const override = status.override || status.mode;
+  $("#kbmEnabled").checked = override !== "controller";
+  const usesKeyboard = status.mode !== "controller";
+  const usesMouse = status.mode === "kbmouse";
+  kbmRenderRole($("#kbmKeyboardState"), "Keyboard", !!status.keyboard, override !== "controller");
+  kbmRenderRole($("#kbmMouseState"), "Mouse", !!status.mouse, override !== "controller" && override !== "keyboard");
+  $("#kbmProfileState").textContent = usesKeyboard
+    ? (status.activeProfileName || "Default") + (status.activeMatchesSaved === false ? " (edited)" : "")
+    : "—";
+  let line;
+  if (override === "controller") line = "Off · keyboards and mice are ignored.";
+  else if (!status.keyboard && !status.mouse)
+    line = "On · pair a Bluetooth keyboard or mouse with the adapter to use it as the controller.";
+  else {
+    line = usesMouse ? "Keyboard and mouse are the controller" : "The keyboard is the controller";
+    if (usesMouse)
+      line += status.nativeMouse ? " · mouse drives the Joy-Con 2 pointer" : " · mouse drives the right stick";
+    if (override !== "auto") line += " · mode forced by another app";
+    line += ".";
+  }
+  detail.textContent = line;
+  if (!kbm.layoutChosen) {
+    kbm.layout = usesMouse ? "kbm" : "kb";
+    $("#kbmLayoutSel").value = kbm.layout;
+  }
+  return status;
+}
+async function kbmLoadMap() {
+  const result = await readPaged(command => sendCmd(command, true), `kbm map ${kbm.layout}`, "bindings", 0);
+  kbm.mapOk = result.ok;
+  kbm.bindings = new Map();
+  if (result.ok) for (const binding of result.rows) kbm.bindings.set(String(binding.src), binding);
+  else setNotice("#kbmNotice", `The mapping could not be read completely (${result.error}).`);
+  kbmRenderKeyboard();
+  kbmRenderMouseButtons();
+}
+async function kbmLoadAll() {
+  if (!transportKind || kbm.loading) return;
+  kbm.loading = true;
+  try {
+    setNotice("#kbmNotice", "");
+    await kbmRefresh(true);
+    const switches = await sendCmd("kbm switches", true);
+    kbm.switches = switches && Array.isArray(switches.switches) ? switches.switches : [];
+    await kbmLoadMap();
+    const mouse = await sendCmd("kbm mouse", true);
+    if (mouse && mouse.sensitivityX !== undefined) { kbm.mouse = mouse; kbmRenderMouse(); }
+    await kbmLoadProfiles();
+  } finally { kbm.loading = false; }
+}
+function kbmKeyNode(usage, label, source, placed) {
+  const binding = kbm.bindings.get(source);
+  const switchKey = kbm.switches.find(entry => entry.src === source);
+  const dst = binding ? binding.dst : "none";
+  const classes = ["kb-key"];
+  if (!binding || dst === "none") classes.push("unbound");
+  if (binding && binding.custom) classes.push("custom");
+  if (switchKey) classes.push("switch");
+  const dstText = switchKey ? KBM_POSITION_WORDS[switchKey.position] || "Switch"
+                            : (dst === "none" ? "" : kbmDstShort(dst));
+  const node = el("button", {
+    class: classes.join(" "), type: "button",
+    title: `${kbmSourceLabel(source)} → ${switchKey ? "switch to " + (KBM_POSITION_WORDS[switchKey.position] || "?") : kbmDstName(dst)}`,
+    onclick: () => kbmOpenPicker(source),
+  }, [el("span", { class: "cap", text: label }), el("span", { class: "dst", text: dstText })]);
+  if (placed) for (const [name, value] of Object.entries(placed)) node.style.setProperty(name, String(value));
+  return node;
+}
+function kbmRenderKeyboard() {
+  const box = $("#kbmKeyboard");
+  const offsets = { Main: 0, Navigation: 15.5, Numpad: 19 };
+  const nodes = [];
+  for (const [cluster, offset] of Object.entries(offsets))
+    for (const [usage, label, column, row, width, height] of KBM_KEYBOARD[cluster].keys)
+      nodes.push(kbmKeyNode(usage, label, kbmKeySource(usage),
+        { "--c": column + offset, "--r": row, "--w": width, "--h": height }));
+  box.replaceChildren(...nodes);
+  // Keys the picture does not draw: the ISO and Japanese ones, plus anything
+  // bound that has no cap at all, so no binding is ever invisible.
+  const drawn = new Set();
+  for (const cluster of ["Main", "Navigation", "Numpad"])
+    for (const key of KBM_KEYBOARD[cluster].keys) drawn.add(kbmKeySource(key[0]));
+  const other = KBM_KEYBOARD.Other.keys.map(key => [key[0], key[1], kbmKeySource(key[0])]);
+  for (const key of other) drawn.add(key[2]);
+  for (const source of kbm.bindings.keys())
+    if (source.startsWith("key:") && !drawn.has(source) && kbm.bindings.get(source).dst !== "none")
+      other.push([parseInt(source.slice(4), 16), kbmSourceLabel(source), source]);
+  $("#kbmOtherKeys").replaceChildren(...other.map(key => kbmKeyNode(key[0], key[1], key[2], null)));
+  $("#kbmOtherKeys").classList.toggle("hidden", !$("#kbmMoreKeys").checked);
+}
+function kbmRenderMouseButtons() {
+  const box = $("#kbmMouseButtons");
+  if (kbm.layout !== "kbm") {
+    box.replaceChildren();
+    $("#kbmMouseButtonsNote").textContent =
+      "Mouse buttons belong to the Keyboard + mouse layout. Choose it above to map them.";
+    return;
+  }
+  $("#kbmMouseButtonsNote").textContent = "";
+  box.replaceChildren(...KBM_KEYBOARD.Mouse.keys.map(key => kbmKeyNode(key[0], key[1], `mouse:${key[0]}`, null)));
+}
+function kbmOpenPicker(source) {
+  if (!kbm.mapOk) return;
+  kbm.pickerSource = source;
+  const binding = kbm.bindings.get(source);
+  const current = binding ? binding.dst : "none";
+  $("#kbmPickerTitle").textContent = `${kbmSourceLabel(source)} · ${KBM_LAYOUT_NAMES[kbm.layout]}`;
+  $("#kbmPickerNow").textContent = `Sends ${kbmDstName(current)}` +
+    (binding && binding.custom ? " (changed from the default)" : "");
+  const select = $("#kbmPickerDst");
+  select.replaceChildren(...KBM_DESTINATIONS.filter(row => row[0] !== "none")
+    .map(row => el("option", { value: row[0], text: row[1] })));
+  select.value = current === "none" ? "a" : current;
+  // Escape closes a dialog without touching returnValue, which would replay
+  // the previous choice against this key.
+  $("#kbmPicker").returnValue = "";
+  $("#kbmPicker").showModal();
+}
+async function kbmPickerClosed() {
+  const dialog = $("#kbmPicker");
+  const choice = dialog.returnValue;
+  const source = kbm.pickerSource;
+  kbm.pickerSource = "";
+  if (!source || !/^(key:[0-9A-F]{2}|mouse:[1-5])$/.test(source)) return;
+  let destination = "";
+  if (choice === "apply") destination = $("#kbmPickerDst").value;
+  else if (choice === "default" || choice === "none") destination = choice;
+  if (!destination) return;
+  if (destination !== "default" && !KBM_DESTINATIONS.some(row => row[0] === destination)) return;
+  const reply = await sendCmd(`kbm bind ${kbm.layout} ${source} ${destination}`);
+  if (!reply || reply.error)
+    setNotice("#kbmNotice", `The adapter refused that binding${reply && reply.error ? ": " + reply.error : "."}`);
+  else setNotice("#kbmNotice", "");
+  // An acknowledgement is not readback: read the whole mapping again.
+  await kbmLoadMap();
+  await kbmRefresh(true);
+}
+function kbmSetRange(id, value, min, max) {
+  const input = $(id);
+  input.min = min; input.max = max; input.value = value;
+  $(id + "v").textContent = value;
+}
+function kbmRenderMouse() {
+  const m = kbm.mouse;
+  if (!m) return;
+  kbmSetRange("#kbmSensX", m.sensitivityX, m.sensitivityMin, m.sensitivityMax);
+  kbmSetRange("#kbmSensY", m.sensitivityY, m.sensitivityMin, m.sensitivityMax);
+  kbmSetRange("#kbmRecenter", m.recenterMs, m.recenterMinMs, m.recenterMaxMs);
+  kbmSetRange("#kbmAdz", m.antiDeadzone, 0, m.antiDeadzoneMax);
+  $("#kbmInvX").checked = !!m.invertX;
+  $("#kbmInvY").checked = !!m.invertY;
+}
+async function kbmSetMouse(field, value) {
+  const reply = await sendCmd(`kbm mouse ${field} ${value}`, true);
+  if (reply && reply.sensitivityX !== undefined) kbm.mouse = reply;
+  else setNotice("#kbmNotice", `The adapter refused ${field} ${value}.`);
+  kbmRenderMouse();
+}
+async function kbmLoadProfiles() {
+  const result = await readPaged(command => sendCmd(command, true), "kbm profiles", "profiles", 0);
+  kbm.profiles = result.ok ? result.rows : [];
+  const active = await sendCmd("kbm active", true);
+  kbm.active = active && Array.isArray(active.active) ? active.active : [];
+  kbmRenderProfiles(result.ok ? "" : result.error);
+  kbmRenderSwitches();
+  const counters = await sendCmd("kbm counters", true);
+  $("#kbmCounters").textContent = counters && !counters.error
+    ? Object.entries(counters).map(([key, value]) => `${key}: ${value}`).join("\n") : "—";
+}
+function kbmRenderProfiles(error) {
+  const box = $("#kbmProfiles");
+  if (error) {
+    box.replaceChildren(el("div", { class: "muted",
+      text: error === "unknown command" ? "This adapter build has no profile library."
+                                        : `Profiles could not be read (${error}).` }));
+    return;
+  }
+  const rows = [];
+  for (const layout of ["kb", "kbm"]) {
+    const state = kbm.active.find(entry => entry.layout === layout) || {};
+    rows.push(el("h3", { class: "spaced", text: KBM_LAYOUT_NAMES[layout] }));
+    for (let position = 0; position <= 3; position++) {
+      const profile = position === 0 ? null
+        : kbm.profiles.find(entry => entry.layout === layout && entry.position === position);
+      if (position > 0 && !profile) {
+        rows.push(el("div", { class: "row" }, [el("div", { class: "row-main" }, [
+          el("b", { text: KBM_POSITION_WORDS[position] }), el("span", { text: "Empty" })])]));
+        continue;
+      }
+      const running = state.runtimePosition === position;
+      const boot = state.bootPosition === position;
+      const facts = [];
+      if (running) facts.push(state.matchesSaved === false ? "running, edited since saved" : "running");
+      if (boot) facts.push("starts at power-up");
+      if (profile) facts.push(`${profile.overrides} changed key${profile.overrides === 1 ? "" : "s"}`);
+      const target = position === 0 ? "default" : String(profile.id);
+      const bootTarget = position === 0 ? "default" : String(position);
+      rows.push(el("div", { class: "row" + (running ? " current" : "") }, [
+        el("div", { class: "row-main" }, [
+          el("b", { text: position === 0 ? "Default" : `${KBM_POSITION_WORDS[position]} · ${profile.name}` }),
+          el("span", { text: facts.join(" · ") || "Stored" }),
+        ]),
+        running ? null : el("button", { text: "Use now", onclick: () => kbmProfileCommand(`kbm apply ${layout} ${target}`) }),
+        boot ? null : el("button", { text: "At power-up", onclick: () => kbmProfileCommand(`kbm boot ${layout} ${bootTarget}`) }),
+        position === 0 ? null : el("button", { text: "Remove", onclick: () => {
+          if (confirm(`Remove ${profile.name} from the adapter?`)) kbmProfileCommand(`kbm remove ${layout} ${position}`);
+        } }),
+      ]));
+    }
+  }
+  box.replaceChildren(...rows);
+}
+function kbmRenderSwitches() {
+  const box = $("#kbmSwitches");
+  if (!kbm.switches.length) {
+    box.replaceChildren(el("div", { class: "muted", text: "No key is set to switch profiles." }));
+    return;
+  }
+  box.replaceChildren(...kbm.switches.map(entry => el("div", { class: "row" }, [
+    el("div", { class: "row-main" }, [
+      el("b", { text: kbmSourceLabel(entry.src) }),
+      el("span", { text: `Switches to ${KBM_POSITION_WORDS[entry.position] || "?"}` }),
+    ]),
+    el("button", { text: "Clear", onclick: () => kbmProfileCommand(`kbm switch ${entry.src} none`) }),
+  ])));
+}
+async function kbmProfileCommand(command) {
+  if (!/^kbm (apply|boot|remove|switch) [a-z0-9: ]+$/i.test(command)) return;
+  const reply = await sendCmd(command);
+  setNotice("#kbmNotice", reply && !reply.error ? "" : `The adapter refused: ${(reply && reply.error) || "no reply"}`);
+  await kbmLoadAll();
+}
+async function kbmSave() {
+  const button = $("#kbmSaveBtn");
+  button.disabled = true;
+  const reply = await sendCmd("save");
+  button.disabled = false;
+  setNotice("#kbmNotice", reply && reply.ok ? "Saved to the adapter." : "The adapter did not accept the save.",
+            !!(reply && reply.ok));
+}
+
+// ---------------------------------------------------------------------------
+// Wiring
+// ---------------------------------------------------------------------------
+function initShell() {
+  for (const item of document.querySelectorAll(".nav-item"))
+    item.onclick = () => showPage(item.dataset.page);
+  initTabs();
+  $("#disconnectBtn").onclick = disconnectTransport;
+
+  // Play
+  $("#playStartBtn").onclick = () => (link.active ? linkStop() : linkStart());
+  $("#playWakeBtn").onclick = () => wakeConsole("#playNotice");
+  $("#playAmiiboBtn").onclick = playAmiiboAction;
+  $("#playPadSelect").onchange = playRender;
+  for (const button of document.querySelectorAll(".console-btn")) {
+    const bit = 1 << CL_BUTTON[button.dataset.button];
+    const hold = on => {
+      if (!link.active) return;
+      link.virtual = on ? (link.virtual | bit) : (link.virtual & ~bit);
+      button.classList.toggle("held", on);
+    };
+    button.addEventListener("pointerdown", event => { button.setPointerCapture?.(event.pointerId); hold(true); });
+    for (const type of ["pointerup", "pointercancel", "lostpointercapture"])
+      button.addEventListener(type, () => hold(false));
+    button.addEventListener("keydown", event => {
+      if ((event.key === "Enter" || event.key === " ") && !event.repeat) {
+        event.preventDefault();
+        hold(true);
+        setTimeout(() => hold(false), 120);
+      }
+    });
+  }
+  window.addEventListener("gamepadconnected", playRender);
+  window.addEventListener("gamepaddisconnected", playRender);
+  window.addEventListener("blur", () => linkSetPaused(true));
+  window.addEventListener("focus", () => linkSetPaused(document.hidden));
+  document.addEventListener("visibilitychange", () => linkSetPaused(document.hidden || !document.hasFocus()));
+  window.addEventListener("pagehide", () => { if (link.active) linkSend(clNeutralState(), performance.now()); });
+  setInterval(() => { if (currentPage === "play") playRender(); }, 1000);
+
+  // Adapter
+  $("#adPersonality").onchange = () => {
+    $("#adPersonalityApply").disabled = $("#adPersonality").value === adapterPersonality;
+  };
+  $("#adPersonalityApply").onclick = adapterSwitchPersonality;
+  $("#adRefreshBtn").onclick = adapterRefresh;
+  $("#adWakeBtn").onclick = () => wakeConsole("#adNotice");
+  $("#mgmtOnBtn").onclick = () => mgmtSet(true);
+  $("#mgmtOffBtn").onclick = () => mgmtSet(false);
+  $("#mgmtStatusBtn").onclick = () => mgmtRefresh();
+  $("#pairStartBtn").onclick = pairingStart;
+  $("#pairCancelBtn").onclick = pairingCancel;
+
+  // Keyboard & Mouse. On is Automatic (the adapter picks the layout from what
+  // is paired); off is Controller.
+  $("#kbmEnabled").onchange = async () => {
+    const reply = await sendCmd("kbm mode " + ($("#kbmEnabled").checked ? "auto" : "controller"));
+    if (!reply || reply.error) setNotice("#kbmNotice", "The adapter did not accept the change.");
+    await kbmRefresh();
+  };
+  $("#kbmRefreshBtn").onclick = kbmLoadAll;
+  $("#kbmLayoutSel").onchange = async () => {
+    kbm.layout = $("#kbmLayoutSel").value === "kbm" ? "kbm" : "kb";
+    kbm.layoutChosen = true;
+    await kbmLoadMap();
+  };
+  $("#kbmMoreKeys").onchange = kbmRenderKeyboard;
+  $("#kbmSaveBtn").onclick = kbmSave;
+  $("#kbmResetLayoutBtn").onclick = async () => {
+    if (!confirm(`Reset the ${KBM_LAYOUT_NAMES[kbm.layout]} mapping to its defaults?`)) return;
+    await sendCmd(`kbm reset ${kbm.layout}`);
+    await kbmLoadAll();
+  };
+  $("#kbmResetBtn").onclick = async () => {
+    if (!confirm("Reset every keyboard and mouse mapping and the mouse tuning to defaults?")) return;
+    const reply = await sendCmd("kbm reset all");
+    setNotice("#kbmNotice", reply && reply.ok ? "Everything reset. Save to adapter to keep it." : "The reset was not accepted.",
+              !!(reply && reply.ok));
+    await kbmLoadAll();
+  };
+  $("#kbmPicker").addEventListener("close", kbmPickerClosed);
+  for (const [id, field] of [["#kbmSensX", "sensitivityx"], ["#kbmSensY", "sensitivityy"],
+                             ["#kbmRecenter", "recenter"], ["#kbmAdz", "antideadzone"]]) {
+    $(id).oninput = () => { $(id + "v").textContent = $(id).value; };
+    $(id).onchange = () => kbmSetMouse(field, Math.trunc(Number($(id).value)));
+  }
+  $("#kbmInvX").onchange = () => kbmSetMouse("invertx", $("#kbmInvX").checked ? 1 : 0);
+  $("#kbmInvY").onchange = () => kbmSetMouse("inverty", $("#kbmInvY").checked ? 1 : 0);
+
+  // Settings
+  $("#setFaceLayout").value = storeGet("PicoSwitch2PortalFaces", "position") === "label" ? "label" : "position";
+  $("#setFaceLayout").onchange = () => storeSet("PicoSwitch2PortalFaces", $("#setFaceLayout").value);
+  $("#setRumble").checked = storeGet("PicoSwitch2PortalRumble", "1") !== "0";
+  $("#setRumble").onchange = () => storeSet("PicoSwitch2PortalRumble", $("#setRumble").checked ? "1" : "0");
+  const yes = flag => (flag ? "yes" : "no");
+  $("#setSupport").textContent =
+    `USB serial: ${yes("serial" in navigator)} · Bluetooth: ${yes("bluetooth" in navigator)} · ` +
+    `Controllers: ${yes("getGamepads" in navigator)}`;
+  $("#clinkDiagBtn").onclick = async () => {
+    const reply = await sendCmd("clink status", true);
+    $("#clinkDiag").textContent = reply && reply.clink ? JSON.stringify(reply.clink, null, 1)
+      : "The adapter did not report Controller Link counters.";
+  };
+
+  kbmRenderKeyboard();
+  kbmRenderMouseButtons();
+  pairingRender(null);
+  // A link can name a page (index.html#kbm); otherwise reopen the last one.
+  const fromHash = () => location.hash.slice(1);
+  window.addEventListener("hashchange", () => { if (PAGE_NAMES.includes(fromHash())) showPage(fromHash()); });
+  showPage(PAGE_NAMES.includes(fromHash()) ? fromHash() : storeGet("PicoSwitch2PortalPage", "play"));
+}
+
 
 async function initializeAdapter(label) {
   amiiboSelectAdapterOnNextStatus = true;
@@ -3732,8 +5420,7 @@ async function initializeAdapter(label) {
   if (info && info.id === "picoswitch") log("== PicoSwitch 2 detected (v" + info.version + ") ==");
   else log("! warning: unexpected device (info=" + JSON.stringify(info) + ")");
   await reload();
-  await mgmtRefresh(true);
-  await kbmRefresh(true);
+  await shellAdapterConnected(info);
 
   // Research-state synchronization is useful on the wired development path
   // but unnecessary traffic for the normal wireless settings/Amiibo workflow.
@@ -3797,6 +5484,7 @@ async function connectBluetooth() {
     await bleTx.startNotifications();
     bleTx.addEventListener("characteristicvaluechanged",
       event => appendIncomingBytes(event.target.value));
+    await clinkAttach(service);
     transportKind = "bluetooth";
     await initializeAdapter("Bluetooth");
   } catch (e) {
@@ -3943,6 +5631,7 @@ capRenderStatus();
 capRenderStats();
 capRenderVariant();
 capRenderGattDisc();
+initShell();
 setConnected(false);
 loadAmiiboSlotState();
 loadCachedAmiiboLibrary();

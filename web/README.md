@@ -1,11 +1,85 @@
-# Web portal sources
+# Web portal
 
-- `index.html` is the production configuration portal. It supports USB Web Serial and the
-  bonded/encrypted BLE GATT management transport, is served locally, and is not embedded in firmware.
-- `diagnostic.html` is a browser-only Virtual Amiibo test harness. It is not embedded in firmware
-  and never opens Web Serial.
+`index.html` is the browser companion: one self-contained page, no build step,
+served from GitHub Pages and from `tools\run_config_portal.ps1`. It talks to the
+adapter over USB Web Serial (configuration mode) or the bonded, encrypted BLE
+management link, and is not embedded in firmware. Chrome or Edge only.
 
-Run the production portal locally from the repository root:
+`diagnostic.html` is a browser-only Virtual Amiibo test harness. It never opens
+a transport.
+
+## Pages
+
+The portal follows the companion shell
+([`docs/architecture/companion-shell-layout.md`](../docs/architecture/companion-shell-layout.md)):
+the same pages, in the same order, holding the same things.
+
+| Page | Holds | Needs |
+| --- | --- | --- |
+| Play | Controller Link from a controller attached to this computer, the console buttons (Home, Capture, C), Wake, who is driving the console, the adapter's amiibo | Bluetooth for Controller Link |
+| Keyboard | The on/off switch, the drawn keyboard with every key's binding, mouse buttons and mouse tuning, the profiles on the adapter, profile switch keys | An adapter |
+| Amiibo | The library (below). Works with no adapter connected | Nothing |
+| Customize | Body and Joy-Con accent colours | An adapter |
+| Adapter | Emulated controller, controller in use, Wake, Bluetooth management; pair a controller; paired devices with Forget | An adapter |
+| Settings | Face-button layout, rumble, browser support, Controller Link counters, developer diagnostics | Nothing |
+
+`index.html#kbm` (or any page name: `play kbm amiibo custom adapter settings`)
+opens that page.
+
+What a browser cannot do, and the page says so where it matters:
+
+| Companion feature | Portal |
+| --- | --- |
+| Motion in Controller Link | No. A page cannot read a controller's IMU |
+| Touch Gamepad | No |
+| Headset and microphone | No |
+| Editing saved KB/M profiles (create, rename, staged save) | No. The portal edits the mapping that is running and chooses which stored profile runs now and at power-up |
+| Controller Link over USB | No. The data plane is a Bluetooth characteristic |
+| Holding the adapter connection in the background | No. Controller Link pauses, and the console gets a neutral report, when the tab is hidden or loses focus |
+| Keyboard & Mouse Link | Designed, not built: [`docs/architecture/kbm-link-hld.md`](../docs/architecture/kbm-link-hld.md) |
+
+## Controller Link in the browser
+
+The page reads the Gamepad API's `standard` mapping, encodes the canonical
+26-byte bridge report, and writes it to the Controller Link characteristic with
+one write in flight and the newest state winning, exactly as the Windows
+companion does. Rumble and the player number come back on the feedback
+characteristic.
+
+- The browser's layout is **positional**: its bottom face button is button 0
+  whatever is printed on it. The default sends position (bottom is B); Settings
+  can send Xbox letters instead.
+- A controller the browser reports with a non-`standard` mapping is refused,
+  because its buttons cannot be trusted.
+- The page refuses to start if the adapter reports a different bridge contract.
+- **Not yet run against an adapter.** The encoder is held to
+  `contracts/bridge_report_goldens.csv`; the link itself (connection interval
+  under Web Bluetooth, latency, rumble) is STATUS.md gate 16.
+
+## Checking a change
+
+```powershell
+python tests\run_tool_tests.py portal     # encoder goldens, page structure, paging rules, escaping
+python tools\portal_preview.py --shots    # every page rendered against the repository's fixtures
+```
+
+`tools/portal_preview.py` writes a scratch copy of the page whose transport is
+answered from `contracts/management/`, so the connected pages can be looked at
+with no adapter. Screenshots land in `build/portal-preview/shots/`. It proves
+layout, never adapter behaviour.
+
+Rules the tests hold:
+
+- Text from the adapter never reaches `innerHTML`. New markup is built with
+  `createElement` and `textContent` (`el()` in the page).
+- The drawn keyboard is the table in the C# `KeyboardLayout.cs`; regenerate the
+  portal's copy rather than editing it.
+- A paged read that changes its total, repeats a cursor or comes up short is a
+  failure, never a shorter list.
+
+## Running it locally
+
+Run the production portal from the repository root:
 
 ```powershell
 .\tools\run_config_portal.ps1
@@ -16,6 +90,8 @@ Run the diagnostic portal without hardware:
 ```powershell
 .\tools\run_amiibo_portal_test.ps1
 ```
+
+## The amiibo library
 
 Both launchers serve `web/` from localhost and stop their local server when Enter is pressed in the
 launcher window. The production launcher opens the real USB/Bluetooth portal. Standard firmware
@@ -68,12 +144,10 @@ series, Amiibo series, Product type, compatible games, Download, Initialize, Eje
 Initialize changes the mutable browser copy; the UI still does not expose the adapter journal's
 internal original/recovery pair.
 
-The production page omits the retired current-input/current-output cards. Controller appearance
-remains available in one compact full-width panel for the shared Pro2 body/Sony lightbar and the
+Controller appearance is on the Customize page: the shared Pro2 body/Sony lightbar and the
 independent Joy-Con Left/Right accents. Amiibo operation status lives inside the manager rather
 than occupying the global connection header. Search remains compact in the manager toolbar because
-large owned libraries cannot be navigated efficiently by carousel alone. The log remains nested
-under Developer diagnostics.
+large owned libraries cannot be navigated efficiently by carousel alone. The log is under Settings, in Developer diagnostics.
 
 The production markup reserves a capability-gated **Scan physical amiibo** action, but keeps it
 hidden until firmware exposes a safe Config-transport scan API. The existing UART `nfc_probe`
