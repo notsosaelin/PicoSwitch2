@@ -37,7 +37,7 @@ If work stops in the middle of a task, write the next step here.
 
 | | |
 | --- | --- |
-| Released baseline | **v2.6.0** (2026-11-08): firmware for both boards (update and clean-install UF2), Windows installer and portable ZIP (x64, arm64), Linux single-file executables (x64, arm64). The Android APK for 2.6.0 is not yet attached (release key not on the build machine); v2.5.0 is the latest published APK |
+| Released baseline | **v2.6.0** (2026-11-08): firmware for both boards (update and clean-install UF2), Windows installer and portable ZIP (x64, arm64), Linux single-file executables (x64, arm64), and the Android APK (added 2026-11-21, built from the tag, signed with the v2.5.0 key) |
 | Development branch | `main` |
 | Release blockers | None known |
 | Product version | `VERSION` (2.6.0); the firmware reports it in `info` |
