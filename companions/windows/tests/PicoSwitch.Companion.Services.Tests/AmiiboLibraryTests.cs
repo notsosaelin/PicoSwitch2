@@ -18,9 +18,9 @@ namespace PicoSwitch.Companion.Services.Tests;
 /// damaged index costs names and never backups, an orphaned image is adopted
 /// rather than ignored, and a failed write rolls back rather than half-applying.
 ///
-/// Driven against real tag images from <c>tests/fixtures/amiibo/</c> rather than
-/// synthesised bytes, because the validation being tested is precisely what
-/// distinguishes a real dump from plausible-looking bytes.
+/// Driven against real tag images from <c>tests/fixtures/amiibo/</c> when they
+/// are present locally, and against synthetic images of the same structure when
+/// they are not (see <c>Tag</c>): the dumps are no longer in the repository.
 /// </remarks>
 public sealed class AmiiboLibraryTests : IDisposable
 {
@@ -43,19 +43,97 @@ public sealed class AmiiboLibraryTests : IDisposable
 
     private AmiiboLibrary Library() => new(root);
 
-    /// <summary>A real 540-byte NTAG215 dump.</summary>
+    /// <summary>A 540-byte NTAG215 image.</summary>
     private static byte[] Ntag215() => Tag("ntag215-animal-crossing-tom-nook.bin");
 
-    /// <summary>A real 2048-byte figure v3 dump.</summary>
+    /// <summary>A 2048-byte figure v3 image.</summary>
     private static byte[] FigureV3() => Tag("v3-kirby-tank-star-factory.bin");
 
-    private static byte[] Tag(string name) =>
-        File.ReadAllBytes(RepositoryFile($"tests/fixtures/amiibo/{name}"));
+    /// <summary>
+    /// A tag image by its fixture name: the genuine dump when it is present
+    /// locally, otherwise a synthetic image of the same shape.
+    /// </summary>
+    /// <remarks>
+    /// The genuine dumps left the repository on 2026-11-11 (they are copies of
+    /// physical figures). What this class tests is the LIBRARY: storage, the
+    /// index, duplicates, rename, recovery, the archive format. All of that
+    /// keys on what <c>AmiiboFiles.Validate</c> and <c>AmiiboCrypto.Identity</c>
+    /// read, which is structure and plaintext identity, so a synthetic image
+    /// exercises it fully. A maintainer who has dumps of their own still runs
+    /// against them, because a present file always wins.
+    ///
+    /// The synthetic images are structurally valid and otherwise empty: no
+    /// keys, no signature, no figure data. A console would reject them. The
+    /// tests that need a genuine collection or the archive the Android
+    /// companion wrote are marked <see cref="AmiiboDumpFactAttribute"/> and
+    /// skip without it.
+    /// </remarks>
+    private static byte[] Tag(string name)
+    {
+        var path = TryRepositoryFile($"tests/fixtures/amiibo/{name}");
+        if (path is not null)
+        {
+            return File.ReadAllBytes(path);
+        }
 
-    // Real dumps are read from the repository rather than copied into the test
-    // project: a copy is a second authority, and the validation being tested is
-    // exactly what separates a genuine dump from plausible-looking bytes.
-    private static string RepositoryFile(string relativePath)
+        return name switch
+        {
+            "ntag215-animal-crossing-tom-nook.bin" =>
+                SyntheticNtag215(uid: [0x04, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66],
+                    figureId: [0x01, 0x83, 0x00, 0x00, 0x02, 0x42, 0x05, 0x02]),
+            "v3-kirby-tank-star-factory.bin" =>
+                SyntheticFigureV3(uid: [0x04, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6], state: 0),
+
+            // Two saved states of ONE figure: same UID and identity, different
+            // contents. That is exactly what the two genuine dumps were.
+            "v3-air-riders-trained-before-save-2026-07-28.bin" =>
+                SyntheticFigureV3(uid: [0x04, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6], state: 1),
+            "v3-air-riders-learned-state-after-save-2026-07-28.bin" =>
+                SyntheticFigureV3(uid: [0x04, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6], state: 2),
+            _ => throw new FileNotFoundException($"No dump and no synthetic stand-in for {name}"),
+        };
+    }
+
+    /// <summary>540 bytes laid out as an NTAG215 amiibo: UID with both check bytes, identity block.</summary>
+    private static byte[] SyntheticNtag215(byte[] uid, byte[] figureId)
+    {
+        var image = new byte[540];
+        image[0] = uid[0];
+        image[1] = uid[1];
+        image[2] = uid[2];
+        image[3] = (byte)(0x88 ^ uid[0] ^ uid[1] ^ uid[2]);
+        image[4] = uid[3];
+        image[5] = uid[4];
+        image[6] = uid[5];
+        image[7] = uid[6];
+        image[8] = (byte)(uid[3] ^ uid[4] ^ uid[5] ^ uid[6]);
+        figureId.CopyTo(image, 0x54);
+        return image;
+    }
+
+    /// <summary>
+    /// 2048 bytes laid out as a figure v3 tag: contiguous UID, the 00/44 marker,
+    /// identity block. <paramref name="state"/> changes the contents and nothing
+    /// that identifies the figure.
+    /// </summary>
+    private static byte[] SyntheticFigureV3(byte[] uid, byte state)
+    {
+        var image = new byte[2048];
+        uid.CopyTo(image, 0);
+        image[7] = 0x00;
+        image[8] = 0x44;
+        new byte[] { 0x1F, 0x40, 0x00, 0x00, 0x05, 0x10, 0x15, 0x03 }.CopyTo(image, 0x54);
+        image[0x200] = state;
+        return image;
+    }
+
+    // Dumps are read from the repository tree rather than copied into the test
+    // project: a copy is a second authority.
+    private static string RepositoryFile(string relativePath) =>
+        TryRepositoryFile(relativePath) ?? throw new FileNotFoundException(
+            $"Cannot find {relativePath} above {AppContext.BaseDirectory}");
+
+    private static string? TryRepositoryFile(string relativePath)
     {
         var cursor = new DirectoryInfo(AppContext.BaseDirectory);
         while (cursor is not null)
@@ -69,8 +147,7 @@ public sealed class AmiiboLibraryTests : IDisposable
             cursor = cursor.Parent;
         }
 
-        throw new FileNotFoundException(
-            $"Cannot find {relativePath} above {AppContext.BaseDirectory}");
+        return null;
     }
 
     // ------------------------------------------------------------- importing
@@ -548,7 +625,7 @@ public sealed class AmiiboLibraryTests : IDisposable
         Assert.Equal("Nothing to import.", result.Summary);
     }
 
-    [Fact]
+    [AmiiboDumpFact]
     public void ABulkImportOfARealCollectionSucceeds()
     {
         // Every tracked dump at once, which is what pointing this at a folder
@@ -577,7 +654,7 @@ public sealed class AmiiboLibraryTests : IDisposable
 
     // ------------------------------------------------------- cross-platform
 
-    [Fact]
+    [AmiiboDumpFact]
     public void AnArchiveWrittenByTheAndroidCompanionImportsHere()
     {
         // THE INTERCHANGE CLAIM, tested rather than asserted. "Both sides
@@ -609,7 +686,7 @@ public sealed class AmiiboLibraryTests : IDisposable
         Assert.Equal(FigureV3(), library.Bytes(kirby.Id));
     }
 
-    [Fact]
+    [AmiiboDumpFact]
     public void TheLoadedMarkerInAnAndroidArchiveIsUnderstood()
     {
         // The fixture deliberately marks the SECOND entry, so a reader that
@@ -622,7 +699,7 @@ public sealed class AmiiboLibraryTests : IDisposable
         Assert.Equal("Kirby & Tank Star", entries.Single(entry => entry.Loaded).DisplayName);
     }
 
-    [Fact]
+    [AmiiboDumpFact]
     public void AnArchiveThisSideWritesIsShapedLikeTheOneAndroidWrites()
     {
         // Compared on STRUCTURE, not bytes: the two will differ in timestamps and

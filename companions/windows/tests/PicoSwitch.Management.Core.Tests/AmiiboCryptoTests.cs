@@ -110,7 +110,7 @@ public sealed class AmiiboCryptoTests
         Assert.Equal(64, fingerprint["sha256:".Length..].Length);
     }
 
-    [Fact]
+    [AmiiboDumpFact]
     public void EveryVectorSourceIsPresentAndUnchanged()
     {
         // The vectors describe specific bytes. A dump edited or replaced without
@@ -124,7 +124,7 @@ public sealed class AmiiboCryptoTests
         }
     }
 
-    [Fact]
+    [AmiiboDumpFact]
     public void IdentityDecodesExactlyWithNoKeys()
     {
         // The half of the contract a client honours before the user has supplied
@@ -155,7 +155,7 @@ public sealed class AmiiboCryptoTests
         }
     }
 
-    [Fact]
+    [AmiiboDumpFact]
     public void RejectedVectorsAreStillRefused()
     {
         // Negative knowledge, kept deliberately: these files carry the v3 marker
@@ -170,7 +170,7 @@ public sealed class AmiiboCryptoTests
         }
     }
 
-    [Fact]
+    [AmiiboDumpFact]
     public void NormalizeImportRepairsOnlyTheUidCheckBytes()
     {
         // Those two bytes are DERIVED from the UID, so a wrong one says nothing
@@ -233,7 +233,7 @@ public sealed class AmiiboCryptoTests
     // KeyDependentCoverageIsVisible below reports which half actually ran --
     // a test that quietly does nothing is worse than one that says so.
 
-    [Fact]
+    [AmiiboDumpFact]
     public void SuppliedKeysAreActuallyUsed()
     {
         // Guards the silent-off failure mode directly. Without this, a variable
@@ -276,7 +276,7 @@ public sealed class AmiiboCryptoTests
             "sha256:" + Sha256(File.ReadAllBytes(path)));
     }
 
-    [Fact]
+    [AmiiboDumpFact]
     public void DecryptedRegisterFieldsMatch()
     {
         var keys = Keys();
@@ -305,7 +305,7 @@ public sealed class AmiiboCryptoTests
         }
     }
 
-    [Fact]
+    [AmiiboDumpFact]
     public void ReSigningReproducesTheFixtureBytes()
     {
         var keys = Keys();
@@ -334,7 +334,7 @@ public sealed class AmiiboCryptoTests
         }
     }
 
-    [Fact]
+    [AmiiboDumpFact]
     public void ReSigningIsIdempotent()
     {
         // Initializing an already-initialized image must be a no-op in content
@@ -351,7 +351,7 @@ public sealed class AmiiboCryptoTests
         Assert.Equal(Sha256(once), Sha256(AmiiboCrypto.Initialize(once, keys!)));
     }
 
-    [Fact]
+    [AmiiboDumpFact]
     public void ATamperedImageFailsItsHmacRatherThanDecodingToNonsense()
     {
         // The property that makes the whole scheme worth anything: a byte
@@ -375,7 +375,7 @@ public sealed class AmiiboCryptoTests
         Assert.Throws<InvalidOperationException>(() => AmiiboCrypto.Initialize(tampered, keys!));
     }
 
-    [Fact]
+    [AmiiboDumpFact]
     public void NoKeysIsReportedAsKeyUnavailableAndStillYieldsIdentity()
     {
         // "No keys supplied", "wrong keys" and "damaged file" are three different

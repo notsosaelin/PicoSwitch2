@@ -40,6 +40,10 @@ import java.security.MessageDigest
  */
 class AmiiboCryptoFixtureTest {
 
+    private companion object {
+        const val DUMPS_ABSENT = "needs the local amiibo dumps in tests/fixtures/amiibo/"
+    }
+
     private val repoRoot = File("../../..").canonicalFile
     private val fixtureFile = File(repoRoot, "contracts/amiibo/crypto-vectors.json")
 
@@ -49,6 +53,14 @@ class AmiiboCryptoFixtureTest {
 
     private val vectors: List<JsonObject> by lazy {
         fixture["vectors"]!!.jsonArray.map { it.jsonObject }
+    }
+
+    // The dumps the vectors were generated from left the repository on
+    // 2026-11-11 (the directory is git-ignored). A maintainer with dumps of
+    // their own restores them there; without them these tests are skipped,
+    // visibly, rather than passed.
+    private val dumpsPresent: Boolean by lazy {
+        vectors.all { File(repoRoot, it.string("source")).isFile }
     }
 
     private val keyFile: File? =
@@ -81,6 +93,7 @@ class AmiiboCryptoFixtureTest {
     }
 
     @Test fun `every vector's source file is present and unchanged`() {
+        assumeTrue(DUMPS_ABSENT, dumpsPresent)
         // The vectors describe specific bytes. If a dump is edited or replaced
         // without regenerating, every downstream expectation is silently about a
         // different tag.
@@ -97,6 +110,7 @@ class AmiiboCryptoFixtureTest {
     }
 
     @Test fun `identity decodes exactly, with no keys at all`() {
+        assumeTrue(DUMPS_ABSENT, dumpsPresent)
         // Identity is plaintext on the tag. It is the half of the contract a
         // client can honour before the user has supplied any keys, so it is
         // asserted here unconditionally.
@@ -144,6 +158,7 @@ class AmiiboCryptoFixtureTest {
     }
 
     @Test fun `the rejected vectors are still refused`() {
+        assumeTrue(DUMPS_ABSENT, dumpsPresent)
         // Negative knowledge, kept deliberately: these two files carry the v3
         // marker and look like tags, and every implementation must refuse them
         // for their size rather than half-parse one.
@@ -221,6 +236,7 @@ class AmiiboCryptoFixtureTest {
     }
 
     @Test fun `decrypted register fields match`() {
+        assumeTrue(DUMPS_ABSENT, dumpsPresent)
         assumeTrue("needs -Damiibo.retailKey", keys != null)
         val retail = keys!!
 
@@ -267,6 +283,7 @@ class AmiiboCryptoFixtureTest {
     }
 
     @Test fun `re-signing produces the same bytes every time`() {
+        assumeTrue(DUMPS_ABSENT, dumpsPresent)
         assumeTrue("needs -Damiibo.retailKey", keys != null)
         val retail = keys!!
 
@@ -296,6 +313,7 @@ class AmiiboCryptoFixtureTest {
     }
 
     @Test fun `re-signing is idempotent`() {
+        assumeTrue(DUMPS_ABSENT, dumpsPresent)
         // Initializing an already-initialized image must be a no-op in content
         // terms. If it were not, a second Initialize in the UI would produce a
         // different tag than the first and the user could not tell.

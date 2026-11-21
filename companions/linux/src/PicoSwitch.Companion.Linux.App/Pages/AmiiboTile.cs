@@ -142,7 +142,9 @@ internal static class AmiiboArtwork
     {
         if (url.Length == 0 || !AppServices.OnlineArtworkEnabled ||
             !Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
-            (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
+            // https only: the URL comes from the catalog response, and artwork
+            // must never be fetched in the clear or from a local scheme.
+            uri.Scheme != Uri.UriSchemeHttps)
         {
             return Task.FromResult<Bitmap?>(null);
         }

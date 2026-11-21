@@ -129,7 +129,11 @@ class AmiiboArtworkStore(
     // --------------------------------------------------------------- network
 
     private fun download(url: String): ByteArray? = runCatching {
-        val connection = URL(url).openConnection() as HttpURLConnection
+        // https only: the URL comes from the catalog response, so it is data.
+        // Artwork is never fetched in the clear or from a local scheme.
+        val parsed = URL(url)
+        if (!parsed.protocol.equals("https", ignoreCase = true)) return null
+        val connection = parsed.openConnection() as HttpURLConnection
         try {
             connection.connectTimeout = CONNECT_TIMEOUT_MS
             connection.readTimeout = READ_TIMEOUT_MS
