@@ -73,6 +73,24 @@ bool mgmt_accept_bonding(const mgmt_state_t *s);
 //      on HCI loss.
 bool mgmt_accept_latched_bonding(bool enabled, bool attempt_admitted);
 
+// (3c) A NEW management bond must be made with LE Secure Connections.
+//
+//      The stack as a whole only REQUESTS Secure Connections, because some
+//      HOGP controllers pair with legacy only (see sm_set_secure_connections_
+//      only_mode(false) in btstack_host.c). Management is different: its bond
+//      carries full authority over the adapter, and a legacy Just Works
+//      exchange can be captured and its long-term key recovered offline.
+//      Android, Windows and BlueZ all offer Secure Connections, so a legacy
+//      offer on this link is refused rather than accepted as a fallback.
+//
+//      Scope: this decides the PAIRING only. A bond that already exists is
+//      still judged by mgmt_link_is_trusted(); whether to also demand the
+//      Secure Connections flag there is open until it is known how BTstack
+//      marks a key derived from a Classic bond (CTKD). See
+//      docs/bluetooth/SECURITY.md, "Management pairing method".
+bool mgmt_accept_new_bond_pairing(bool enabled, bool attempt_admitted,
+                                  bool secure_connections);
+
 // A management ATT session is usable only after the link is encrypted with a
 // stored bond. No-display Android Just Works cannot provide MITM
 // authentication, so the firmware must not claim ATT_SECURITY_AUTHENTICATED.

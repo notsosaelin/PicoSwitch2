@@ -4,6 +4,10 @@ Status: source-confirmed against Pico SDK 2.2.0 and pinned BTstack revision
 `501e6d2b86e6c92bfb9c390bcf55709938e25ac1` on 2026-08-20. The controller-family
 runtime matrix remains pending.
 
+The BLE management row and the "LE admission and privacy" facts were re-read
+against Pico SDK 2.3.0 / BTstack 1.8.2 source on 2026-11-10. The other rows
+have not been re-confirmed since the SDK migration.
+
 This document separates admission, authentication, encryption and durable trust. A raw radio
 connection is not controller readiness, and a globally bondable stack is not permission to create
 new trust. PicoSwitch2 grants fresh trust only through an explicit pairing window and independently
@@ -18,7 +22,7 @@ checks that authority at the protocol boundary that can persist or activate the 
 | Standard LE HOGP | Per-connection fresh latch for Just Works, or existing SM identity for reconnect | Bonding and LE Secure Connections requested; NoInputNoOutput; stale re-encryption cannot silently become fresh pairing | BTstack LE device DB | No MITM. Negotiated key-size range is 7-16 bytes. Secure Connections is preferred, not strict-only |
 | Switch 2 custom ATT, fresh | Explicit window or the bounded UART-only `btfresh` laboratory action | Initial custom exchange may be unencrypted; the public protocol derives the 16-byte LTK before readiness | Normalized LTK in BTstack LE DB plus `JPLC` reconnect metadata | No independent MITM proof. Final ready transition requires the fresh latch |
 | Switch 2 custom ATT, reconnect | Exact saved identity or a resolvable-address candidate may reach SM; neither grants fresh trust | Existing 16-byte bond must encrypt successfully before custom reconnect readiness | Existing BTstack bond and `JPLC`; failed reconnect preserves material for bounded retry | No new trust is created. An RPA candidate is verified cryptographically by SM |
-| BLE management | New Just Works bond only in the explicit window | ATT writes require encryption; session authorization also requires a durable bond and a 16-byte encryption key | Shared BTstack LE device DB, never `JPLC` | No MITM because the endpoint is NoInputNoOutput. Secure Connections is requested globally but is not strict-only |
+| BLE management | New Just Works bond only in the explicit window, and only with LE Secure Connections (since 2026-11-10; hardware validation pending) | ATT writes require encryption; session authorization also requires a durable bond and a 16-byte encryption key | Shared BTstack LE device DB, never `JPLC` | No MITM because the endpoint is NoInputNoOutput. A legacy pairing offer is declined for a new bond; an existing bond is not yet checked for it |
 
 The matrix states current source contracts. Hardware confirmation still requires the controller
 family cases in [`VALIDATION.md`](VALIDATION.md).
@@ -54,6 +58,38 @@ security is rejected.
 PicoSwitch2 does not call `sm_set_secure_connections_only_mode(true)`. The configured LE encryption
 key-size range is 7 through 16 bytes. Management deliberately requires exactly 16 bytes in addition
 to bond presence, while ordinary HOGP accepts the stack-negotiated range.
+
+## Management pairing method
+
+Management is the one link that carries authority over the adapter: it can read
+and replace the amiibo, forget controllers, open the controller pairing window,
+feed controller input and receive console audio. Until 2026-11-10 it inherited
+the stack-wide policy of requesting Secure Connections and accepting legacy as a
+fallback. With LE legacy Just Works, a captured pairing exchange is enough to
+recover the long-term key offline.
+
+A new management bond is now accepted only when the Just Works request reports
+Secure Connections (`mgmt_accept_new_bond_pairing()`, rule 3c in
+`mgmt_access.h`; applied in the `SM_EVENT_JUST_WORKS_REQUEST` handler). A legacy
+offer is declined and counted as `cble.legacy_declined` in `btstate`. Controller
+pairing is unchanged.
+
+Status: source and host-test validated (`test_mgmt_access`). Hardware validation
+is pending: STATUS.md gate 14.
+
+Known limits:
+
+- **Existing bonds are not re-checked.** `mgmt_link_is_trusted()` still accepts
+  any bonded 16-byte link. `gap_secure_connection()` exposes the stored flag,
+  but it is not yet established how BTstack 1.8.2 marks an LE key derived from a
+  Classic bond (CTKD), which is how the Android companion may hold its key.
+  Requiring the flag before that is known could lock a working companion out.
+- **Just Works has no MITM protection.** An attacker active during the pairing
+  window can still be the peer that bonds. The window needs the physical
+  gesture and admits one attempt.
+- **Bench commands are not reachable over BLE.** `amiibo reader ...` and
+  `caudio lock ...` are refused by `config_wireless_command_allowed()` although
+  their families are allowed.
 
 ## Reset and recovery
 

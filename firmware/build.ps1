@@ -10,6 +10,11 @@
 #                              settings, amiibo and pairings
 #                              (build/<board>_wipe/PicoSwitchWGA-<board>-wipe.uf2)
 #   build.ps1 pico2_w -NoUartDiag # omit the GP0/GP1 live diagnostic channel
+#   build.ps1 pico_w -DiagProfile lab
+#                              # full-size diagnostic rings on Pico W, for a
+#                              # soak or a capture session (costs ~86 KB of RAM;
+#                              # 'auto' = standard on pico_w, lab on pico2_w).
+#                              # Output: build/pico_w_lab/
 #   build.ps1 pico2_w -MgmtOn     # compatibility alias; management now boots on
 #   build.ps1 pico2_w -NS2FirmwareVersion 2.1.4 `
 #       -NS2BluetoothVersion 12.0.0 -NS2DspVersion 0.2.3
@@ -38,7 +43,9 @@ param(
     [switch]$Tone,
     [switch]$Audio,
     [switch]$AudioOverclock,
-    [switch]$AudioOverclock300
+    [switch]$AudioOverclock300,
+    [ValidateSet('auto', 'standard', 'lab')]
+    [string]$DiagProfile = 'auto'
 )
 # CMake writes its normal message() output to stderr; don't let that be treated
 # as a terminating error. Gate on the explicit $LASTEXITCODE checks below.
@@ -107,8 +114,14 @@ $extraArgs += @("-DNS2_PRO_FIRMWARE_VERSION=$NS2FirmwareVersion",
                 "-DNS2_MGMT_DEFAULT_ON=ON",
                 # Explicit so a cached wipe setting can never leak into an
                 # update UF2, or the reverse.
-                "-DNS2_INSTALL_RESET=$(if ($Wipe) { 'ON' } else { 'OFF' })")
+                "-DNS2_INSTALL_RESET=$(if ($Wipe) { 'ON' } else { 'OFF' })",
+                # Explicit so a cached lab profile cannot leak into an ordinary
+                # Pico W build, or the reverse.
+                "-DNS2_DIAG_PROFILE=$DiagProfile")
 if ($Wipe) { $dirSuffix += '_wipe' }
+# A non-default diagnostic profile gets its own directory, so a lab build never
+# replaces the ordinary artifact in build/<board>/.
+if ($DiagProfile -ne 'auto') { $dirSuffix += "_$DiagProfile" }
 
 foreach ($b in $Boards) {
     $boardArgs = @($extraArgs)

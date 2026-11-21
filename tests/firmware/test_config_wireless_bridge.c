@@ -107,6 +107,15 @@ static void test_wireless_command_policy(void)
     assert(config_wireless_command_allowed("caudio start"));
     assert(config_wireless_command_allowed("caudio stop"));
     assert(!config_wireless_command_allowed("caudiox"));
+    // Bench-only subcommands under allowed prefixes stay off the air.
+    assert(!config_wireless_command_allowed("caudio lock on"));
+    assert(!config_wireless_command_allowed("caudio lock off"));
+    assert(!config_wireless_command_allowed("amiibo reader on"));
+    assert(!config_wireless_command_allowed("amiibo reader off"));
+    assert(!config_wireless_command_allowed("amiibo reader send 0102030405060708"));
+    assert(!config_wireless_command_allowed("amiibo reader reply"));
+    assert(config_wireless_command_allowed("amiibo read 0 32"));
+    assert(config_wireless_command_allowed("caudio diag"));
     assert(config_wireless_command_allowed("mgmt"));
     assert(config_wireless_command_allowed("mgmt status"));
     assert(config_wireless_command_allowed("mgmt off"));

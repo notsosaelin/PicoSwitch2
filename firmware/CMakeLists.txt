@@ -77,6 +77,17 @@ message(STATUS "PicoSwitch BTstack root: ${BTSTACK_ROOT}")
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.c")
 add_executable(PicoSwitchWGA ${SOURCES})
 
+# printf() in this firmware goes nowhere (no stdio back end, see the bottom of
+# this file), yet every call still formatted its text. Compile the calls out of
+# PROJECT sources only; the SDK, BTstack, TinyUSB and Opus are untouched because
+# the option is a per-source property, not a target option. See the header.
+option(NS2_DISCARD_PRINTF
+       "NS2: compile printf() out of project sources (no stdio back end exists)" ON)
+if(NS2_DISCARD_PRINTF)
+    set_source_files_properties(${SOURCES} PROPERTIES
+        COMPILE_OPTIONS "-include;${CMAKE_CURRENT_LIST_DIR}/config/ns2_no_stdio.h")
+endif()
+
 # Name the binary after the board so pico_w / pico2_w outputs don't clobber.
 set_target_properties(PicoSwitchWGA PROPERTIES OUTPUT_NAME "PicoSwitchWGA-${PICO_BOARD}")
 
@@ -121,8 +132,23 @@ if(GIT_FOUND)
     endif()
 endif()
 message(STATUS "PicoSwitch build identity: ${PICOSWITCH_BUILD_ID}")
+
+# Product version: the release this firmware belongs to, read from the one
+# VERSION file at the repository root and reported by the management `info`
+# command beside the build identity. It used to be a literal in config.c and
+# still said "2.5" in the 2.6.0 release. tests/tools/test_version_consistency.py
+# holds the companions' manifests to the same file.
+file(STRINGS "${CMAKE_SOURCE_DIR}/../VERSION" PICOSWITCH_VERSION LIMIT_COUNT 1)
+string(STRIP "${PICOSWITCH_VERSION}" PICOSWITCH_VERSION)
+if(NOT PICOSWITCH_VERSION MATCHES "^[0-9]+[.][0-9]+[.][0-9]+$")
+    message(FATAL_ERROR "VERSION must be major.minor.patch, got '${PICOSWITCH_VERSION}'")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/../VERSION")
+message(STATUS "PicoSwitch product version: ${PICOSWITCH_VERSION}")
+
 target_compile_definitions(PicoSwitchWGA PRIVATE
-    PICOSWITCH_BUILD_ID="${PICOSWITCH_BUILD_ID}")
+    PICOSWITCH_BUILD_ID="${PICOSWITCH_BUILD_ID}"
+    PICOSWITCH_VERSION="${PICOSWITCH_VERSION}")
 
 # Build target: emulate the Switch 2 Pro Controller (VID 057E / PID 2069) instead
 # of the Switch 1 Pro Controller. Adds a vendor-bulk command interface (IF1) and
@@ -353,6 +379,50 @@ if(NS2_PRO AND NS2_AUDIO AND NS2_DS5_AUDIO_TEST_TONE AND
     target_compile_definitions(PicoSwitchWGA PRIVATE
                                NS2_DS5_AUDIO_TEST_TONE=1)
 endif()
+
+# Diagnostic buffer sizing.
+#
+# Three RAM rings exist for lab work and are otherwise idle:
+#   btlife_ring      Bluetooth lifecycle history   (btstack_host.c)
+#   s_records        protocol trace                (ns2_protocol_trace.c)
+#   s_ring           Switch 2 BLE capture          (sw2_capture.c)
+# At the sizes a 200-cycle soak, a complete amiibo read trace and an audio
+# capture need, they total about 104 KB. That is nothing on Pico 2 W and was
+# 40 % of Pico W's RAM, leaving it about 22 KB of heap.
+#
+#   lab       the full sizes. The source defaults; nothing is defined here.
+#   standard  btlife 256 entries (3 KB), trace 64 records (9 KB), capture 32
+#             entries (4.5 KB). Every command still works; history is shorter.
+#   auto      standard on pico_w, lab everywhere else.
+#
+# The rings, their commands and their tools are unchanged. To run a soak or a
+# capture session on Pico W, build it with the lab profile:
+#   firmwareuild.ps1 pico_w -DiagProfile lab
+# See docs/bluetooth/DIAGNOSTICS.md, "Diagnostic buffer profile".
+set(NS2_DIAG_PROFILE "auto" CACHE STRING
+    "Diagnostic buffer sizing: auto, standard or lab")
+set_property(CACHE NS2_DIAG_PROFILE PROPERTY STRINGS auto standard lab)
+set(_ns2_diag_profile "${NS2_DIAG_PROFILE}")
+if(_ns2_diag_profile STREQUAL "auto")
+    if(PICO_BOARD STREQUAL "pico_w")
+        set(_ns2_diag_profile "standard")
+    else()
+        set(_ns2_diag_profile "lab")
+    endif()
+endif()
+if(_ns2_diag_profile STREQUAL "standard")
+    target_compile_definitions(PicoSwitchWGA PRIVATE
+        NS2_DIAG_PROFILE_STANDARD=1
+        BTLIFE_RING_SIZE=256u
+        NS2_PROTOCOL_TRACE_CAPACITY=64u
+        SW2_CAP_RING=32)
+elseif(_ns2_diag_profile STREQUAL "lab")
+    target_compile_definitions(PicoSwitchWGA PRIVATE NS2_DIAG_PROFILE_LAB=1)
+else()
+    message(FATAL_ERROR
+        "NS2_DIAG_PROFILE must be auto, standard or lab (got '${NS2_DIAG_PROFILE}')")
+endif()
+message(STATUS "NS2 diagnostic buffer profile: ${_ns2_diag_profile}")
 
 # NS2 diagnostic: blink the onboard LED to report how far the console's init
 # handshake progressed (see switch_pro2.c g_ns2_stage). Off by default.

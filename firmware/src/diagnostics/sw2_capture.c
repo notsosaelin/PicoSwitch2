@@ -11,8 +11,13 @@
 #include "pico/time.h"
 #include "pico/critical_section.h"
 
-#define SW2_CAP_RING 128  // ~128 * ~144B =~ 18KB RAM. Full 0x002E audio reports fit without
-                          // truncation while preserving the capture facility's prior RAM budget.
+// 128 entries of ~144 bytes is about 18 KB: the LAB size and the default. Full
+// 0x002E audio reports fit without truncation. Ordinary Pico W builds pass a
+// smaller ring through the diagnostic buffer profile (NS2_DIAG_PROFILE in
+// firmware/CMakeLists.txt); entries are the same size, there are fewer of them.
+#ifndef SW2_CAP_RING
+#define SW2_CAP_RING 128
+#endif
 
 static sw2_cap_entry_t s_ring[SW2_CAP_RING];
 static uint32_t s_head;  // next write index

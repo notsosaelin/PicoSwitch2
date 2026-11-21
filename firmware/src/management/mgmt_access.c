@@ -30,6 +30,13 @@ bool mgmt_accept_latched_bonding(bool enabled, bool attempt_admitted)
     return enabled && attempt_admitted;
 }
 
+bool mgmt_accept_new_bond_pairing(bool enabled, bool attempt_admitted,
+                                  bool secure_connections)
+{
+    return mgmt_accept_latched_bonding(enabled, attempt_admitted) &&
+           secure_connections;
+}
+
 bool mgmt_session_authorized(const mgmt_state_t *s)
 {
     return s->enabled && s->client_connected && s->client_bonded &&

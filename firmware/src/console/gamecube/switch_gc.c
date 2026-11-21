@@ -692,7 +692,9 @@ void switch_gc_build_report05(uint8_t *p) {
 
 void switch_gc_task(void) {
     if (tud_vendor_available()) {
-        uint8_t cmd[64];
+        // Zeroed: the dispatcher reads fixed payload offsets, and a command
+        // shorter than those must read zeros, not whatever was on the stack.
+        uint8_t cmd[64] = {0};
         uint32_t n = tud_vendor_read(cmd, sizeof(cmd));
         switch_gc_vendor_dispatch(cmd, n);
     }

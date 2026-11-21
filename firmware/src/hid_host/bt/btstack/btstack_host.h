@@ -473,6 +473,9 @@ typedef struct {
     bool cble_closing;
     bool cble_notifications;
     bool cble_fresh_bond_admitted;
+    // New management bonds refused for offering legacy pairing instead of
+    // LE Secure Connections (mgmt_access.h, rule 3c).
+    uint32_t cble_legacy_pairing_declined;
     // Worst observed delay, in ms, between core 0 publishing a management
     // reply and core 1 finishing its notification. The client-visible
     // symptom of a stalled pump is a plain command timeout, which says

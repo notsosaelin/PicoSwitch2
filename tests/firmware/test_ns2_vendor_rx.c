@@ -20,6 +20,16 @@ static void capture(void *context, const uint8_t *command, size_t size)
     fixture->count++;
 }
 
+// The dispatcher is handed the reassembly buffer itself, so bytes past `size`
+// are what a handler would read at a fixed offset.
+static void capture_tail_is_zero(void *context, const uint8_t *command,
+                                 size_t size)
+{
+    (void)context;
+    for (size_t i = size; i < NS2_VENDOR_RX_MAX_COMMAND; ++i)
+        assert(command[i] == 0);
+}
+
 static void make_command(uint8_t *command, size_t payload_size,
                          uint8_t id, uint8_t subcommand)
 {
@@ -101,6 +111,16 @@ int main(void)
     assert(ns2_vendor_rx_feed(
                &rx, commit, sizeof(commit), capture, &fixture) == 1);
     assert(fixture.count == 1 && fixture.commands[0][3] == 0x08);
+
+    // A short command never exposes the previous command's payload. Handlers
+    // read fixed offsets past the header; those must be zero, not stale.
+    ns2_vendor_rx_init(&rx);
+    memset(&fixture, 0, sizeof(fixture));
+    assert(ns2_vendor_rx_feed(
+               &rx, write_command, sizeof(write_command),
+               capture, &fixture) == 1);
+    assert(ns2_vendor_rx_feed(
+               &rx, commit, sizeof(commit), capture_tail_is_zero, NULL) == 1);
 
     puts("ns2_vendor_rx: all tests passed");
     return 0;

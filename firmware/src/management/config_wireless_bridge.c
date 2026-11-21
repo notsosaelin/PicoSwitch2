@@ -207,6 +207,20 @@ bool config_wireless_command_allowed(const char *command)
         return false;
     }
 
+    // Bench-only subcommands inside families that are otherwise allowed. The
+    // families below are admitted by PREFIX, so without this a subcommand
+    // added to the dispatcher for the UART or CDC bench becomes reachable over
+    // the air by default. These two are research surfaces no companion sends:
+    //   - `amiibo reader ...` drives raw NFC commands at a connected genuine
+    //     Pro Controller 2 (docs/management/PROTOCOL.md calls it research);
+    //   - `caudio lock on|off` is an A/B switch for the exclusive encoder.
+    // They stay available over USB CDC Config and the UART passthrough. A new
+    // bench subcommand under an allowed prefix belongs in this list.
+    if (strncmp(command, "amiibo reader", 13) == 0 ||
+        strncmp(command, "caudio lock", 11) == 0) {
+        return false;
+    }
+
     return strcmp(command, "info") == 0 ||
            strcmp(command, "ping") == 0 ||
            strcmp(command, "get") == 0 ||

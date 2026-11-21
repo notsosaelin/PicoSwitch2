@@ -17,7 +17,13 @@
 // transaction is ever truncated -- the read-buffer replies that carry tag data
 // exceed the former 72-byte limit. Cost is ~36 KB of bss, against ~322 KB free
 // on RP2350 and ~134 KB on RP2040.
+// 256 is the LAB size and the default. Ordinary Pico W builds pass a smaller
+// capacity through the diagnostic buffer profile (NS2_DIAG_PROFILE in
+// firmware/CMakeLists.txt); a trace of a whole amiibo session then needs a lab
+// build. `trace status` reports the capacity in force.
+#ifndef NS2_PROTOCOL_TRACE_CAPACITY
 #define NS2_PROTOCOL_TRACE_CAPACITY 256u
+#endif
 #define NS2_PROTOCOL_TRACE_PAYLOAD_MAX 128u
 
 typedef enum {

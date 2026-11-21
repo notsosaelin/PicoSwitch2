@@ -340,6 +340,11 @@ Under `NS2_PRO`, firmware also exposes low-level `amiibo reader on`, `reader off
 genuine Pro Controller 2 and explicit NFC sequencing. They are not a general high-level Virtual
 Amiibo workflow and are intentionally not wrapped by the portable `ManagementClient`.
 
+Since 2026-11-10 the `amiibo reader ...` forms and `caudio lock on|off` are refused over BLE
+(`command unavailable over Bluetooth`); they remain on USB CDC Config and the UART passthrough.
+`info.version` is the product version from the repository's `VERSION` file; before that date it
+was a literal that had fallen behind the release.
+
 ## Commands outside production BLE management
 
 `state`, audio/motion diagnostics, raw capture, firmware-read tracing, `sw2cap`, and `btid` remain

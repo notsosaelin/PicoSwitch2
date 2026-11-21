@@ -406,6 +406,7 @@ void config_service_save(void) {
 #define LINE_MAX 128
 static char line[LINE_MAX];
 static uint16_t line_len;
+static bool line_overflow;  // CDC line exceeded LINE_MAX; refused at its newline
 // 4096: sized for "sw2cap drain"'s batch reply (up to SW2CAP_DRAIN_MAX=16 entries, each up to
 // ~235 B with 64 hex-encoded payload bytes) — the largest reply this protocol produces.
 static char out[4096];
@@ -998,9 +999,15 @@ static void cmd_input_sources(void) {
     uint32_t led_generation = 0;
     report_get_player_leds(0, &led_mask, &led_generation);
     const bool on_console = tud_mounted();
+#ifdef NS2_PRO
     if (!on_console || !ns2_player_led_decode(led_mask, &player)) player = 0;
     const bool amiibo_wanted = on_console &&
         g_usb_personality == USB_PERSONALITY_SWITCH2_PRO2 && ns2_pro2_nfc_scan_active();
+#else
+    // Switch 1 build: no player-LED decode and no virtual NFC reader.
+    (void)on_console; (void)led_mask;
+    const bool amiibo_wanted = false;
+#endif
     snprintf(out + j, sizeof(out) - (size_t)j,
              "],\"more\":%s,\"console\":{\"player\":%u,\"amiibo_wanted\":%s}}",
              status.source_count > written ? "true" : "false",
@@ -1795,6 +1802,11 @@ static void cmd_kbm(char *arg) {
 // mode-specific controls (e.g. amiibo controls are only meaningful in Pro2). The switch action
 // itself is a separate future command (see docs/bluetooth/app-interface-audit.md G2). "config" is
 // omitted from the controller list since it is the configuration personality, not a controller.
+// Personalities and re-enumeration exist only in the Switch 2 build; the
+// Switch 1 build (NS2_PRO=OFF) has one identity and answers these commands
+// with "unknown command". tests/tools/test_firmware_build_matrix.py and CI
+// build that configuration so this guard cannot rot again.
+#ifdef NS2_PRO
 static const char *personality_short_name(usb_personality_t p) {
     switch (p) {
         case USB_PERSONALITY_SWITCH2_PRO2: return "pro2";
@@ -1844,6 +1856,7 @@ static void cmd_reenumerate(void) {
     g_usb_reenumerate_request_pending = true;
     reply("{\"ok\":true,\"reenumerating\":true}");
 }
+#endif  // NS2_PRO
 
 // In-band BLE management gate (docs/bluetooth/in-band-management-plan.md). When
 // enabled, the config BLE service arms and stays connectable in a normal
@@ -2507,7 +2520,8 @@ static void handle_line(char *cmd) {
         char info[192];
         snprintf(info, sizeof(info),
                  "{\"id\":\"picoswitch\",\"product\":\"PicoSwitch Config\","
-                 "\"version\":\"2.5\",\"bridge_contract\":%u,\"build\":\"%s\"}",
+                 "\"version\":\"%s\",\"bridge_contract\":%u,\"build\":\"%s\"}",
+                 PICOSWITCH_VERSION,
                  (unsigned)ANDROID_BRIDGE_CONTRACT_VERSION, PICOSWITCH_BUILD_ID);
         reply(info);
     } else if (strcmp(cmd, "ping") == 0) {
@@ -2530,12 +2544,14 @@ static void handle_line(char *cmd) {
         cmd_kbm(NULL);
     } else if (strncmp(cmd, "kbm ", 4) == 0) {
         cmd_kbm(cmd + 4);
+#ifdef NS2_PRO
     } else if (strcmp(cmd, "personality") == 0) {
         cmd_personality();
     } else if (strncmp(cmd, "personality ", 12) == 0) {
         cmd_personality_set(cmd + 12);
     } else if (strcmp(cmd, "reenumerate") == 0) {
         cmd_reenumerate();
+#endif  // NS2_PRO
     } else if (strncmp(cmd, "bonds ", 6) == 0) {
         cmd_bonds(cmd + 6);
     } else if (strncmp(cmd, "peers ", 6) == 0) {
@@ -2808,13 +2824,21 @@ void config_cdc_task(void) {
         if (c < 0)
             break;
         if (c == '\n' || c == '\r') {
-            if (line_len > 0) {
+            if (line_overflow) {
+                // Never run the first 127 characters of a longer line: a
+                // truncated command is a different command. The wireless path
+                // refuses an over-long line the same way.
+                reply("{\"error\":\"command too long\",\"code\":413}");
+            } else if (line_len > 0) {
                 line[line_len] = '\0';
                 handle_line(line);
-                line_len = 0;
             }
+            line_len = 0;
+            line_overflow = false;
         } else if (line_len < LINE_MAX - 1) {
             line[line_len++] = (char)c;
+        } else {
+            line_overflow = true;
         }
     }
 }

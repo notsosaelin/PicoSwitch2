@@ -756,7 +756,9 @@ void switch_joycon2_mount(void) {
 
 void switch_joycon2_task(void) {
     if (tud_vendor_available()) {
-        uint8_t cmd[64];
+        // Zeroed: the dispatcher reads fixed payload offsets, and a command
+        // shorter than those must read zeros, not whatever was on the stack.
+        uint8_t cmd[64] = {0};
         uint32_t n = tud_vendor_read(cmd, sizeof(cmd));
         switch_joycon2_vendor_dispatch(cmd, n);
     }

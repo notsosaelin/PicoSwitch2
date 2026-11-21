@@ -22,6 +22,43 @@ The CDC/BLE management command surface additionally provides `btid dump|stat|cle
 identity/classification transitions. Its `bonds list`/paged form reads the same LE DB on the owning
 core; `bonds remove` deletes one typed LE entry. It is not a Classic inventory.
 
+## Diagnostic buffer profile
+
+Three RAM rings hold diagnostic history: the lifecycle ring behind `btlife`,
+the protocol trace behind `trace`, and the Switch 2 BLE capture ring behind
+`cap`. Their sizes come from a build profile (`NS2_DIAG_PROFILE` in
+`firmware/CMakeLists.txt`):
+
+| Profile | Lifecycle ring | Protocol trace | BLE capture | RAM |
+|---|---|---|---|---|
+| `lab` | 4096 entries | 256 records | 128 entries | about 104 KB |
+| `standard` | 256 entries | 64 records | 32 entries | about 17 KB |
+
+`auto`, the default, is `standard` on Pico W and `lab` on Pico 2 W. Until
+2026-11-11 every build carried the lab sizes, which left Pico W about 22 KB of
+heap; it now has about 107 KB (static RAM 233,060 to 145,508 bytes, measured).
+
+The commands, counters and tools are identical in both profiles. Only how far
+back each ring reaches differs, and each ring reports its own capacity
+(`trace status`, `btlife status`). The lab sizes exist for specific work, and
+that work needs a lab build on Pico W:
+
+- a Controller Link reconnect soak (about 16 lifecycle entries a cycle, so
+  `standard` holds about 16 cycles and `lab` about 250);
+- a complete amiibo read session in the protocol trace;
+- a BLE capture that includes audio reports.
+
+```powershell
+firmwareuild.ps1 pico_w -DiagProfile lab
+```
+
+The lab image is written to `firmware/build/pico_w_lab/`, beside the ordinary
+one, so it never replaces it.
+
+`tests/tools/test_diag_profile.py` holds the relationship between the two
+profiles, and `tests/tools/test_bluetooth_closeout_wiring.py` still refuses a
+lab lifecycle ring smaller than a full soak.
+
 ## `btstate` lifecycle fields
 
 Relevant JSON groups include:

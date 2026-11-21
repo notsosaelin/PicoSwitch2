@@ -896,6 +896,9 @@ static struct {
     // match the established per-attempt rule: the window authorizes an
     // ATTEMPT, and that attempt is bounded by its own connection.
     bool fresh_bond_admitted;
+    // New management bonds refused because the peer offered legacy pairing
+    // (mgmt_access.h, rule 3c). Reported as cble_legacy_pairing_declined.
+    uint32_t legacy_pairing_declined;
 } config_ble = {
     .handle = HCI_CON_HANDLE_INVALID,
 };
@@ -1175,7 +1178,15 @@ static inline bool config_ble_authorized(void)
 // the ring is diagnostic, so a benign torn read at most mis-renders one line.
 // See docs/bluetooth/in-band-management-plan.md and STATUS.md.
 // ---------------------------------------------------------------------------
+// 4096 entries is 49 KB: what a 200-cycle Controller Link soak needs (about 16
+// slots a cycle). That is the LAB size and the default here, and
+// tests/tools/test_bluetooth_closeout_wiring.py refuses a smaller default.
+// Ordinary Pico W builds pass a smaller BTLIFE_RING_SIZE through the
+// diagnostic buffer profile (NS2_DIAG_PROFILE in firmware/CMakeLists.txt): the
+// counters stay exact, only how far back the ring reaches changes.
+#ifndef BTLIFE_RING_SIZE
 #define BTLIFE_RING_SIZE 4096u
+#endif
 // Ring-only coalescing window for repeated scan-suppress entries.
 #define BTLIFE_SUPPRESS_COALESCE_MS 10000u
 typedef struct {
@@ -7674,7 +7685,21 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *pa
             hci_con_handle_t handle =
                 sm_event_just_works_request_get_handle(packet);
             if (handle == config_ble.handle) {
-                if (config_ble_accept_new_bond()) {
+                // A management bond is made with LE Secure Connections or not
+                // at all (mgmt_access.h, rule 3c). The admission latch is asked
+                // first so a refused attempt is still reported as refused
+                // admission, not as a pairing-method problem.
+                const bool secure_connections =
+                    sm_event_just_works_request_get_secure_connection(packet) != 0u;
+                const bool admitted = config_ble_accept_new_bond();
+                if (admitted && !secure_connections) {
+                    config_ble.legacy_pairing_declined++;
+                    printf("[BTSTACK_HOST] SM: management Just Works declined -- "
+                           "legacy pairing offered, Secure Connections required\n");
+                    sm_bonding_decline(handle);
+                } else if (mgmt_accept_new_bond_pairing(
+                               g_mgmt_enabled, config_ble.fresh_bond_admitted,
+                               secure_connections)) {
                     printf("[BTSTACK_HOST] SM: management Just Works accepted "
                            "(admitted when this connection was accepted)\n");
                     sm_just_works_confirm(handle);
@@ -13315,7 +13340,11 @@ void btstack_host_get_mgmt_diag(btstack_host_mgmt_diag_t *out)
     // Feature / personality
     out->mgmt_enabled = g_mgmt_enabled;
     out->config_mode = g_usb_config_mode;
+#ifdef NS2_PRO
     out->personality = (uint8_t)g_usb_personality;
+#else
+    out->personality = 0u;  // Switch 1 build has a single identity
+#endif
     // Radio / host state
     out->powered_on = hid_state.powered_on;
     out->hid_state = (uint8_t)hid_state.state;
@@ -13348,6 +13377,7 @@ void btstack_host_get_mgmt_diag(btstack_host_mgmt_diag_t *out)
     out->cble_closing = config_ble.closing;
     out->cble_notifications = config_ble.notifications_enabled;
     out->cble_fresh_bond_admitted = config_ble.fresh_bond_admitted;
+    out->cble_legacy_pairing_declined = config_ble.legacy_pairing_declined;
     out->cble_tx_wait_max_ms = config_ble.tx_wait_max_ms;
     // Counters (ring-independent totals)
     out->event_count = btlife_count;

@@ -112,6 +112,23 @@ static void test_latched_bond_is_per_attempt(void) {
     }
 }
 
+// Rule (3c): a new management bond needs Secure Connections on top of the
+// admission latch. Legacy can never be the reason a bond is ACCEPTED, and
+// Secure Connections can never rescue an attempt the latch refused.
+static void test_new_bond_requires_secure_connections(void) {
+    for (unsigned bits = 0; bits < 8u; bits++) {
+        bool enabled = (bits & 1u) != 0;
+        bool admitted = (bits & 2u) != 0;
+        bool sc = (bits & 4u) != 0;
+        bool expect = mgmt_accept_latched_bonding(enabled, admitted) && sc;
+        assert(mgmt_accept_new_bond_pairing(enabled, admitted, sc) == expect);
+    }
+    assert(mgmt_accept_new_bond_pairing(true, true, true));
+    assert(!mgmt_accept_new_bond_pairing(true, true, false));   // legacy offer
+    assert(!mgmt_accept_new_bond_pairing(true, false, true));   // not admitted
+    assert(!mgmt_accept_new_bond_pairing(false, true, true));   // `mgmt off`
+}
+
 static void test_writes_require_bond_and_allowlist(void) {
     mgmt_state_t s = IDLE_ENABLED;
     s.client_connected = true;
@@ -225,6 +242,7 @@ int main(void) {
     test_wake_is_never_broken();
     test_bond_only_in_window_when_enabled();
     test_latched_bond_is_per_attempt();
+    test_new_bond_requires_secure_connections();
     test_writes_require_bond_and_allowlist();
     test_single_client();
     test_link_trust_requires_bond_and_active_ble_encryption();

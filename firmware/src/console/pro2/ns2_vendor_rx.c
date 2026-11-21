@@ -11,6 +11,11 @@ static void reset_command(ns2_vendor_rx_t *rx)
 {
     rx->length = 0;
     rx->expected = 0;
+    // Command handlers read fixed payload offsets (an address at 12..15, a key
+    // at 9..24) and not every one checks the command's length first. Clearing
+    // the buffer between commands makes a short command read zeros there
+    // instead of the previous command's bytes.
+    memset(rx->data, 0, sizeof(rx->data));
 }
 
 size_t ns2_vendor_rx_feed(ns2_vendor_rx_t *rx,
