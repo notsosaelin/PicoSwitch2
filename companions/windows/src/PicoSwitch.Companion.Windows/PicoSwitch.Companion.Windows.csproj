@@ -24,7 +24,7 @@
       to a Windows user account is exactly the kind of platform behaviour this
       project exists to contain.
     -->
-    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="11.0.0" />
   </ItemGroup>
 
   <ItemGroup>

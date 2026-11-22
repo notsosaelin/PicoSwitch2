@@ -24,7 +24,7 @@
       a pure managed port of libopus (BSD-3-Clause): no native DLL to ship, and
       portable, so the Linux shell can reuse the same decoder.
     -->
-    <PackageReference Include="Concentus" Version="2.2.2" />
+    <PackageReference Include="Concentus" Version="2.2.3" />
   </ItemGroup>
 
   <ItemGroup>
