@@ -25,7 +25,7 @@ portable ZIPs, Linux executables, and the signed APK (same certificate as
 2.6.0), all in `SHA256SUMS`, with release notes.
 
 1. **Publish the 2.6.1 draft** (maintainer). Optionally add the Windows
-   installers first: `companions\windowsuild.ps1 -ReleaseArtifacts
+   installers first: `companions\windows\build.ps1 -ReleaseArtifacts
    -Configuration Release -Platform x64` (and `arm64`) needs Inno Setup, which
    the build machine does not have.
 2. **Gate 19 against a Switch 2 console**, on the production adapter: so far
