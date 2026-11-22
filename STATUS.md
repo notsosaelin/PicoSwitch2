@@ -16,17 +16,18 @@ _Last updated 2026-11-22._
 
 ## Resume here
 
-**v2.6.1 is tagged and its CI draft release is being built** (2026-11-22). It
-carries Android Controller Link on one Bluetooth link (Path C), discovery
-stepping aside while a companion streams, the audit pass of 2026-11-10, the
-web portal rework and the phone layouts. The Android APK and the Windows
-installer are not in the draft: the signing key and Inno Setup are not on the
-build machine.
+**v2.6.1 is tagged (`adcfa17`) and its draft release is complete except for
+the Windows installer** (2026-11-22). It carries Android Controller Link on one
+Bluetooth link (Path C), discovery stepping aside while a companion streams,
+the audit pass of 2026-11-10, the web portal rework and the phone layouts. The
+draft holds the CI firmware (tag hash, install markers verified), Windows
+portable ZIPs, Linux executables, and the signed APK (same certificate as
+2.6.0), all in `SHA256SUMS`, with release notes.
 
-1. **Finish the 2.6.1 draft.** Build the signed APK
-   (`.\gradlew :app:assembleRelease` with the release keystore) and the Windows
-   installers, add them, extend `SHA256SUMS`, then publish the draft
-   (maintainer).
+1. **Publish the 2.6.1 draft** (maintainer). Optionally add the Windows
+   installers first: `companions\windowsuild.ps1 -ReleaseArtifacts
+   -Configuration Release -Platform x64` (and `arm64`) needs Inno Setup, which
+   the build machine does not have.
 2. **Gate 19 against a Switch 2 console**, on the production adapter: so far
    only a PC running an emulator has been the host.
 3. **Keyboard & Mouse Link is designed and waiting for a go-ahead.** Read
@@ -45,7 +46,7 @@ If work stops in the middle of a task, write the next step here.
 
 | | |
 | --- | --- |
-| Released baseline | **v2.6.1** (2026-11-22, draft): firmware for both boards (update and clean-install UF2), Windows portable ZIP and Linux executables (x64, arm64) from CI; signed APK and Windows installer still to add. Previous: v2.6.0 (2026-11-08) |
+| Released baseline | **v2.6.1** (2026-11-22, draft awaiting publish): firmware for both boards (update and clean-install UF2), Windows portable ZIP and Linux executables (x64, arm64) from CI, signed Android APK; no Windows installer. Previous: v2.6.0 (2026-11-08) |
 | Development branch | `main` |
 | Release blockers | None known |
 | Product version | `VERSION` (2.6.1); the firmware reports it in `info` |
