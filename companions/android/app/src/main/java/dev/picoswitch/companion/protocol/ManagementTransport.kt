@@ -41,6 +41,28 @@ interface ManagementTransport : ManagementChannel {
      * management reply, only behind another GATT operation.
      */
     suspend fun writeCompanionMic(frame: ByteArray): Boolean = false
+
+    /**
+     * The adapter exposes the Controller Link data plane (Path C) on this link:
+     * gameplay on the management connection, so the phone holds ONE Bluetooth
+     * link to the adapter instead of a second Classic HID connection.
+     */
+    val controllerLinkAvailable: Boolean get() = false
+
+    /**
+     * Subscribe to the adapter's Controller Link feedback (rumble, player,
+     * motion wanted). [onOutput] runs on a Bluetooth binder thread and must not
+     * block. Holds the link at high connection priority while open.
+     */
+    suspend fun openControllerLink(onOutput: (ByteArray) -> Unit): Boolean = false
+
+    suspend fun closeControllerLink() = Unit
+
+    /**
+     * One Controller Link frame, write-without-response. Completes when the
+     * platform stack accepted it, so at most one frame waits in the stack.
+     */
+    suspend fun writeControllerLink(frame: ByteArray): Boolean = false
 }
 
 data class DiscoveredManagementPeer(

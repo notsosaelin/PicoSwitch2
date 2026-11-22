@@ -42,8 +42,13 @@
 //
 // PLATFORM SCOPE
 //
-// Android keeps BR/EDR HID and must not be migrated here. Carrier architecture
-// differs by platform; normalized semantics stay shared.
+// Every companion uses this carrier: Windows and Linux from the start, Android
+// since 2026-11-22. Android's separate BR/EDR HID connection had to be paged in
+// through the adapter's inquiry cycle and then shared the radio with this LE
+// link, which starved and timed out under it on a Galaxy S25 Ultra while the
+// Classic link stayed up (docs/experiments/android-two-link-coexistence-2026-11-22.md).
+// The Android app no longer opens a Classic HID connection at all. Normalized
+// semantics stay shared.
 #ifndef NS2_COMPANION_LINK_H
 #define NS2_COMPANION_LINK_H
 

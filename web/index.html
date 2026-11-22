@@ -416,6 +416,45 @@
     .nav-spacer { display: none; }
     .tuning label { grid-template-columns: 1fr; }
   }
+  /* Phones. Checked on a 384x832 CSS px phone in portrait and landscape, and
+     at the widths in tools/portal_preview.py's phone shots. */
+  #nav { height: 100dvh; }
+  @media (max-width: 720px) { #nav { height: 64px; } }
+  @media (max-width: 720px), (max-height: 500px) {
+    header { padding: 8px 12px; gap: 6px 10px; }
+    header h1 { font-size: 16px; }
+    header .pill { font-size: 11px; padding: 2px 8px; }
+    header button { min-height: 32px; padding: 4px 12px; font-size: 13px; }
+    .header-message { flex: 1 1 0; text-align: left; }
+    main { padding: 12px; }
+    section { padding: 12px 14px; margin-bottom: 12px; }
+    .play-card { margin-bottom: 12px; }
+    .play-grid { gap: 12px; }
+  }
+  @media (max-width: 420px) {
+    /* The firmware line is on the Adapter page; the header keeps one row. */
+    header { gap: 6px 8px; }
+    header h1 { font-size: 15px; }
+    header button { padding: 4px 10px; margin-left: auto; }
+    .header-message { display: none; }
+    .nav-item { font-size: 10px; }
+    .nav-item span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  }
+  .play-state-row { flex-wrap: wrap; row-gap: 6px; }
+  .play-state-row .pill { white-space: nowrap; }
+  @media (max-width: 560px) {
+    .play-state { font-size: 20px; }
+    .play-flow { grid-template-columns: 1fr; gap: 4px; }
+    .play-arrow { justify-self: center; line-height: 1; transform: rotate(90deg); }
+    .console-btn { min-height: 60px; }
+  }
+  /* A phone in landscape: the side rail must still reach every page. */
+  @media (min-width: 721px) and (max-height: 500px) {
+    #nav { overflow-y: auto; gap: 2px; padding: 6px; }
+    .nav-dot { margin: 4px auto 6px; }
+    .nav-item { min-height: 40px; padding: 4px 2px; font-size: 10px; gap: 1px; }
+    .nav-item svg { width: 18px; height: 18px; }
+  }
 </style>
 </head>
 <body>

@@ -213,9 +213,9 @@ validation gates and open questions:
 [`docs/architecture/kbm-link-hld.md`](docs/architecture/kbm-link-hld.md).
 
 **Not started. Do not implement without the maintainer's explicit go-ahead.**
-Two preferences in the design are the maintainer's to settle first: the default
-release chord (Ctrl+Alt+Shift+Z proposed) and whether system shortcuts are
-captured by default.
+The release chord is settled (Ctrl+Alt+Shift+Q, 2026-11-22). One preference is
+still the maintainer's to settle first: whether system shortcuts are captured
+by default.
 
 | Phase | Contents | Status |
 |---|---|---|
@@ -368,12 +368,9 @@ Settled since:
 
 Open:
 
-- **Android's gameplay carrier is unchanged and stays Classic HID for now.** Whether it should move
-  to Path C so a companion holds one Bluetooth link instead of two is analysed in
-  `docs/experiments/android-gameplay-carrier-choice-2026-09-03.md`: the stated motivation is already
-  satisfied by the existing management gating, and the latency case is a hypothesis resting on an
-  unobserved connection interval. Not accepted work; the measurements that would settle it are
-  listed there.
+- **Android's gameplay carrier moved to Path C on 2026-11-22**, so every companion holds one
+  Bluetooth link: [record](docs/experiments/android-two-link-coexistence-2026-11-22.md). Gameplay,
+  soak and handheld validation remain (STATUS.md gate 19).
 - **The Phase 2 happy path is hardware-confirmed** (2026-08-29): discovery, Windows pairing, the
   encrypted management session, the identity gate, firmware/personality reads, a complete peer
   inventory, and registry/history persistence. **Boundary C — one management client, no churn — is

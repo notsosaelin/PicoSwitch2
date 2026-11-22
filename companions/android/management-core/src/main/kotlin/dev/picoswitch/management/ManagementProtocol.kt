@@ -116,6 +116,39 @@ object ManagementProtocol {
         )
     }
 
+    /**
+     * Controller Link data-plane state. The adapter nests everything under
+     * "clink" so one read answers capability, health and the MTU question.
+     */
+    fun controllerLink(command: String, response: String): ControllerLinkState = decode(command, response) { value ->
+        val link = value["clink"] as? JsonObject ?: throw IllegalArgumentException("Missing 'clink'")
+        val frames = link["frames"] as? JsonObject
+        val outputs = link["outputs"] as? JsonObject
+        fun frame(name: String) = frames?.optionalLong(name) ?: 0L
+        fun output(name: String) = outputs?.optionalLong(name) ?: 0L
+        ControllerLinkState(
+            active = link.optionalBoolean("active") ?: false,
+            subscribed = link.optionalBoolean("subscribed") ?: false,
+            version = link.optionalInt("version") ?: 0,
+            frameBytes = link.optionalInt("frame_bytes") ?: 0,
+            attMtu = link.optionalInt("att_mtu") ?: 0,
+            minimumAttMtu = link.optionalInt("min_att_mtu") ?: 0,
+            mtuOk = link.optionalBoolean("mtu_ok") ?: false,
+            generation = link.optionalLong("generation") ?: 0L,
+            framesReceived = frame("received"),
+            framesApplied = frame("applied"),
+            framesStale = frame("stale"),
+            framesShort = frame("short"),
+            framesVersion = frame("version"),
+            framesOpcode = frame("opcode"),
+            framesRejectedState = frame("rejected_state"),
+            outputsSent = output("sent"),
+            outputsFailed = output("failed"),
+            neutralizations = link.optionalLong("neutralizations") ?: 0L,
+            maxGapMillis = link.optionalLong("max_gap_ms") ?: 0L,
+        )
+    }
+
     /** Companion audio downlink state, nested under "caudio" like "clink". */
     fun companionAudio(command: String, response: String): CompanionAudioState = decode(command, response) { value ->
         val audio = value["caudio"] as? JsonObject ?: throw IllegalArgumentException("Missing 'caudio'")
@@ -768,6 +801,14 @@ object ManagementCommands {
     const val COMPANION_AUDIO_START_MIC = "caudio start mic"
     const val COMPANION_AUDIO_STOP = "caudio stop"
     const val COMPANION_AUDIO_STATUS = "caudio status"
+    /**
+     * Controller Link on the management link (Path C): arm, release, read. The
+     * same commands the Windows and Linux companions send; the adapter measures
+     * the negotiated ATT MTU at start and refuses below one frame.
+     */
+    const val CONTROLLER_LINK_START = "clink start"
+    const val CONTROLLER_LINK_STOP = "clink stop"
+    const val CONTROLLER_LINK_STATUS = "clink status"
 
     fun inputActive(sourceId: Long): String {
         require(sourceId in 0..0xFFFF_FFFFL)

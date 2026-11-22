@@ -4,6 +4,9 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Process
 import dev.picoswitch.companion.protocol.ManagementTransport
 import dev.picoswitch.management.audio.CompanionAudioDataPlane
 import dev.picoswitch.management.audio.CompanionAudioDecoder
@@ -254,11 +257,39 @@ class AudioTrackCompanionAudioSink(
     }
 }
 
-/** The audio notification characteristic on this app's management link. */
+/**
+ * The audio notification characteristic on this app's management link.
+ *
+ * Frames are decoded and written to the AudioTrack on a dedicated thread at
+ * audio priority, never on the Bluetooth binder thread that delivers them:
+ * that thread also completes every Controller Link and microphone write and
+ * delivers management replies, so an Opus decode (plus up to three concealed
+ * frames after a gap) there delayed all of them, and their work delayed the
+ * audio in turn. One thread, so frame order is the order of arrival.
+ */
 class TransportCompanionAudioDownlink(private val transport: ManagementTransport) : CompanionAudioDownlink {
     override val attMtu: Int get() = transport.attMtu
+    private var thread: HandlerThread? = null
 
-    override suspend fun open(onFrame: (ByteArray) -> Unit): Boolean = transport.openCompanionAudio(onFrame)
+    override suspend fun open(onFrame: (ByteArray) -> Unit): Boolean {
+        val worker = HandlerThread("companion-audio-rx", Process.THREAD_PRIORITY_URGENT_AUDIO).also { it.start() }
+        val handler = Handler(worker.looper)
+        synchronized(this) { thread?.quitSafely(); thread = worker }
+        val opened = transport.openCompanionAudio { frame ->
+            val copy = frame.copyOf()
+            handler.post { onFrame(copy) }
+        }
+        if (!opened) stopThread(worker)
+        return opened
+    }
 
-    override suspend fun close() = transport.closeCompanionAudio()
+    override suspend fun close() {
+        transport.closeCompanionAudio()
+        synchronized(this) { thread }?.let(::stopThread)
+    }
+
+    private fun stopThread(worker: HandlerThread) {
+        worker.quitSafely()
+        synchronized(this) { if (thread === worker) thread = null }
+    }
 }

@@ -135,7 +135,7 @@ fun DiagnosticsScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onExp
             SectionCard(title = "Controller bridge", icon = Icons.Default.BluetoothAudio) {
                 DetailList {
                 LabelValueRow("Phase", "${ui.bridge.phase.name} · registered ${ui.bridge.registered}")
-                LabelValueRow("Saved host", if (viewModel.pairedControllerHosts().isEmpty()) "No" else "Yes")
+                LabelValueRow("Carrier", "Adapter connection (one link)")
                 LabelValueRow("Reports", ui.bridge.reportCount.toString())
                 // Platform, normalized and protocol are shown separately on
                 // purpose: which layer disagrees with the next one is what

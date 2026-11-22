@@ -32,6 +32,14 @@ class ManagementClient(
         exchange(ManagementCommands.COMPANION_AUDIO_STOP, ManagementProtocol::companionAudio)
     suspend fun companionAudioStatus() =
         exchange(ManagementCommands.COMPANION_AUDIO_STATUS, ManagementProtocol::companionAudio)
+    /** Arm the Controller Link data plane; the reply says whether streaming may begin. */
+    suspend fun controllerLinkStart() =
+        exchange(ManagementCommands.CONTROLLER_LINK_START, ManagementProtocol::controllerLink)
+    /** Release it: the adapter publishes neutral first and keeps management up. */
+    suspend fun controllerLinkStop() =
+        exchange(ManagementCommands.CONTROLLER_LINK_STOP, ManagementProtocol::controllerLink)
+    suspend fun controllerLinkStatus() =
+        exchange(ManagementCommands.CONTROLLER_LINK_STATUS, ManagementProtocol::controllerLink)
     /**
      * KB/M status, with the ingress counters merged in.
      *

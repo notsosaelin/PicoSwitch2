@@ -105,8 +105,14 @@ fun PlayScreen(
         val short = LocalShortWindow.current
         val gap = if (short) LayoutTokens.Space2 else LayoutTokens.Space3
         val hub = maxWidth >= HUB_MIN_WIDTH && maxHeight >= HUB_MIN_HEIGHT
+        // The hub (landscape) keeps one row: its height is shared out exactly,
+        // and a second row took it from the controller card. The scrolling
+        // column has height to spare, so a narrow one splits the row.
         val actions: @Composable (Modifier) -> Unit = { modifier ->
-            ActionRow(ui, viewModel, action, onHero, hasAdapter, onOpenTouchGamepad, onConnectAdapter, modifier)
+            ActionRow(
+                ui, viewModel, action, onHero, hasAdapter, onOpenTouchGamepad, onConnectAdapter, modifier,
+                split = !hub && maxWidth < ACTIONS_ONE_ROW_MIN,
+            )
         }
         if (hub) {
             val padTop = if (short) LayoutTokens.Space1 else LayoutTokens.PagePaddingTop
@@ -127,7 +133,13 @@ fun PlayScreen(
                 Column(Modifier.weight(1.35f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(gap)) {
                     HeadsetTileCard(viewModel, Modifier.fillMaxWidth().height(HEADSET_STRIP_HEIGHT))
                     ControllerCard(ui, viewModel, action, playing, Modifier.weight(1f).fillMaxWidth())
-                    ConsoleTile(viewModel, playing, Modifier.fillMaxWidth().height(consoleHeight))
+                    // Icon over label needs CONSOLE_STACKED_MIN; a landscape
+                    // phone leaves about 83 dp, which clipped the labels
+                    // (S25 Ultra, 2026-11-22), so there they sit beside the icon.
+                    ConsoleTile(
+                        viewModel, playing, Modifier.fillMaxWidth().height(consoleHeight),
+                        stacked = consoleHeight >= CONSOLE_STACKED_MIN,
+                    )
                     actions(Modifier.fillMaxWidth())
                 }
                 AmiiboTileCard(ui, viewModel, Modifier.weight(1f).fillMaxHeight())
@@ -156,6 +168,10 @@ private val HUB_MIN_HEIGHT = 280.dp
 private val STACKED_TILE_HEIGHT = 120.dp
 private val STACKED_AMIIBO_HEIGHT = 300.dp
 private val HEADSET_STRIP_HEIGHT = 96.dp
+/** A console tile this tall fits icon over label (28 icon, a title line, padding). */
+private val CONSOLE_STACKED_MIN = 100.dp
+/** Narrower than this, the scrolling Play column gives its main action a row of its own. */
+private val ACTIONS_ONE_ROW_MIN = 480.dp
 
 /**
  * The controller row: input -> output at a glance, the state in a few words,
@@ -217,16 +233,36 @@ private fun InputOutput(ui: CompanionUiState) {
     } else {
         ConsoleCues.playerLabel(true, ui.snapshot.input.console) ?: if (playing) "On the console" else "To the console"
     }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        FlowEnd(Icons.Default.Gamepad, input.name, if (input.tone == StatusTone.Good) null else input.words, accent = false, Modifier.weight(1f))
-        Icon(
-            Icons.Default.ChevronRight, null,
-            Modifier.padding(horizontal = LayoutTokens.Space1),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        FlowEnd(Icons.Default.Gamepad, outputName, outputLine, accent = true, Modifier.weight(1f))
+    val inputLine = if (input.tone == StatusTone.Good) null else input.words
+    BoxWithConstraints {
+        // Side by side, a phone in portrait gave each end about 110 dp of name
+        // ("No control…", S25 Ultra, 2026-11-22); there the two ends stack.
+        if (maxWidth < FLOW_SIDE_BY_SIDE_MIN) {
+            Column(verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space1)) {
+                FlowEnd(Icons.Default.Gamepad, input.name, inputLine, accent = false, Modifier.fillMaxWidth())
+                Icon(
+                    Icons.Default.ExpandMore, null,
+                    Modifier.padding(start = 10.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                FlowEnd(Icons.Default.Gamepad, outputName, outputLine, accent = true, Modifier.fillMaxWidth())
+            }
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                FlowEnd(Icons.Default.Gamepad, input.name, inputLine, accent = false, Modifier.weight(1f))
+                Icon(
+                    Icons.Default.ChevronRight, null,
+                    Modifier.padding(horizontal = LayoutTokens.Space1),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                FlowEnd(Icons.Default.Gamepad, outputName, outputLine, accent = true, Modifier.weight(1f))
+            }
+        }
     }
 }
+
+/** Narrower than this, the controller row's two ends stack. */
+private val FLOW_SIDE_BY_SIDE_MIN = 400.dp
 
 @Composable
 private fun FlowEnd(icon: ImageVector, name: String, line: String?, accent: Boolean, modifier: Modifier) {
@@ -305,21 +341,22 @@ private fun QuickSettings(ui: CompanionUiState, viewModel: CompanionViewModel) {
 
 /** Home, Capture, C: always in place, so starting never rearranges the page; live only while playing. */
 @Composable
-private fun ConsoleTile(viewModel: CompanionViewModel, playing: Boolean, modifier: Modifier) {
+private fun ConsoleTile(viewModel: CompanionViewModel, playing: Boolean, modifier: Modifier, stacked: Boolean = true) {
     Row(
         modifier
             .clip(RoundedCornerShape(LayoutTokens.CardRadius))
             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             .padding(LayoutTokens.Space3),
         horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         // Hold, not click: the console tells a tap from a hold (Capture screenshots
         // on release but records on a long hold). Pressed through Controller Link.
-        ActionButton(Icons.Default.Home, "Home", Modifier.weight(1f).fillMaxHeight(), enabled = playing, stacked = true,
+        ActionButton(Icons.Default.Home, "Home", Modifier.weight(1f).fillMaxHeight(), enabled = playing, stacked = stacked,
             onHold = { viewModel.setConsoleButton(ControllerButton.Home, it) })
-        ActionButton(Icons.Default.PhotoCamera, "Capture", Modifier.weight(1f).fillMaxHeight(), enabled = playing, stacked = true,
+        ActionButton(Icons.Default.PhotoCamera, "Capture", Modifier.weight(1f).fillMaxHeight(), enabled = playing, stacked = stacked,
             onHold = { viewModel.setConsoleButton(ControllerButton.Capture, it) })
-        ActionButton(Icons.AutoMirrored.Filled.Chat, "C", Modifier.weight(1f).fillMaxHeight(), enabled = playing, stacked = true,
+        ActionButton(Icons.AutoMirrored.Filled.Chat, "C", Modifier.weight(1f).fillMaxHeight(), enabled = playing, stacked = stacked,
             onHold = { viewModel.setConsoleButton(ControllerButton.C, it) })
     }
 }
@@ -335,26 +372,54 @@ private fun ActionRow(
     onOpenTouchGamepad: () -> Unit,
     onConnectAdapter: () -> Unit,
     modifier: Modifier,
+    split: Boolean,
 ) {
-    Row(modifier, horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
-        HeroButton(action, onHero, Modifier.weight(1f))
-        // Not gated on a physical input: the screen itself is a complete controller.
-        QuickAction(Icons.Default.TouchApp, "Touch Gamepad", enabled = hasAdapter, onClick = onOpenTouchGamepad)
-        if (ui.connection.connected) {
-            QuickAction(
-                Icons.Default.PowerSettingsNew, "Wake",
-                enabled = !ui.busy && ui.snapshot.capabilities.wake != CapabilityState.Unsupported,
-                onClick = viewModel::wake,
-            )
+    // Three equal buttons on a phone in portrait left "Touch Gamepad" about
+    // 60 dp, and it shrank to 9 sp beside a full-size "Pair adapter"
+    // (S25 Ultra, 2026-11-22). Split, the main action takes its own row and
+    // the other two share the next one.
+    Box(modifier) {
+        if (split) {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+                HeroButton(action, onHero, Modifier.fillMaxWidth())
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+                    SecondaryActions(ui, viewModel, hasAdapter, onOpenTouchGamepad, onConnectAdapter)
+                }
+            }
         } else {
-            val connects = AdapterStatus.nextStepConnects(false, ui.connection.phase, hasAdapter)
-            QuickAction(
-                Icons.Default.Cable,
-                AdapterStatus.nextStep(false, ui.connection.phase, hasAdapter),
-                enabled = !AdapterStatus.inProgress(ui.connection.phase) && !ui.busy,
-                onClick = { if (connects) onConnectAdapter() else viewModel.navigate(AppSection.Adapter) },
-            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+                HeroButton(action, onHero, Modifier.weight(1f))
+                SecondaryActions(ui, viewModel, hasAdapter, onOpenTouchGamepad, onConnectAdapter)
+            }
         }
+    }
+}
+
+/** Touch Gamepad, and Wake or the adapter's next step. */
+@Composable
+private fun RowScope.SecondaryActions(
+    ui: CompanionUiState,
+    viewModel: CompanionViewModel,
+    hasAdapter: Boolean,
+    onOpenTouchGamepad: () -> Unit,
+    onConnectAdapter: () -> Unit,
+) {
+    // Not gated on a physical input: the screen itself is a complete controller.
+    QuickAction(Icons.Default.TouchApp, "Touch Gamepad", enabled = hasAdapter, onClick = onOpenTouchGamepad)
+    if (ui.connection.connected) {
+        QuickAction(
+            Icons.Default.PowerSettingsNew, "Wake",
+            enabled = !ui.busy && ui.snapshot.capabilities.wake != CapabilityState.Unsupported,
+            onClick = viewModel::wake,
+        )
+    } else {
+        val connects = AdapterStatus.nextStepConnects(false, ui.connection.phase, hasAdapter)
+        QuickAction(
+            Icons.Default.Cable,
+            AdapterStatus.nextStep(false, ui.connection.phase, hasAdapter),
+            enabled = !AdapterStatus.inProgress(ui.connection.phase) && !ui.busy,
+            onClick = { if (connects) onConnectAdapter() else viewModel.navigate(AppSection.Adapter) },
+        )
     }
 }
 
@@ -547,7 +612,7 @@ private fun TileIcon(icon: ImageVector, live: Boolean) {
     ) { Icon(icon, null, Modifier.size(28.dp), tint = if (live) colors.onPrimary else colors.onSurfaceVariant) }
 }
 
-private fun Context.canRecord(): Boolean =
+internal fun Context.canRecord(): Boolean =
     ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
 /** The one line that says what is in the way, and a contract-skew warning when there is one. */

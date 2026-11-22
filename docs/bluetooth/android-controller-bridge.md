@@ -146,7 +146,7 @@ companions/android/
   app/                         ANDROID.
     dev/picoswitch/companion/bridge/  AndroidInputBackend, AndroidMotionBackend,
                                       AndroidBatteryBackend, AndroidOutputBackend,
-                                      AndroidHidTransport, AndroidBridge (assembly),
+                                      GattControllerLinkTransport, AndroidBridge (assembly),
                                       BridgeForegroundService, layout store
     dev/picoswitch/companion/ui/      Compose UI and lifecycle
     ...                               management, Amiibo, NFC (unchanged, Android-specific)

@@ -12,24 +12,32 @@ most recently
 [`status-through-2026-11-10.archived.md`](docs/archive/status-through-2026-11-10.archived.md),
 which holds the per-item validation record for v2.6.0.
 
-_Last updated 2026-11-11._
+_Last updated 2026-11-22._
 
 ## Resume here
 
-`main` holds two passes on top of v2.6.0, committed 2026-11-20: the audit pass
-(2026-11-10) and the pass of 2026-11-11 (web portal rework, Pico W diagnostic
-buffer profile, amiibo dumps removed, the Keyboard & Mouse Link design). Nothing
-in either has run on hardware. The changes are listed under "Since v2.6.0".
+**v2.6.1 is tagged and its CI draft release is being built** (2026-11-22). It
+carries Android Controller Link on one Bluetooth link (Path C), discovery
+stepping aside while a companion streams, the audit pass of 2026-11-10, the
+web portal rework and the phone layouts. The Android APK and the Windows
+installer are not in the draft: the signing key and Inno Setup are not on the
+build machine.
 
-1. Push `main` (pushing deploys the reworked web portal to GitHub Pages).
-2. **Keyboard & Mouse Link is designed and waiting for a go-ahead.** Read
-   [`docs/architecture/kbm-link-hld.md`](docs/architecture/kbm-link-hld.md);
-   settle its two open preferences (release chord, capturing system shortcuts).
-   Implementation starts at phase 0 in [`PLAN.md`](PLAN.md). Do not start it
-   unasked.
-3. Flash both boards and run validation gates 14 to 17 below.
-4. Decide the open items at the top of [`PLAN.md`](PLAN.md): branch protection,
+1. **Finish the 2.6.1 draft.** Build the signed APK
+   (`.\gradlew :app:assembleRelease` with the release keystore) and the Windows
+   installers, add them, extend `SHA256SUMS`, then publish the draft
+   (maintainer).
+2. **Gate 19 against a Switch 2 console**, on the production adapter: so far
+   only a PC running an emulator has been the host.
+3. **Keyboard & Mouse Link is designed and waiting for a go-ahead.** Read
+   [`docs/architecture/kbm-link-hld.md`](docs/architecture/kbm-link-hld.md).
+   The release shortcut is settled (Ctrl+Alt+Shift+Q); one preference is open:
+   whether system shortcuts are captured by default. Do not start it unasked.
+4. Run validation gates 14 to 18 below on both boards.
+5. Decide the open items at the top of [`PLAN.md`](PLAN.md): branch protection,
    the watchdog, `NS2_PRO=OFF`, UART diagnostics in release images.
+6. Three Dependabot pull requests are open (actions, Android, .NET); CI fails
+   on the Android and .NET ones and nobody has looked at why.
 
 If work stops in the middle of a task, write the next step here.
 
@@ -37,16 +45,16 @@ If work stops in the middle of a task, write the next step here.
 
 | | |
 | --- | --- |
-| Released baseline | **v2.6.0** (2026-11-08): firmware for both boards (update and clean-install UF2), Windows installer and portable ZIP (x64, arm64), Linux single-file executables (x64, arm64), and the Android APK (added 2026-11-21, built from the tag, signed with the v2.5.0 key) |
+| Released baseline | **v2.6.1** (2026-11-22, draft): firmware for both boards (update and clean-install UF2), Windows portable ZIP and Linux executables (x64, arm64) from CI; signed APK and Windows installer still to add. Previous: v2.6.0 (2026-11-08) |
 | Development branch | `main` |
 | Release blockers | None known |
-| Product version | `VERSION` (2.6.0); the firmware reports it in `info` |
+| Product version | `VERSION` (2.6.1); the firmware reports it in `info` |
 | Bridge contract | 4 (`ANDROID_BRIDGE_CONTRACT_VERSION` / `BridgeContract.VERSION`); firmware and companions must come from the same release |
 | Settings schema | 11 |
 | Toolchain | Pico SDK 2.3.0, BTstack 1.8.2, Arm GCC 15.2.Rel1 |
 | Boards | Pico 2 W: production, 300 MHz, live DualSense audio. Pico W: validated non-audio profile. Keep them different. |
 
-## Since v2.6.0 (not released)
+## Released in v2.6.1, hardware validation incomplete
 
 An audit and hardening pass, 2026-11-10. All of it is built and software-tested
 only.
@@ -94,6 +102,29 @@ And on 2026-11-11, also software-tested only:
 - **Keyboard & Mouse Link designed**, not implemented
   ([design](docs/architecture/kbm-link-hld.md)).
 
+And on 2026-11-22, the phone layout pass, looked at on a Galaxy S25 Ultra
+(384 × 832 dp) in both orientations with no adapter:
+
+- **Web portal**: in landscape the side navigation was cut off and Adapter and
+  Settings could not be reached; now it fits. The header is one row on a
+  phone. `tools/portal_preview.py --shots` renders nine phone sizes. Checked in
+  Firefox (Chrome is disabled on that phone), so only layout, not Bluetooth.
+- **Android companion**: in portrait the bottom navigation ran off the screen
+  and Adapter could not be opened from it; it now stacks names under icons in
+  equal cells below 560 dp. In landscape the closed rail no longer shows in
+  the camera cutout strip and the console tiles' labels are no longer clipped.
+  Play's actions and controller row adapt to a narrow window
+  ([layout spec](docs/architecture/companion-shell-layout.md)).
+- **Android Controller Link on the management link (Path C).** The separate
+  Classic HID connection failed on a Galaxy S25 Ultra in two ways: its page
+  was missed while the adapter ran controller inquiry (the slow first
+  connect), and while it streamed the LE management link starved and timed
+  out, taking Controller Link with it. Reproduced on pre-2.6.0 firmware, so
+  not a firmware regression. Android now uses the same data plane as Windows
+  and Linux, and the Classic HID transport is gone from the app. No
+  firmware change. The Touch Gamepad menu gained a Headset switch
+  ([record](docs/experiments/android-two-link-coexistence-2026-11-22.md)).
+
 ## Released in v2.6.0, hardware validation incomplete
 
 The changelog describes each item. These parts have not been seen on hardware:
@@ -126,9 +157,9 @@ on real hardware; anything else says what it is.
 | Audio | Partial | DualSense speaker, headset jack and genuine Pro Controller 2 headphone output confirmed on Pico 2 W. DualSense microphone return not implemented. Companion audio downlink plays on hardware: Windows, and Android (Odin 2 Mini, with a Windows PC as the USB host, eighth pass of the [record](docs/experiments/companion-audio-downlink-prototype-2026-11-07.md)). Android against a Switch 2, the companion microphone uplink on either platform, and the descriptor-time Controller Link admission fix are implemented, hardware validation pending. |
 | Virtual Amiibo / NFC | Complete | 540/572-byte tags and the 2048-byte figure-v3 path confirmed. Native physical NFC writes still open. |
 | Management (BLE + USB CDC) | Partial | Implementation complete; bonded, encrypted BLE management works in any personality. Part of the security and coexistence pass is unvalidated (below). |
-| Android companion | Complete | Management, Controller Link, Touch Gamepad, Virtual Amiibo. |
+| Android companion | Complete | Management, Controller Link, Touch Gamepad, Virtual Amiibo. Controller Link on the management link (Path C) since 2.6.1; played against a PC emulator host on an S25 Ultra and a Thor, not yet against a Switch 2 (gate 19). |
 | Windows companion | Partial | Management and Controller Link confirmed on hardware (no motion: Windows does not expose it). Touch Gamepad and installer shipped in v2.5.0. Virtual Amiibo transfer hardware validation pending. |
-| Web portal | Partial | Rebuilt on the companion shell 2026-11-11; implementation complete for the pages listed in [`web/README.md`](web/README.md), software-validated and rendered against fixtures only. The amiibo manager and colours are the previously shipped code, unchanged. |
+| Web portal | Partial | Rebuilt on the companion shell 2026-11-11; implementation complete for the pages listed in [`web/README.md`](web/README.md), software-validated and rendered against fixtures only (also on a phone, 2026-11-22, layout only). The amiibo manager and colours are the previously shipped code, unchanged. |
 | Linux companion | Partial | Implementation complete for v1 (pairing, management, Controller Link with motion); hardware validation pending. Keyboard & Mouse and Amiibo pages, the Touch Gamepad and companion audio (headset and microphone) ported (software only; hardware validation pending). Open questions: [`companions/linux/README.md`](companions/linux/README.md#6-open-questions-for-the-first-hardware-pass). |
 
 ## Open validation gates
@@ -158,22 +189,34 @@ Each needs hardware in front of the maintainer; none is release-blocking.
     scope, speaker continuity, microphone intelligibility, mid-session headset ↔
     headphones re-plug, and no Controller Link regression
     ([procedure A and B](docs/experiments/companion-audio-downlink-prototype-2026-11-07.md#hardware-validation-procedure-next)).
-14. **Management pairing requires Secure Connections** (changed 2026-11-10, not
-    released): pair each companion (Android, Windows, Linux) fresh and confirm the
+14. **Management pairing requires Secure Connections** (changed 2026-11-10, in
+    2.6.1): pair each companion (Android, Windows, Linux) fresh and confirm the
     bond forms; `btstate` reports `cble.legacy_declined` if one was refused for
     offering legacy pairing. Existing bonds are unaffected.
-15. **Firmware built with `printf` compiled out** (2026-11-10, not released): a
+15. **Firmware built with `printf` compiled out** (2026-11-10, in 2.6.1): a
     normal session on each board, to confirm that removing the discarded
     logging changed no timing-sensitive behavior.
-16. **Web portal against an adapter** (2026-11-11, not released), in Chrome or
+16. **Web portal against an adapter** (2026-11-11, in 2.6.1), in Chrome or
     Edge over Bluetooth: each page loads; a binding change reaches the console;
     Pair and Forget work; Controller Link from a browser gamepad plays a game
     with the face buttons where expected, rumble arrives, and hiding the tab
     releases every input. Read `clink status` during play for the applied rate
     and `max_gap_ms`: the connection interval a browser gets is unknown.
-17. **Pico W with short diagnostic rings** (2026-11-11, not released): an
+17. **Pico W with short diagnostic rings** (2026-11-11, in 2.6.1): an
     ordinary session on a Pico W, then `trace status` and `btlife status` to
     confirm the reported capacities (64 and 256) and that nothing else moved.
+18. **Phone layouts against an adapter** (2026-11-22, in 2.6.1): the
+    Android debug build and the web portal in Chrome on a phone, connected, in
+    both orientations: every page reachable, Play while streaming, the
+    Keyboard page with an adapter's real mapping.
+19. **Android on Path C** (2026-11-22, in 2.6.1). Done with a PC running a
+    Switch 2 emulator as the USB host, Pico 2 W dev adapter: S25 Ultra about
+    14 minutes (92,719 frames, all applied, 0 neutralizations, no management
+    drop, headset live); AYN Thor on the 2.6.1 build (all frames applied,
+    `scan_active`/`inquiry_active` false while streaming, headset 0 skipped at
+    the adapter and 0 dropped at the phone, link on LE 2M). Still to do:
+    against a Switch 2 console on the production adapter, motion and rumble,
+    30 minutes or more, reconnect after leaving range.
 
 ## Known technical debt
 
@@ -234,4 +277,8 @@ cross-implementation amiibo crypto check did not run. The web portal was
 rendered against fixtures and looked at; it has not met an adapter. The shared
 portable suites were not re-run on Linux, the WinUI shell was not compiled, and
 the Android APK was not assembled.
+On 2026-11-22, after the phone layout pass: tool tests 34/34; Android JVM
+1,299 run, 0 failed, 10 skipped; the Android debug APK assembled and was looked
+at on a phone. Firmware, host, Windows and Linux suites were not re-run (none
+of their files changed).
 Software validation is not hardware validation.

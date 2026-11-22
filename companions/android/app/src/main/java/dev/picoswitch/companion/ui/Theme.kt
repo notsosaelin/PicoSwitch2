@@ -84,6 +84,10 @@ object LayoutTokens {
     val BarHeight = 64.dp
     val NavItemHeight = 52.dp
     val NavFullNamesMin = 720.dp
+    /** Below this width a top / bottom bar stacks each item's name under its icon, in equal cells. */
+    val NavStackedBelow = 560.dp
+    /** The connection dot's cell in a stacked bar. */
+    val NavDotCompactWidth = 28.dp
     val DetailWidth = 360.dp
     val EmptyStateWidth = 340.dp
     /**

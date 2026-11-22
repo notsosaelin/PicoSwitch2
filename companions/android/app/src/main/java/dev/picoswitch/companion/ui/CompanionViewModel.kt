@@ -45,7 +45,7 @@ import dev.picoswitch.bridge.touch.TouchProfileLibraryJsonCodec
 import dev.picoswitch.bridge.touch.TouchProfileDecodeResult
 import dev.picoswitch.bridge.touch.TouchReleaseReason
 import dev.picoswitch.companion.bridge.AndroidBridge
-import dev.picoswitch.companion.bridge.AndroidBridgeHost
+import dev.picoswitch.companion.bridge.AdapterBridgeHost
 import dev.picoswitch.companion.bridge.TouchProfileSelector
 import dev.picoswitch.companion.data.*
 import dev.picoswitch.companion.diagnostics.DiagnosticEntry
@@ -348,7 +348,11 @@ class CompanionViewModel(application: Application, private val savedState: Saved
      * encode reports, touch the HID profile, or handle sensors — all of that is
      * behind [bridge].
      */
-    private val bridge = AndroidBridge(application, diagnostics)
+    private val bridge = AndroidBridge(application, diagnostics) {
+        // Read when a link starts, long after construction: one connection,
+        // owned by the management repository, carries Controller Link too.
+        adapter.controllerLinkPlane
+    }
 
     /** Raw input entry point for the Activity's key/motion dispatch. */
     val inputBackend get() = bridge.input
@@ -2948,20 +2952,12 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     }
 
     /**
-     * The saved adapter, as a platform-neutral [BridgeHost].
-     *
-     * The Bluetooth device object stops here: everything above this line — the
-     * UI, and the bridge itself — sees only an address and a name, which is all
-     * either of them ever needed.
+     * The saved adapter, as a platform-neutral [BridgeHost]. Controller Link
+     * rides the management connection to this adapter, so its LE bond is the
+     * only one that matters; no Classic bond is looked up.
      */
-    @SuppressLint("MissingPermission")
-    fun knownControllerHost(): BridgeHost? {
-        val relationship = activeRelationship() ?: return null
-        val adapter = getApplication<Application>().getSystemService(BluetoothManager::class.java)?.adapter ?: return null
-        return runCatching { adapter.getRemoteDevice(relationship.address) }
-            .getOrNull()?.takeIf { it.bondState == BluetoothDevice.BOND_BONDED }
-            ?.let(::AndroidBridgeHost)
-    }
+    fun knownControllerHost(): BridgeHost? =
+        activeRelationship()?.let { AdapterBridgeHost(it.address, it.displayName) }
 
     fun acquireControllerBridge() = session.start(knownControllerHost())
 
@@ -3520,7 +3516,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             "Capabilities" to ui.snapshot.capabilities.toString(),
             "Bridge phase/registered" to "${ui.bridge.phase}/${ui.bridge.registered}",
             "Bridge descriptor" to "${BridgeHidDescriptor.bytes.size} bytes sha256=$descriptorHash",
-            "Saved HID hosts" to pairedControllerHosts().size.toString(),
+            "Controller Link carrier" to "management link (Path C)",
             "Reports" to "${ui.bridge.reportCount}; last=${ui.bridge.lastReportAtMillis}",
             "Source capabilities" to ui.bridge.capabilities.toString(),
             // The three layers, deliberately separate. A platform reading that

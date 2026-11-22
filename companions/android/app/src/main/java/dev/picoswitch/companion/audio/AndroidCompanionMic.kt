@@ -118,6 +118,9 @@ class AudioRecordCompanionMicCapture(private val context: Context) : CompanionMi
     }
 
     private fun run(input: AudioRecord, onBlock: (ShortArray) -> Unit) {
+        // Java's MAX_PRIORITY is only a hint to Android's scheduler; the audio
+        // class is what keeps a 20 ms capture deadline under load.
+        runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO) }
         while (running) {
             val block = ShortArray(CompanionMicDataPlane.SAMPLES_PER_FRAME)
             var filled = 0

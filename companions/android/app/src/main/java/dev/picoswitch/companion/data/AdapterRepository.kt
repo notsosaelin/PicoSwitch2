@@ -34,6 +34,22 @@ class AdapterRepository(private val transport: ManagementTransport) {
 
     fun close() = transport.close()
 
+    /**
+     * Controller Link on the management link (Path C): the control plane and
+     * the data plane of the one connection this repository owns.
+     */
+    val controllerLinkPlane: dev.picoswitch.companion.bridge.ControllerLinkPlane =
+        object : dev.picoswitch.companion.bridge.ControllerLinkPlane {
+            override val available: Boolean
+                get() = transport.controllerLinkAvailable && transport.connection.value.connected
+            override val connection: StateFlow<ConnectionState> = transport.connection
+            override suspend fun start() = client.controllerLinkStart()
+            override suspend fun stop() = client.controllerLinkStop()
+            override suspend fun open(onOutput: (ByteArray) -> Unit) = transport.openControllerLink(onOutput)
+            override suspend fun close() = transport.closeControllerLink()
+            override suspend fun write(frame: ByteArray) = transport.writeControllerLink(frame)
+        }
+
     /** Companion audio's management commands (EXPERIMENTAL). */
     val companionAudioControl: CompanionAudioControl = object : CompanionAudioControl {
         override suspend fun start(microphone: Boolean) = client.companionAudioStart(microphone)

@@ -23,7 +23,12 @@ while the navigation was hidden closed the app.
   Right, Top, Bottom. Automatic is Left on a window wider than tall and Bottom
   otherwise (measured, never a device name). Left / Right show **icons only**;
   Top / Bottom show **full names** (one-word names below 720 wide, never an
-  ellipsis).
+  ellipsis). On Android, below 560 wide (a phone in portrait) every item, Settings
+  included, takes an equal cell with its one-word name under its icon: pill
+  items with the name beside the icon need about 650 and ran off a 384 wide
+  phone, leaving Adapter unreachable (S25 Ultra, 2026-11-22).
+- The closed navigation leaves by its thickness plus the safe-drawing inset
+  on its edge, so it never rests in a camera cutout strip.
 - Contents: the connection dot (an **indicator only**: not focusable, not
   clickable), the pages (Play, Keyboard & Mouse, Amiibo, Customization,
   Adapter), Settings. **No hide, pin, arrow or handle control.**
@@ -189,9 +194,15 @@ shows.
      not clicked. Always in place; disabled until Controller Link streams, so
      starting never rearranges the page under a thumb. They share the spare
      height with the controller row (1.4 : 1, at least 72 and at most 140
-     tall).
+     tall). Under 100 tall (a phone in landscape) the label sits beside the
+     icon, because icon over label does not fit and was clipped.
   4. **Actions** — Start playing / Stop, **Touch Gamepad** (in every state),
      and Wake (or the adapter's next step), equal widths, one action height.
+     In the stacked layout on a window under 480 wide, Start / Stop takes a
+     row of its own and the other two share the next, so no label shrinks;
+     the side-by-side hub keeps one row.
+- **On a window under 400 wide** the controller row's two ends stack (input
+  over output), so neither name is cut short.
 - **Right column: the Amiibo**, full height, so its artwork is the picture on
   the home screen: the figure the adapter holds as art and a name (never a
   UID), and one full-width action — Present / Eject when one is loaded,

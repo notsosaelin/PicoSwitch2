@@ -18,7 +18,7 @@ The old `dev.picoswitch.companion.controller` package is gone. Rough map:
 | Was | Now |
 |---|---|
 | `AndroidInputRouter` | `AndroidInputBackend` (Android) + `ControllerInputState` (core) |
-| `HidDeviceBridge` | `AndroidHidTransport` (Android) + `BridgeSession` (core) |
+| `HidDeviceBridge` | `GattControllerLinkTransport` (Android) + `BridgeSession` (core) |
 | `MotionSource` | `AndroidMotionBackend` |
 | `BatterySource` | `AndroidBatteryBackend` |
 | `HandheldHaptics` | `AndroidOutputBackend` |
@@ -67,9 +67,18 @@ key. Do not add a schema-1 writer.
 
 ## What it is
 
-An ordinary no-root Android app (`companions/android/`) that registers as a Bluetooth HID **device**
-using the public API-28+ `BluetoothHidDevice` profile and streams the handheld's built-in controls,
-IMU and battery to PicoSwitch2, which remains the console-facing protocol owner. Reference hardware
+An ordinary no-root Android app (`companions/android/`) that streams the handheld's built-in
+controls, IMU and battery to PicoSwitch2, which remains the console-facing protocol owner.
+
+**One Bluetooth link (since 2026-11-22).** Controller Link rides the Path C data plane on the
+management LE connection, beside companion audio: `clink start`, the canonical v2 report framed
+by `ControllerLinkDataPlane`, written without response, feedback from notifications, a 100 ms
+keepalive against the adapter's 300 ms stale-input timeout (`GattControllerLinkTransport`). The
+separate Classic HID connection (`BluetoothHidDevice`, API 28+) failed on a Galaxy S25 Ultra in
+two ways, a missed page during controller inquiry and an LE timeout while it streamed
+([record](../experiments/android-two-link-coexistence-2026-11-22.md)) and was removed: every
+firmware since 2.5.0 has the data plane, and the bridge contract already requires firmware and app
+from the same release. The HID Device facts below are kept as history. Reference hardware
 is an **AYN Thor** (Android 13 / API 33, Qualcomm stack, built-in controls exposed as
 `Odin Controller`).
 

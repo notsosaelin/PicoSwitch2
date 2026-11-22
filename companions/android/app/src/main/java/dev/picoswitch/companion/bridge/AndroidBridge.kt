@@ -22,7 +22,7 @@ import dev.picoswitch.bridge.touch.TouchReleaseReason
  * AndroidMotionBackend                             \
  * AndroidBatteryBackend                             >  BridgeSession  ->  PicoSwitch2
  * AndroidOutputBackend                             /
- * AndroidHidTransport                             /
+ * GattControllerLinkTransport                     /
  * ```
  *
  * The application talks to [input] for source selection and to [session] for
@@ -32,6 +32,11 @@ import dev.picoswitch.bridge.touch.TouchReleaseReason
 class AndroidBridge(
     context: Context,
     private val diagnostics: BridgeDiagnostics = BridgeDiagnostics.None,
+    /**
+     * The management link's Controller Link data plane: gameplay rides the one
+     * connection management already holds. There is no second link.
+     */
+    controllerLinkPlane: () -> ControllerLinkPlane? = { null },
 ) {
     val input = AndroidInputBackend()
 
@@ -45,7 +50,7 @@ class AndroidBridge(
     private val output = AndroidOutputBackend(context, diagnostics)
     private val motion = AndroidMotionBackend(context)
     private val battery = AndroidBatteryBackend(context)
-    private val transport = AndroidHidTransport(context, diagnostics, counters)
+    private val transport = GattControllerLinkTransport(context, controllerLinkPlane, diagnostics, counters)
     private val selfTest = OutputSelfTest(context, output, diagnostics)
 
     val session = BridgeSession(

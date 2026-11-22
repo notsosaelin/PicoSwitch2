@@ -448,9 +448,9 @@ want Alt+Tab to stay theirs.
 Requirements: reachable on a 60 % keyboard, one-handed, not something a game
 binding wants, and never forwarded as a chord.
 
-- **Default: Ctrl + Alt + Shift + Z.** It is the chord Moonlight uses to toggle
-  capture, so the audience most likely to use this already has it in their
-  hands. Configurable.
+- **Default: Ctrl + Alt + Shift + Q** (maintainer decision, 2026-11-22).
+  Configurable. Moonlight's capture toggle is Ctrl + Alt + Shift + Z; Q was
+  chosen instead.
 - The chord also engages from Armed.
 - The chord is recognized in the companion. The modifier keys are forwarded as
   they go down (they are ordinary bindable keys: Left Ctrl is L3 by default),
@@ -489,7 +489,7 @@ A full-window page with the same standing as Touch Gamepad.
 ```text
 +--------------------------------------------------------------------------------+
 |  <- Back    Keyboard & Mouse      Profile: Default (KB+M)      * Playing       |
-|             Pro Controller 2  -  mouse -> right stick          Ctrl+Alt+Shift+Z|
+|             Pro Controller 2  -  mouse -> right stick          Ctrl+Alt+Shift+Q|
 +--------------------------------------------------------------------------------+
 |                                                                                |
 |  [Esc ][F1][F2][F3][F4] [F5][F6][F7][F8] [F9][F10][F11][F12]      .---------.  |
@@ -781,7 +781,7 @@ Follow-ups, not part of this feature:
 | Q5 | `unadjustedMovement` on Chrome for Linux | Unknown | W1 session |
 | Q6 | Connection interval for a browser GATT client | Unknown | W1 |
 | Q7 | Android single-flight contention in practice | Risk, Confirmed mechanism | Phase 6 |
-| Q8 | Is Ctrl+Alt+Shift+Z the right default chord? | Maintainer preference | Review of this document |
+| Q8 | Default release chord | Settled: Ctrl+Alt+Shift+Q | Maintainer, 2026-11-22 |
 | Q9 | Should "Capture system shortcuts" default on? | Maintainer preference | Review |
 
 ## 15. Sources
@@ -797,5 +797,5 @@ Platform facts not taken from this repository:
 - web.dev, [Disable mouse acceleration](https://web.dev/articles/disable-mouse-acceleration); MDN, [requestPointerLock](https://developer.mozilla.org/docs/Web/API/Element/requestPointerLock).
 - Chromium web-bluetooth group, [operations that must not run in parallel](https://groups.google.com/a/chromium.org/g/web-bluetooth/c/QQP6ExsKHRI).
 - Android, [Track touch and pointer movements](https://developer.android.com/training/gestures/movement) and the [InputFlinger pointer-capture note](https://android.googlesource.com/platform/frameworks/native/+/5cc1a69bd2/services/inputflinger/docs/pointer_capture.md).
-- Moonlight, [release notes](https://github.com/moonlight-stream/moonlight-qt/releases?after=v0.6.1&page=3): the capture toggle chord and "capture system keyboard shortcuts".
+- Moonlight, [release notes](https://github.com/moonlight-stream/moonlight-qt/releases?after=v0.6.1&page=3): its capture toggle chord (Ctrl+Alt+Shift+Z) and "capture system keyboard shortcuts".
 - Video Games Chronicle, [Switch 2 supports USB mouse controls](https://www.videogameschronicle.com/news/switch-2-supports-usb-mouse-controls-developer-reveals/); Nintendo Life, [mouse-mode compatible games](https://www.nintendolife.com/guides/nintendo-switch-2-all-mouse-mode-compatible-games).

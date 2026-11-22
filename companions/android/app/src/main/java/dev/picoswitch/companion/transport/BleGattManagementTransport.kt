@@ -86,6 +86,13 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         @Volatile var audioSubscribe: CompletableDeferred<Boolean>? = null
         @Volatile var micUp: BluetoothGattCharacteristic? = null
         @Volatile var micWrite: CompletableDeferred<Boolean>? = null
+        @Volatile var clinkIn: BluetoothGattCharacteristic? = null
+        @Volatile var clinkOut: BluetoothGattCharacteristic? = null
+        @Volatile var clinkSubscribe: CompletableDeferred<Boolean>? = null
+        @Volatile var clinkWrite: CompletableDeferred<Boolean>? = null
+        /** Data planes holding the link at high priority (audio, Controller Link). */
+        @Volatile var audioOpen = false
+        @Volatile var clinkOpen = false
         @Volatile var writeReady: CompletableDeferred<Unit>? = null
         @Volatile var closeRequested = false
         @Volatile var terminalFailure = false
@@ -115,6 +122,7 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
 
     @Volatile private var current: OwnedGatt? = null
     @Volatile private var audioListener: ((ByteArray) -> Unit)? = null
+    @Volatile private var clinkListener: ((ByteArray) -> Unit)? = null
     @Volatile private var pairingCandidate: PairingCandidate? = null
     @Volatile private var nextContext = ManagementConnectionContext()
     private var nextGattGeneration = 0L
@@ -198,6 +206,11 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             }
         }
 
+        override fun onPhyUpdate(gatt: BluetoothGatt, txPhy: Int, rxPhy: Int, status: Int) {
+            val owner = ownerFor(gatt) ?: return staleCallback("phy", gatt)
+            log(owner, "gatt.phy", "status=$status tx=${phyName(txPhy)} rx=${phyName(rxPhy)}")
+        }
+
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
             val owner = ownerFor(gatt) ?: return staleCallback("mtu", gatt)
             if (status == BluetoothGatt.GATT_SUCCESS) owner.negotiatedMtu = mtu
@@ -246,6 +259,9 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             // Optional: firmware without companion audio does not expose it.
             owner.audioDown = service.getCharacteristic(AUDIO_DOWN_UUID)
             owner.micUp = service.getCharacteristic(MIC_UP_UUID)
+            // Optional: firmware without the Controller Link data plane does not expose it.
+            owner.clinkIn = service.getCharacteristic(CLINK_IN_UUID)
+            owner.clinkOut = service.getCharacteristic(CLINK_OUT_UUID)
             val output = owner.tx ?: return fail(owner, GattTransportException(
                 "Management notification characteristic is missing", null, GattFailureStage.Services,
             ))
@@ -291,6 +307,11 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
                 owner.audioSubscribe?.complete(status == BluetoothGatt.GATT_SUCCESS)
                 return
             }
+            if (descriptor.characteristic?.uuid == CLINK_OUT_UUID) {
+                log(owner, "gatt.clink_subscribe", "status=$status")
+                owner.clinkSubscribe?.complete(status == BluetoothGatt.GATT_SUCCESS)
+                return
+            }
             log(owner, "gatt.subscribe", "status=$status")
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 _connection.value = connectionState(owner, ConnectionPhase.Connecting, "Verifying PicoSwitch2 identity")
@@ -311,6 +332,7 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             when (characteristic.uuid) {
                 TX_UUID -> recordNotification(ownerFor(gatt), characteristic.value)
                 AUDIO_DOWN_UUID -> audioListener?.invoke(characteristic.value.copyOf())
+                CLINK_OUT_UUID -> clinkListener?.invoke(characteristic.value.copyOf())
             }
         }
 
@@ -324,6 +346,7 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
                 // Straight to the audio session: 50 notifications a second must
                 // not queue behind management replies.
                 AUDIO_DOWN_UUID -> if (ownerFor(gatt) != null) audioListener?.invoke(value)
+                CLINK_OUT_UUID -> if (ownerFor(gatt) != null) clinkListener?.invoke(value)
             }
         }
 
@@ -332,6 +355,11 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             if (characteristic.uuid == MIC_UP_UUID) {
                 // A microphone frame, never a command chunk.
                 ownerFor(gatt)?.micWrite?.complete(status == BluetoothGatt.GATT_SUCCESS)
+                return
+            }
+            if (characteristic.uuid == CLINK_IN_UUID) {
+                // A Controller Link frame, never a command chunk.
+                ownerFor(gatt)?.clinkWrite?.complete(status == BluetoothGatt.GATT_SUCCESS)
                 return
             }
             ownerFor(gatt)?.let { owner ->
@@ -361,6 +389,13 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
                 }
             }
         }
+    }
+
+    private fun phyName(phy: Int): String = when (phy) {
+        BluetoothDevice.PHY_LE_1M -> "1M"
+        BluetoothDevice.PHY_LE_2M -> "2M"
+        BluetoothDevice.PHY_LE_CODED -> "coded"
+        else -> "unknown($phy)"
     }
 
     private fun discoverServices(owner: OwnedGatt, gatt: BluetoothGatt) {
@@ -575,10 +610,8 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
                     audioListener = null
                     return@exchange false
                 }
-                val high = runCatching {
-                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-                }.getOrDefault(false)
-                log(owner, "gatt.priority", "source=companion-audio priority=high apiAccepted=$high")
+                owner.audioOpen = true
+                applyDataPlanePriority(owner, gatt, "companion-audio")
                 true
             }
         }
@@ -593,13 +626,13 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
                 if (owner.terminalFailure || owner.closed) return@exchange
                 val ccc = characteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG) ?: return@exchange
                 writeAudioSubscription(owner, gatt, characteristic, ccc, enable = false)
-                val balanced = runCatching {
-                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
-                }.getOrDefault(false)
-                log(owner, "gatt.priority", "source=companion-audio priority=balanced apiAccepted=$balanced")
+                owner.audioOpen = false
+                applyDataPlanePriority(owner, gatt, "companion-audio")
             }
         }
     }
+
+    private enum class Slot { Audio, Clink }
 
     private suspend fun writeAudioSubscription(
         owner: OwnedGatt,
@@ -607,6 +640,15 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         characteristic: BluetoothGattCharacteristic,
         ccc: BluetoothGattDescriptor,
         enable: Boolean,
+    ): Boolean = writeSubscription(owner, gatt, characteristic, ccc, enable, Slot.Audio)
+
+    private suspend fun writeSubscription(
+        owner: OwnedGatt,
+        gatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        ccc: BluetoothGattDescriptor,
+        enable: Boolean,
+        slot: Slot,
     ): Boolean {
         if (!gatt.setCharacteristicNotification(characteristic, enable)) return false
         val done = CompletableDeferred<Boolean>()
@@ -615,17 +657,24 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         } else {
             BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
         }
+        fun setSlot(value: CompletableDeferred<Boolean>?) {
+            if (slot == Slot.Audio) owner.audioSubscribe = value else owner.clinkSubscribe = value
+        }
         val result = gattOperation.withLock {
-            owner.audioSubscribe = done
+            setSlot(done)
             if (!writeDescriptor(gatt, ccc, bytes)) {
-                owner.audioSubscribe = null
+                setSlot(null)
                 return false
             }
             val ok = withTimeoutOrNull(AUDIO_SUBSCRIBE_TIMEOUT_MILLIS) { done.await() } ?: false
-            owner.audioSubscribe = null
+            setSlot(null)
             ok
         }
-        log(owner, "gatt.audio_subscription", "enable=$enable ok=$result")
+        log(
+            owner,
+            if (slot == Slot.Audio) "gatt.audio_subscription" else "gatt.clink_subscription",
+            "enable=$enable ok=$result",
+        )
         return result
     }
 
@@ -656,6 +705,86 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         }
     }
 
+    /**
+     * HIGH (11.25-15 ms) while any data plane is open, BALANCED otherwise. One
+     * place decides, so closing audio can no longer drop the link to 30-50 ms
+     * under a live Controller Link.
+     */
+    private fun applyDataPlanePriority(owner: OwnedGatt, gatt: BluetoothGatt, source: String) {
+        val high = owner.audioOpen || owner.clinkOpen
+        val priority = if (high) BluetoothGatt.CONNECTION_PRIORITY_HIGH else BluetoothGatt.CONNECTION_PRIORITY_BALANCED
+        val accepted = runCatching { gatt.requestConnectionPriority(priority) }.getOrDefault(false)
+        log(
+            owner, "gatt.priority",
+            "source=$source priority=${if (high) "high" else "balanced"} audio=${owner.audioOpen} " +
+                "clink=${owner.clinkOpen} apiAccepted=$accepted",
+        )
+    }
+
+    override val controllerLinkAvailable: Boolean
+        get() = current?.let {
+            it.clinkIn != null && it.clinkOut != null && it.ready.isCompleted && !it.closed && !it.terminalFailure
+        } == true
+
+    override suspend fun openControllerLink(onOutput: (ByteArray) -> Unit): Boolean =
+        withContext(Dispatchers.IO) {
+            session.exchange {
+                val owner = current ?: return@exchange false
+                val gatt = owner.gatt ?: return@exchange false
+                val characteristic = owner.clinkOut ?: return@exchange false
+                if (owner.clinkIn == null) return@exchange false
+                if (!owner.ready.isCompleted || owner.terminalFailure || owner.closed) return@exchange false
+                val ccc = characteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG) ?: return@exchange false
+                clinkListener = onOutput
+                val subscribed = writeSubscription(owner, gatt, characteristic, ccc, enable = true, slot = Slot.Clink)
+                if (!subscribed) {
+                    clinkListener = null
+                    return@exchange false
+                }
+                owner.clinkOpen = true
+                applyDataPlanePriority(owner, gatt, "controller-link")
+                true
+            }
+        }
+
+    override suspend fun closeControllerLink() {
+        withContext(Dispatchers.IO) {
+            session.exchange {
+                clinkListener = null
+                val owner = current ?: return@exchange
+                val gatt = owner.gatt ?: return@exchange
+                val characteristic = owner.clinkOut ?: return@exchange
+                owner.clinkOpen = false
+                if (owner.terminalFailure || owner.closed) return@exchange
+                val ccc = characteristic.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG) ?: return@exchange
+                writeSubscription(owner, gatt, characteristic, ccc, enable = false, slot = Slot.Clink)
+                applyDataPlanePriority(owner, gatt, "controller-link")
+            }
+        }
+    }
+
+    /**
+     * One Controller Link frame as write-without-response, bounded by its
+     * onCharacteristicWrite exactly as the microphone is; a missing callback
+     * counts as a failure after [CLINK_WRITE_TIMEOUT_MILLIS].
+     */
+    override suspend fun writeControllerLink(frame: ByteArray): Boolean = withContext(Dispatchers.IO) {
+        gattOperation.withLock {
+            val owner = current ?: return@withLock false
+            val gatt = owner.gatt ?: return@withLock false
+            val characteristic = owner.clinkIn ?: return@withLock false
+            if (!owner.ready.isCompleted || owner.terminalFailure || owner.closed) return@withLock false
+            val done = CompletableDeferred<Boolean>()
+            owner.clinkWrite = done
+            val accepted = writeCharacteristic(
+                gatt, characteristic, frame, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE,
+            ).accepted
+            val ok = accepted && (withTimeoutOrNull(CLINK_WRITE_TIMEOUT_MILLIS) { done.await() } ?: false)
+            owner.clinkWrite = null
+            ok
+        }
+    }
+
     override fun markValidated() {
         val owner = current ?: return
         if (!owner.ready.isCompleted || owner.terminalFailure || owner.closed) return
@@ -663,6 +792,18 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             owner.gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED) == true
         }.getOrDefault(false)
         log(owner, "gatt.priority", "source=setup priority=balanced apiAccepted=$balancedAccepted after=identity")
+        // LE 2M: half the airtime per packet for Controller Link, the headset
+        // and the microphone, all on this one link. A preference, not a demand:
+        // the controllers negotiate it, and a peer that declines keeps 1M.
+        val phyRequested = runCatching {
+            owner.gatt?.setPreferredPhy(
+                BluetoothDevice.PHY_LE_2M_MASK,
+                BluetoothDevice.PHY_LE_2M_MASK,
+                BluetoothDevice.PHY_OPTION_NO_PREFERRED,
+            )
+            true
+        }.getOrDefault(false)
+        log(owner, "gatt.phy_request", "tx=2M rx=2M requested=$phyRequested")
         _connection.value = connectionState(owner, ConnectionPhase.Connected, null)
         pairingCandidate = null
         log(owner, "gatt.ready", "management identity verified")
@@ -1089,6 +1230,10 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         private val AUDIO_DOWN_UUID = UUID.fromString(BleManagementContract.COMPANION_AUDIO_DOWN_UUID)
         private const val AUDIO_SUBSCRIBE_TIMEOUT_MILLIS = 3_000L
         private val MIC_UP_UUID = UUID.fromString(BleManagementContract.COMPANION_MIC_UP_UUID)
+        private val CLINK_IN_UUID = UUID.fromString(BleManagementContract.CONTROLLER_LINK_IN_UUID)
+        private val CLINK_OUT_UUID = UUID.fromString(BleManagementContract.CONTROLLER_LINK_OUT_UUID)
         private const val MIC_WRITE_TIMEOUT_MILLIS = 250L
+        /** A Controller Link frame is superseded by the next one 8 ms later; never wait long. */
+        private const val CLINK_WRITE_TIMEOUT_MILLIS = 100L
     }
 }

@@ -331,6 +331,26 @@ bool ns2_bt_companion_classic_admission_allowed(
 
 uint32_t ns2_bt_inquiry_restart_delay_ms(bool pairing_window_open);
 
+// Whether controller discovery (active LE scan + Classic inquiry) has an input
+// source to step aside for.
+//
+// A HID controller that finished setup has always retired discovery (1 dongle :
+// 1 controller). A companion streaming Controller Link on the management link
+// (Path C) is the same thing to the user -- a controller in their hands -- but
+// it is not a HID connection, so it used to count for nothing: the retire path
+// asked only about HID peers, and the idle safety net restarted discovery
+// whenever no HID connection existed. Every Path C session (Windows, Linux,
+// and Android since 2026-11-22) therefore streamed gameplay and two-way audio
+// while the adapter ran a 50 %-duty active LE scan plus Classic inquiry about
+// 76 % of the time, on the one radio carrying that link
+// (docs/experiments/android-two-link-coexistence-2026-11-22.md).
+//
+// A pairing window is decided by its caller and still owns discovery. When the
+// companion stops, or goes stale and is neutralized, this turns false and the
+// safety net resumes discovery as before.
+bool ns2_bt_input_source_holds_discovery(bool controller_hid_ready,
+                                         bool companion_link_streaming);
+
 // A Classic Link Key Notification is not proof that an existing relationship
 // authenticated: BTstack processes and may persist the notification before the
 // later Authentication Complete event reaches the application. A replacement

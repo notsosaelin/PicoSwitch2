@@ -469,6 +469,19 @@ static void test_companion_session_trust_is_peer_bound(void)
  * zero-controller configuration that fails. The gap is what leaves room to
  * answer an incoming page.
  */
+/*
+ * Regression, 2026-11-22. A companion streaming Controller Link (Path C) must
+ * retire discovery exactly as a HID controller does; before this it counted
+ * for nothing and the adapter scanned through every Path C session.
+ */
+static void test_companion_link_holds_discovery(void)
+{
+    assert(!ns2_bt_input_source_holds_discovery(false, false));
+    assert(ns2_bt_input_source_holds_discovery(true, false));
+    assert(ns2_bt_input_source_holds_discovery(false, true));
+    assert(ns2_bt_input_source_holds_discovery(true, true));
+}
+
 static void test_inquiry_restart_gap(void)
 {
     assert(ns2_bt_inquiry_restart_delay_ms(false) == NS2_BT_INQUIRY_IDLE_GAP_MS);
@@ -880,6 +893,7 @@ int main(void)
     test_classic_trust_is_cross_transport();
     test_companion_session_trust_is_peer_bound();
     test_inquiry_restart_gap();
+    test_companion_link_holds_discovery();
     test_pairing_admission();
     test_pairing_deferral_cannot_latch();
     test_boot_lockout();

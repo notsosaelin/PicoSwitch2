@@ -34,6 +34,7 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -81,6 +82,17 @@ SHOTS = [
     ("settings", "#settings", "1366,860"),
     ("play-narrow", "#play", "560,900"),
     ("kbm-narrow", "#kbm", "700,900"),
+    # Common phone viewports, CSS px. Portrait uses the bottom bar; landscape
+    # wider than 720 px uses the side rail, which must reach every page.
+    ("phone-360-play", "?start=1#play", "360,780"),
+    ("phone-375-kbm", "#kbm", "375,667"),
+    ("phone-390-amiibo", "#amiibo", "390,844"),
+    ("phone-412-adapter", "#adapter", "412,915"),
+    ("phone-430-settings", "#settings", "430,932"),
+    ("phone-667x375-play", "#play", "667,375"),
+    ("phone-844x390-kbm", "#kbm", "844,390"),
+    ("phone-915x412-settings", "#settings", "915,412"),
+    ("phone-932x430-adapter", "#adapter", "932,430"),
 ]
 
 
@@ -119,7 +131,31 @@ def build(out):
     os.makedirs(out, exist_ok=True)
     with open(os.path.join(out, "index.html"), "w", encoding="utf-8", newline="\n") as handle:
         handle.write(html)
+    # Headless Chromium will not make a window narrower than about 500 px, so
+    # phone-width shots load the page in an iframe of the exact size: media
+    # queries inside a frame follow the frame's width.
+    with open(os.path.join(out, "frame.html"), "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(FRAME)
     return out
+
+
+FRAME = """<!doctype html><meta charset="utf-8"><title>frame</title>
+<style>html,body{margin:0;background:#000}iframe{border:0;display:block}</style>
+<iframe id="f"></iframe>
+<script>
+const q = new URLSearchParams(location.search), f = document.getElementById("f");
+f.width = q.get("w"); f.height = q.get("h"); f.src = "index.html" + q.get("page");
+</script>
+"""
+
+
+def shot_url(port, query, size):
+    """The URL to screenshot; phone widths go through frame.html."""
+    width, height = (int(part) for part in size.split(","))
+    if width >= 500:
+        return f"http://127.0.0.1:{port}/index.html{query}", size
+    page = urllib.parse.quote(query, safe="")
+    return f"http://127.0.0.1:{port}/frame.html?w={width}&h={height}&page={page}", f"500,{height}"
 
 
 def browser():
@@ -174,7 +210,8 @@ def main():
         os.makedirs(shots, exist_ok=True)
         import time
         failed = 0
-        for name, query, size in SHOTS:
+        for name, query, wanted in SHOTS:
+            url, size = shot_url(port, query, wanted)
             target = os.path.join(shots, name + ".png")
             if os.path.isfile(target):
                 os.remove(target)
@@ -185,7 +222,7 @@ def main():
             subprocess.run([exe, "--headless=new", "--disable-gpu", "--no-first-run",
                             f"--user-data-dir={profile}", f"--window-size={size}",
                             "--virtual-time-budget=8000", f"--screenshot={target}",
-                            f"http://127.0.0.1:{port}/index.html{query}"],
+                            url],
                            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             deadline = time.monotonic() + 40
             while not os.path.isfile(target) and time.monotonic() < deadline:

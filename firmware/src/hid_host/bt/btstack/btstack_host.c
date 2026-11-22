@@ -4706,7 +4706,8 @@ void btstack_host_idle_scan_if_connected(void)
     if (pairing_close_deferred) {
         return;  // let an in-flight pairing candidate resolve first
     }
-    if (any_controller_hid_ready() &&
+    if (ns2_bt_input_source_holds_discovery(any_controller_hid_ready(),
+                                            btstack_host_companion_link_streaming()) &&
         (hid_state.scan_active || classic_state.inquiry_active)) {
         btstack_host_stop_scan();
     }
@@ -5128,7 +5129,11 @@ void btstack_host_process(void)
         // btstack_host_scan_for_additional_peer(); do not try to widen this term
         // instead, or a single connected controller would resume discovery and
         // undo the retired multi-controller scanning.
-        btstack_classic_get_connection_count() == 0) {
+        btstack_classic_get_connection_count() == 0 &&
+        // A companion streaming Controller Link is the input source; its LE
+        // link is not a HID connection, so the count above cannot see it.
+        !ns2_bt_input_source_holds_discovery(false,
+                                             btstack_host_companion_link_streaming())) {
         printf("[BTSTACK_HOST] Safety: idle with no connections, resuming scan\n");
         btstack_host_start_scan();
     }

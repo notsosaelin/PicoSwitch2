@@ -44,8 +44,8 @@ android {
         // bridge contract version, which changes only when the wire changes.
         //
         // versionCode scheme: major * 10000 + minor * 100 + patch.
-        versionCode = 20600
-        versionName = "2.6.0"
+        versionCode = 20601
+        versionName = "2.6.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

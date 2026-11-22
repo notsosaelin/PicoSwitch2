@@ -601,8 +601,8 @@ Activity KeyEvent / MotionEvent
     -> ControllerInputState                     (core, neutral)
       -> BridgeSession                          (core, neutral)
         -> ControllerReportEncoder              (core, neutral)
-          -> AndroidHidTransport                (app,  Android)
-            -> BluetoothHidDevice -> PicoSwitch2 Classic HID host
+          -> GattControllerLinkTransport        (app,  Android)
+            -> management LE link, Controller Link characteristic -> PicoSwitch2
 
 Compose pointer events                          (Touch Gamepad, same destination)
   -> Modifier.touchGamepadContacts               (app,  Android)
@@ -610,7 +610,7 @@ Compose pointer events                          (Touch Gamepad, same destination
       -> TouchContribution
         -> ControllerInputState ...              (the identical path from here down)
 
-PicoSwitch2 -> AndroidHidTransport -> BridgeOutputCodec -> BridgeSession
+PicoSwitch2 -> GattControllerLinkTransport -> BridgeOutputCodec -> BridgeSession
             -> RumbleRequest -> AndroidOutputBackend -> vibrator
 ```
 

@@ -34,6 +34,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -76,7 +77,20 @@ internal fun NavShell(
 ) {
     val vertical = placement.vertical
     val thickness = if (vertical) LayoutTokens.RailWidth else LayoutTokens.BarHeight
-    val px = with(LocalDensity.current) { thickness.toPx() }
+    val density = LocalDensity.current
+    val layoutDirection = LocalLayoutDirection.current
+    // The navigation sits inside the safe-drawing padding, so leaving by its
+    // own thickness parks it in the inset: in landscape a phone's camera
+    // cutout strip, where a sliver of the closed rail showed on every page
+    // (S25 Ultra, 2026-11-22). It leaves by its thickness plus that inset.
+    val safe = WindowInsets.safeDrawing
+    val edgeInset = when (placement) {
+        NavPlacement.Right -> safe.getRight(density, layoutDirection)
+        NavPlacement.Top -> safe.getTop(density)
+        NavPlacement.Bottom -> safe.getBottom(density)
+        else -> safe.getLeft(density, layoutDirection)
+    }
+    val px = with(density) { thickness.toPx() } + edgeInset
     // Which way the navigation travels to leave the screen.
     val away = if (placement == NavPlacement.Left || placement == NavPlacement.Top) -1f else 1f
     val focusManager = LocalFocusManager.current
@@ -119,7 +133,7 @@ internal fun NavShell(
     }
 
     val navShift = remember(placement) { Animatable(if (shown) 0f else away * px) }
-    LaunchedEffect(shown, placement) { navShift.animateTo(if (shown) 0f else away * px, motionSpec()) }
+    LaunchedEffect(shown, placement, px) { navShift.animateTo(if (shown) 0f else away * px, motionSpec()) }
     val scrim by animateFloatAsState(if (shown) 0.32f else 0f, motionSpec(), label = "nav-scrim")
 
     val requesters = remember { AppSection.entries.associateWith { FocusRequester() } }
@@ -290,6 +304,30 @@ private fun NavContent(
             // too narrow for all of them falls back to one-word names, never
             // to an ellipsis.
             val full = maxWidth >= LayoutTokens.NavFullNamesMin
+            if (maxWidth < LayoutTokens.NavStackedBelow) {
+                // A phone in portrait: six pill items with a name beside the
+                // icon need about 650 dp, so on a 384 dp S25 Ultra the row ran
+                // off the screen and Adapter could not be reached at all
+                // (2026-11-22). Here every item takes an equal cell, its
+                // one-word name under its icon.
+                Row(
+                    Modifier.fillMaxSize().padding(horizontal = LayoutTokens.Space1),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AdapterDot(ui, Modifier.width(LayoutTokens.NavDotCompactWidth))
+                    (pages + AppSection.Settings).forEach { section ->
+                        NavItem(
+                            section,
+                            section.shortLabel,
+                            section == selected,
+                            requesters.getValue(section),
+                            stacked = true,
+                            modifier = Modifier.weight(1f),
+                        ) { onSelect(section) }
+                    }
+                }
+                return@BoxWithConstraints
+            }
             Row(
                 Modifier.fillMaxSize().padding(horizontal = LayoutTokens.Space3),
                 verticalAlignment = Alignment.CenterVertically,
@@ -325,6 +363,8 @@ private fun NavItem(
     label: String?,
     selected: Boolean,
     requester: FocusRequester,
+    stacked: Boolean = false,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -340,12 +380,12 @@ private fun NavItem(
     val outline by animateColorAsState(if (lifted) colors.primary else Color.Transparent, tween(120), label = "nav-outline")
     Surface(
         onClick = onClick,
-        shape = CircleShape,
+        shape = if (stacked) RoundedCornerShape(LayoutTokens.Space4) else CircleShape,
         color = if (selected) colors.secondaryContainer else Color.Transparent,
         contentColor = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant,
         border = BorderStroke(2.dp, outline),
         interactionSource = interaction,
-        modifier = Modifier
+        modifier = modifier
             // Read when focus is searched, so it is current the moment the
             // navigation opens (Back, or the D-pad at the page's edge).
             .focusProperties { canFocus = reachable() }
@@ -356,6 +396,23 @@ private fun NavItem(
             }
             .semantics { contentDescription = section.label },
     ) {
+        if (stacked) {
+            Column(
+                Modifier.height(LayoutTokens.NavItemHeight).padding(horizontal = 2.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Icon(section.icon, null, Modifier.size(LayoutTokens.IconSize))
+                Text(
+                    label.orEmpty(),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
+            return@Surface
+        }
         Row(
             Modifier
                 .height(LayoutTokens.NavItemHeight)
@@ -385,11 +442,11 @@ private fun NavItem(
  * stops on it (owner, 2026-11-08). The Adapter page is the item below it.
  */
 @Composable
-private fun AdapterDot(ui: CompanionUiState) {
+private fun AdapterDot(ui: CompanionUiState, modifier: Modifier = Modifier.size(LayoutTokens.NavItemHeight)) {
     val status = AdapterStatus.of(ui.connection.connected, ui.connection.phase, ui.adapterRelationship != null)
     val name = ui.adapterRelationship?.displayName ?: ui.connection.deviceName ?: "No adapter"
     Box(
-        Modifier.size(LayoutTokens.NavItemHeight).semantics(mergeDescendants = true) {
+        modifier.height(LayoutTokens.NavItemHeight).semantics(mergeDescendants = true) {
             contentDescription = "$name, ${status.words}"
             liveRegion = LiveRegionMode.Polite
         },

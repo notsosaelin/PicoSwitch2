@@ -2,7 +2,9 @@
 
 Date: 2026-09-03
 Branch: `ns2-testing`
-Status: **Recommendation — do not move yet.** No code change made either way.
+Status: **Superseded 2026-11-22.** Android moved to Path C after the second link failed on a
+Galaxy S25 Ultra and the LE interval was observed
+([record](android-two-link-coexistence-2026-11-22.md)). Kept for its reasoning.
 
 ## Question
 

@@ -3,10 +3,40 @@
 Release notes describe user-visible behavior. Detailed implementation history remains in
 `docs/archive/` and the experiment records.
 
-## Unreleased
+## 2.6.1 — 2026-11-22
 
-Audit and hardening pass, 2026-11-10, and the web portal rework of 2026-11-11.
-Built and software-tested; nothing here has run on hardware.
+Android Controller Link on one Bluetooth link, a cleaner radio for it, the
+audit and hardening pass of 2026-11-10, the web portal rework of 2026-11-11,
+and phone layouts.
+
+What ran on hardware, all on a Pico 2 W dev adapter with a PC running a
+Switch 2 emulator as the USB host (no Switch 2 console): Android Controller
+Link on the management link from a Galaxy S25 Ultra (about 14 minutes, 92,719
+frames, all applied, no drop) and an AYN Thor (frames all applied, discovery
+off while streaming); the companion headset and microphone over it (Thor: 0
+skipped frames at the adapter, 0 dropped at the phone). Not yet run against a
+Switch 2 console or on Pico W; the security pass, the web portal and the
+`printf` change are software-tested only. Open gates are in `STATUS.md`.
+
+### Bluetooth link
+
+- **Android uses one Bluetooth link to the adapter.** Controller Link runs on
+  the management connection the app already holds, the same data plane as
+  Windows and Linux, instead of a second Classic HID connection beside it.
+  That second link failed on a Galaxy S25 Ultra two ways: the adapter missed
+  its connection while scanning for controllers (the slow first connect), and
+  while it streamed the management link starved and timed out, taking
+  Controller Link with it. The Classic HID transport is gone from the app.
+- **The adapter stops scanning for controllers while a companion streams.** A
+  companion's Controller Link counted for nothing to the discovery logic, so
+  every Windows, Linux and now Android session streamed while the adapter ran
+  an active LE scan and Classic inquiry on the same radio. Discovery now steps
+  aside for it as it does for a connected controller, and resumes when the
+  companion stops. A pairing window still scans.
+- The Android app asks for the LE 2M PHY, keeps the link at high priority while
+  Controller Link or the headset runs (closing the headset used to drop a live
+  Controller Link to the slow setting), and decodes headset audio on its own
+  audio-priority thread instead of the Bluetooth callback thread.
 
 ### Security
 
@@ -46,6 +76,21 @@ Built and software-tested; nothing here has run on hardware.
   and at power-up.
 - Adapter: switch the emulated controller, pair a controller, list and forget
   paired devices, wake the console.
+- Phones: in landscape the side navigation reaches every page (Adapter and
+  Settings were cut off); the header is one row; the controller row stacks on
+  a narrow screen. Checked on a phone in both orientations and rendered at
+  common phone sizes.
+
+### Android companion
+
+- The Touch Gamepad menu has a Headset switch.
+- Phone in portrait: the bottom navigation fits every page (Customization,
+  Adapter and Settings ran off the screen, and Adapter could not be opened
+  from it); Start playing has its own row so Touch Gamepad is not shrunk; the
+  controller row stacks so names are not cut short.
+- Phone in landscape: the closed navigation no longer shows a sliver in the
+  camera cutout strip, and the Home, Capture and C labels are no longer
+  clipped.
 
 ### Firmware
 
@@ -59,7 +104,8 @@ Built and software-tested; nothing here has run on hardware.
 - Genuine amiibo dumps are no longer in the repository; the tests that read
   them skip when they are absent.
 - Keyboard & Mouse Link (playing with the computer's own keyboard and mouse) is
-  designed in `docs/architecture/kbm-link-hld.md`; not implemented.
+  designed in `docs/architecture/kbm-link-hld.md`; not implemented. Its
+  release shortcut is Ctrl+Alt+Shift+Q.
 - `AGENTS.md` is a short entry point and `CLAUDE.md` imports it; the engineering
   principles and per-subsystem validation rules moved to
   `docs/engineering-principles.md` and `docs/agents/VALIDATION.md`.

@@ -152,6 +152,12 @@ uint32_t ns2_bt_inquiry_restart_delay_ms(bool pairing_window_open)
     return pairing_window_open ? 0u : NS2_BT_INQUIRY_IDLE_GAP_MS;
 }
 
+bool ns2_bt_input_source_holds_discovery(bool controller_hid_ready,
+                                         bool companion_link_streaming)
+{
+    return controller_hid_ready || companion_link_streaming;
+}
+
 bool ns2_bt_classic_key_update_admitted(bool pairing_lockout,
                                         bool pending_identity_matches,
                                         bool fresh_pairing_admitted,

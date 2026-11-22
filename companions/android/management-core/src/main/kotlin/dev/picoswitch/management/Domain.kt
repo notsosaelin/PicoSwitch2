@@ -804,6 +804,35 @@ enum class WakeResult { Pending, Advertised, ConsoleAwake, NoIdentity, RadioBusy
  * admission verdict (`ok`, `no_controller_link`, `controller_headset`, ...)
  * and `lastStop` why the last session ended.
  */
+/**
+ * Controller Link (Path C) data-plane state, as `clink start|stop|status`
+ * report it (firmware ns2_companion_link.h). [attMtu] and [minimumAttMtu] come
+ * together: the negotiated MTU is a property of the live link, so the adapter
+ * states both and the companion refuses before streaming rather than finding a
+ * fragmenting MTU mid-game.
+ */
+data class ControllerLinkState(
+    val active: Boolean = false,
+    val subscribed: Boolean = false,
+    val version: Int = 0,
+    val frameBytes: Int = 0,
+    val attMtu: Int = 0,
+    val minimumAttMtu: Int = 0,
+    val mtuOk: Boolean = false,
+    val generation: Long = 0,
+    val framesReceived: Long = 0,
+    val framesApplied: Long = 0,
+    val framesStale: Long = 0,
+    val framesShort: Long = 0,
+    val framesVersion: Long = 0,
+    val framesOpcode: Long = 0,
+    val framesRejectedState: Long = 0,
+    val outputsSent: Long = 0,
+    val outputsFailed: Long = 0,
+    val neutralizations: Long = 0,
+    val maxGapMillis: Long = 0,
+)
+
 data class CompanionAudioState(
     val supported: Boolean = false,
     val active: Boolean = false,

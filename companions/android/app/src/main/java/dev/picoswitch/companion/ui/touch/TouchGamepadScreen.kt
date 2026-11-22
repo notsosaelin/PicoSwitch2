@@ -40,6 +40,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.collectAsState
+import dev.picoswitch.companion.ui.HeadsetTile
+import dev.picoswitch.companion.ui.canRecord
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
@@ -789,7 +795,25 @@ fun TouchGamepadScreen(
         )
 
         if (menuOpen) {
+            // The headset from inside the game, the same switch as Play's tile:
+            // it used to be reachable only by leaving the on-screen controller.
+            val audio by viewModel.headset.collectAsState()
+            val headset = HeadsetTile.of(audio)
+            val menuContext = LocalContext.current
+            val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+                viewModel.setHeadset(on = true, microphonePermitted = granted)
+            }
             TouchGamepadMenu(
+                headsetOn = audio.on,
+                headsetEnabled = headset.enabled,
+                headsetLine = headset.line,
+                onHeadset = { on ->
+                    when {
+                        !on -> viewModel.setHeadset(on = false, microphonePermitted = false)
+                        menuContext.canRecord() -> viewModel.setHeadset(on = true, microphonePermitted = true)
+                        else -> micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                },
                 settings = settings,
                 personality = ui.snapshot.personality.current,
                 busy = ui.busy,
@@ -1453,6 +1477,10 @@ private fun UnusableWindowNotice(problem: String?, onExit: () -> Unit) {
  */
 @Composable
 private fun TouchGamepadMenu(
+    headsetOn: Boolean,
+    headsetEnabled: Boolean,
+    headsetLine: String,
+    onHeadset: (Boolean) -> Unit,
     settings: TouchGamepadSettings,
     personality: Personality,
     busy: Boolean,
@@ -1613,6 +1641,14 @@ private fun TouchGamepadMenu(
                 )
 
                 SettingSwitch(
+                    title = "Headset",
+                    detail = headsetLine,
+                    checked = headsetOn,
+                    enabled = headsetEnabled || headsetOn,
+                    onChange = onHeadset,
+                )
+
+                SettingSwitch(
                     title = "Touch feedback",
                     detail = "Local buzz only; console rumble is separate.",
                     checked = settings.hapticsEnabled,
@@ -1655,6 +1691,7 @@ private fun SettingSwitch(
     detail: String,
     checked: Boolean,
     onChange: (Boolean) -> Unit,
+    enabled: Boolean = true,
 ) {
     Row(
         Modifier.fillMaxWidth().heightIn(min = TOUCH_TARGET),
@@ -1668,7 +1705,7 @@ private fun SettingSwitch(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Switch(checked = checked, onCheckedChange = onChange)
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }
 
